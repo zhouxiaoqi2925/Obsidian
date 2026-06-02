@@ -1,207 +1,65 @@
----
-title: maui
-type: cross-platform-ui-framework
-lang: C# / XAML
-stars: 23000+
-date: 2026-06-02
-tags:
-  - 开源项目
-  - dotnet
-  - cross-platform
-  - xamarin-evolution
-  - mobile
+# .NET MAUI - 跨平台 UI 与编译期生成
+
+**来源**：GitHub dotnet/maui
+**创建时间**：2026-06-02
+
 ---
 
-# maui · 项目深度解析
+## 一、编译期生成：XAML → IL 与 Source Generator
 
-> .NET MAUI（Multi-platform App UI）是 Xamarin.Forms 的官方继任者，由 Microsoft 维护，**用一套 C# + XAML 代码同时构建 Android / iOS / macOS / Windows 应用**，是 2024-2026 年最值得学习的跨平台 UI 框架之一。
-> 来源：G:\实战案例\GitHub顶尖项目\maui\
+### 1. XamlC IL 注入（XAML to IL Compiler）
 
-## 写在前面：解析哲学
+**问题场景**：XAML 框架传统在 runtime 解析 XML 树，启动慢 50-100ms；NativeAOT 编译（iOS / 嵌入式场景）不支持 runtime 反射或动态加载。需要把 XAML 烧成 C# IL。
 
-本文档采用"先骨架后血肉，先 What 后 Why，最后 How to steal"的解析策略。**MAUI 不只是一个 UI 库——它是一整套"跨平台抽象范本"**：手写 Mono.Cecil IL 注入、增量 Source Generator 编译 XAML、Arcade SDK 工程化、多 TFM 包发布。读它不是学写移动 App，是学"如何把 5 个不同 runtime 抽象到 1 套 API"。
-
-## 0. 解析前的 5 个准备
-
-1. **锁定 commit**：`global.json` dotnet SDK 10.0.100-rtm，Arcade SDK 10.0.0-beta。仓库对应 **.NET 10 周期**，2026 年 6 月正在 RTM 阶段。
-2. **分类**：跨平台 UI 框架 + Source Generator 工程范本 + .NET 工具链范式。
-3. **问题清单**：(a) XAML 怎么在编译期"翻译"成 C# 代码？(b) `SetBinding("Text", new Binding("Name"))` 怎么在编译期生成拦截器让 binding 跑得比反射快 100x？(c) 4 平台（iOS/Android/macOS/Windows）的 native control 怎么收敛成 1 个 `Button` 抽象？
-4. **速查表**：MAUI 仓库本身是**构建工具 + 源生成器**为主——真正的 `Microsoft.Maui.Controls` 运行时源码在闭源 NuGet 包里（这是 Xamarin 时代就有的"两仓模式"）。本仓库重点学习 **Build.Tasks** 和 **BindingSourceGen**。
-5. **关键 insight**：MAUI = **XAML 编译期生成 + Handler 模式（替代 Renderer）+ 源生成器优化 Binding**，三大支柱。
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 值 |
-| --- | --- |
-| 项目名 | .NET MAUI (dotnet/maui) |
-| 定位 | 用 C# + XAML 写一次，跑在 Android/iOS/macOS/Windows 4 平台的跨平台 UI 框架 |
-| 核心问题 | (a) Xamarin.Forms 的 Renderer 模式扩展性差、性能差；(b) 跨平台框架总要重写 binding 反射；(c) 不同平台的 native control API 差异巨大 |
-| 用户 | 微软生态企业（B2B、ERP、内部工具）、新创公司想用 C# 一套代码多端 |
-| 商业模式 | .NET Foundation 治理 + Microsoft 商业赞助 + 第三方组件商业化（Syncfusion、Telerik） |
-| 复刻难度 | ★★★★★（XAML 编译器 + 4 平台 native binding 已是天量工程） |
-| 状态 | 活跃，.NET 10 (2025) 大版本合入 |
-| 团队 | Microsoft .NET 移动团队 + 社区，核心 30+ 人 |
-| 里程碑 | Xamarin (2011) → Xamarin.Forms (2014) → MAUI 1.0 (.NET 6, 2022) → MAUI 9 (.NET 9, 2024) → MAUI 10 (.NET 10, 2025) |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((maui))
-    src
-      Controls
-        BindingSourceGen
-          源生成器:Binding代码
-        Build.Tasks
-          XamlC:Mono.Cecil IL注入
-          CompiledConverters:字符串→IL
-          CompiledMarkupExtensions
-        Core.Design
-          Visual Studio 设计器元数据
-      Compatibility
-        Core.LegacyRenderers
-        Material
-        Maps
-      AI
-        Essentials.AI
-        .NET 9+ AI 抽象
-      BlazorWebView
-        Maui:Blazor in MAUI
-    eng
-      cake:Cake构建脚本
-      common:Arcade SDK 通用
-      BannedSymbols.txt
-    global.json
-    Directory.Build.props
-      Arcade SDK 入口
-    build.cake
-    Microsoft.Maui.sln
-```
-
-**关键目录职责**：
-
-- `src/Controls/src/BindingSourceGen/`：C# **Incremental Source Generator**（.NET 6+ 的新源生成器 API），在编译期扫描 `SetBinding` / `Binding.Create` 调用，**生成 UnsafeAccessor IL** 让 binding 路径访问 private 字段无反射。
-- `src/Controls/src/Build.Tasks/`：MSBuild Task 集合，**XamlC 用 Mono.Cecil 直接写 IL**——`ColorTypeConverter.cs` 显示 "XAML `BackgroundColor="Red"`" 编译为 `new Color(1, 0, 0, 1)` 的 IL 指令序列。
-- `src/Controls/src/Core.Design/`：Visual Studio XAML 设计器用的元数据（`AttributeTableBuilder.cs`），不参与运行时。
-- `src/Compatibility/`：**Xamarin.Forms 兼容层**，老项目升级 MAUI 时使用。
-- `eng/`：.NET Arcade SDK 基础设施（Cake 脚本、banned API、ILRepack）。
-- `global.json` + `Directory.Build.props`：固定 SDK 版本 + 统一所有子项目的 MSBuild 属性。
-
-**配置入口**：
-- `global.json`：`dotnet 10.0.100-rtm`，`MSBuild.Sdk.Extras 3.0.44`（多 TFM 必备）。
-- `Directory.Build.props`：`TreatWarningsAsErrors=true`、`DebugType=portable`（AOT 友好）、`IsShipping=true`（NuGet 包元数据）。
-- `Directory.Build.targets`：定义 `BannedSymbols.txt` 强约束。
-- `eng/cake/`：跨平台 build 编排脚本（`build.sh` / `build.ps1` 都调用它）。
-- `eng/ILRepack.exe`：把所有依赖合并到单 DLL（减小 AOT 后体积）。
-
-**代码入口**：
-- 业务方用 `dotnet new maui` 生成的 `MainPage.xaml` 在编译时被 `XamlCTask` 读取，生成 `MainPage.xaml.g.cs`。
-- 业务方写 `myLabel.SetBinding(Label.TextProperty, "Name")` 在编译期被 `BindingSourceGenerator` 替换为 `GeneratedBindingInterceptors`。
-- 真正的 Microsoft.Maui.Controls 运行时在 NuGet 包里（闭源或单独子模块），本仓只放 **build tooling + 源生成器**。
-
-## 3. 项目画像（Profile）
-
-| 字段 | 值 |
-| --- | --- |
-| 总文件数 | 约 5 万（含 eng/、samples/、tests/） |
-| 主语言 | C# (85%) + XAML (8%) + MSBuild XML (5%) + PowerShell (2%) |
-| 涉及语言 | C# / XAML / MSBuild / Cake / PowerShell / Bash |
-| Star | 23k+ |
-| License | MIT |
-| Docker | 无（框架项目） |
-| K8s | 无 |
-| CI | Helix（微软分布式测试矩阵）+ GitHub Actions |
-| 有测试 | ✅（xUnit + 设备测试 farm） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-```mermaid
-flowchart TB
-    Xaml[MainPage.xaml] -->|XamlCTask| Cecil[Mono.Cecil]
-    Cecil -->|IL Emit| DotnetAssembly[dll]
-    SetBinding[SetBinding call] -->|BindingSourceGenerator| Roslyn[Roslyn ISourceGenerator]
-    Roslyn -->|Generated*.g.cs| DotnetAssembly
-    DotnetAssembly --> AOT[NativeAOT publish]
-    AOT --> iOS[iOS binary]
-    AOT --> Android[Android .so]
-    AOT --> Mac[Mac binary]
-    AOT --> Win[Windows MSIX]
-    DotnetAssembly -->|JIT| Run[Run on device]
-```
-
-**核心架构 3 条**：
-
-1. **Handler 模式替代 Renderer**：MAUI 用 `IViewHandler` 替代 Xamarin.Forms 的 `Renderer`。**WHY**：`Renderer` 是"子类化 + override"，加新平台必须新建子类；`Handler` 是"接口 + 属性映射表"，加平台只需注册新 `Mapper` 函数。**性能**：Handler 解耦了"control 抽象"和"platform 渲染"，允许 control 树变化时只 diff 差异部分。
-2. **XAML 编译期 IL 注入**：`XamlCTask` 读 `MainPage.xaml` 调 Mono.Cecil 生成 `MainPage.xaml.g.cs`，包含 `InitializeComponent()` 方法和 `new Label { ... }` 表达式。**WHY**：传统 XAML 框架在 runtime 解析（Xamarin.Forms 早期），启动慢且 AOT 不友好。MAUI **在 build 时把 XAML 烧成 C# IL**，runtime 零解析。
-3. **Binding 源生成器**：`SetBinding(Label.TextProperty, new Binding("User.Name"))` 编译期被 `BindingSourceGenerator` 重写为 `GeneratedSetBinding12345()`——使用 `UnsafeAccessor` 直接访问 backing field，**消除反射**。**WHY**：Xamarin.Forms 的 binding 用 reflection 访问属性，启动慢 50-100ms；MAUI 编译期生成 IL 后 binding 访问是 direct call，性能接近手写代码。
-
-**ADR 关键设计决策**：
-
-- **ADR-1：XAML 编译成 IL 而非源码**：MAUI 早期用 `XamlC` 生成 .cs 字符串再用 CodeDom 编译，后来直接用 Mono.Cecil 写 IL。**WHY**：IL 注入可以引用私有成员、不需要 partial class 公开内部 API。
-- **ADR-2：Handler Mapper 表**：用 `Mapper.AppendToMapping("Text", (h, v) => h.PlatformView.Text = v)` 注册属性变更，**WHY**：业务方可以替换默认映射，扩展性比 override 灵活 10x。
-- **ADR-3：双引擎 (XamlC + XamlSourceGen)**：.NET 9 引入纯 Roslyn 源生成器替代部分 XamlC，**WHY**：Source Generator 在 IDE 编辑 XAML 时能实时重新生成（更快反馈），且不需要单独的 MSBuild Task 阶段。
-
-## 5. 代码深度解析（带 WHY）⭐
-
-### 5.1 找骨架代码
-
-- `src/Controls/src/Build.Tasks/XamlCTask.cs`：XAML → IL 的入口 MSBuild Task
-- `src/Controls/src/Build.Tasks/CompiledConverters/ColorTypeConverter.cs`：XAML 字符串 → IL 指令范本
-- `src/Controls/src/BindingSourceGen/BindingSourceGenerator.cs`：Binding 源生成器
-- `src/Controls/src/BindingSourceGen/PathParser.cs`：Binding path 语法解析
-- `src/Controls/src/Core.Design/RegisterMetadata.cs`：VS 设计器元数据入口
-
-### 5.2 单文件分析卡
-
-**`ColorTypeConverter.cs`（约 80 行）**：
-
+**解决方案**：
 ```csharp
+// src/Controls/src/Build.Tasks/CompiledConverters/ColorTypeConverter.cs 简化
 class ColorTypeConverter : ICompiledTypeConverter
 {
-    public virtual IEnumerable<Instruction> ConvertFromString(string value, ILContext context, BaseNode node)
+    public IEnumerable<Instruction> ConvertFromString(string value, ILContext ctx, BaseNode node)
     {
-        var module = context.Body.Method.Module;
-        do
+        var module = ctx.Body.Method.Module;
+        if (value.StartsWith("#", StringComparison.Ordinal))
         {
-            if (string.IsNullOrEmpty(value)) break;
-            value = value.Trim();
-
-            if (value.StartsWith("#", StringComparison.Ordinal))
-            {
-                var color = Color.FromArgb(value);
-                yield return Instruction.Create(OpCodes.Ldc_R4, color.Red);
-                yield return Instruction.Create(OpCodes.Ldc_R4, color.Green);
-                yield return Instruction.Create(OpCodes.Ldc_R4, color.Blue);
-                yield return Instruction.Create(OpCodes.Ldc_R4, color.Alpha);
-
-                yield return Instruction.Create(OpCodes.Newobj, module.ImportCtorReference(
-                    context.Cache,
-                    ("Microsoft.Maui.Graphics", "Microsoft.Maui.Graphics", "Color"),
-                    parameterTypes: new[] {
-                        ("mscorlib", "System", "Single"),
-                        ("mscorlib", "System", "Single"),
-                        ("mscorlib", "System", "Single"),
-                        ("mscorlib", "System", "Single")
-                    }));
-                yield break;
-            }
-            // ... 命名色 / 静态字段引用 / 属性 getter
-        } while (false);
-        throw new BuildException(BuildExceptionCode.Conversion, node, null, value, typeof(Color));
+            var color = Color.FromArgb(value);
+            yield return Instruction.Create(OpCodes.Ldc_R4, color.Red);
+            yield return Instruction.Create(OpCodes.Ldc_R4, color.Green);
+            yield return Instruction.Create(OpCodes.Ldc_R4, color.Blue);
+            yield return Instruction.Create(OpCodes.Ldc_R4, color.Alpha);
+            yield return Instruction.Create(OpCodes.Newobj, module.ImportCtorReference(
+                ctx.Cache,
+                ("Microsoft.Maui.Graphics", "Microsoft.Maui.Graphics", "Color"),
+                parameterTypes: new[] {
+                    ("mscorlib", "System", "Single"),
+                    ("mscorlib", "System", "Single"),
+                    ("mscorlib", "System", "Single"),
+                    ("mscorlib", "System", "Single")
+                }));
+        }
     }
 }
 ```
 
-**WHY 分析**：
-- **`IEnumerable<Instruction>` + `yield return`**：用迭代器模式生成 IL 指令序列，避免数组分配。**WHY**：每个 XAML 属性转换会调用此方法上百次，迭代器比 List<Instruction> 省 GC 压力。
-- **`OpCodes.Ldc_R4` 推送 float32 到 evaluation stack**：**WHY**：Color 构造函数参数是 `float`，IL 用 Ldc_R4 而不是 Ldc_R8（double），生成的代码体积小且与 Color 结构体内存布局对齐。
-- **`module.ImportCtorReference(context.Cache, ("Microsoft.Maui.Graphics", ...))`**：通过 Cecil 跨模块引用构造函数引用。**WHY**：编译 XAML 时所在的 assembly 不一定引用了 Microsoft.Maui.Graphics，ImportCtorReference 解析跨程序集引用，**Cache 复用**避免重复解析元数据。
-- **`value.StartsWith("#", StringComparison.Ordinal)`** 用 Ordinal 比较而非 CurrentCulture。**WHY**：文化敏感比较在土耳其语会把 "İ" 误判，Ordinal 才是字节级精确比较——XAML 解析是工具层不能有任何文化歧义。
-- **`if (color == "lightgrey") color = "lightgray";`**：处理 HTML/CSS 颜色名拼写差异。**WHY**：XAML 历史上从 WPF/Silverlight 继承，lightgrey 是 .NET 老命名，lightgray 是 CSS 标准——MAUI 选择"能识别两种"。
-- **`do { ... } while (false)` 模式**：用 do-while-false 包装所有 yield 路径，**WHY**：想在 `yield break` 之前统一处理异常路径（C# 迭代器方法不能用 try-catch 包 yield，所以用 do-while-false 模拟）。
+**关键参数**：
 
-**`BindingSourceGenerator.cs`（约 200 行，节选 100 行）**：
+| 字段 | 说明 |
+| --- | --- |
+| `OpCodes.Ldc_R4` | 推送 float32 到 evaluation stack |
+| `module.ImportCtorReference(ctx.Cache, ...)` | 跨程序集构造函数引用 |
+| `ctx.Cache` | Mono.Cecil 元数据缓存，避免重复解析 |
 
+**最佳实践**：
+- ✅ 用 `IEnumerable<Instruction> + yield return` 迭代器生成 IL，省 GC
+- ✅ XAML 字符串比较必须 `StringComparison.Ordinal`（避免 Turkish-i 文化歧义）
+- ✅ `do-while-false` 包装 yield break（迭代器方法不能用 try-catch）
+- ❌ 切勿用 `List<Instruction>` 收集指令，触发重复分配
+- ❌ 切勿在 XAML 转换器中读 culture-sensitive 配置
+
+### 2. Binding 源生成器（IIncrementalGenerator）
+
+**问题场景**：Xamarin.Forms 的 binding 用 reflection 访问属性，启动慢、NativeAOT 不兼容；老 `ISourceGenerator` 每次 syntax tree 变化都全量重跑，IDE 编辑卡顿。
+
+**解决方案**：
 ```csharp
 [Generator(LanguageNames.CSharp)]
 public class BindingSourceGenerator : IIncrementalGenerator
@@ -211,474 +69,718 @@ public class BindingSourceGenerator : IIncrementalGenerator
         var bindingsWithDiagnostics = context.SyntaxProvider.CreateSyntaxProvider(
             predicate: static (node, _) => IsSetBindingMethod(node) || IsCreateMethod(node),
             transform: static (ctx, t) => GetBindingForGeneration(ctx, t)
-        )
-        .WithTrackingName(TrackingNames.BindingsWithDiagnostics);
+        ).WithTrackingName(TrackingNames.BindingsWithDiagnostics);
 
         var bindings = bindingsWithDiagnostics
-            .Where(static binding => !binding.HasDiagnostics)
-            .Select(static (binding, t) => binding.Value)
+            .Where(static b => !b.HasDiagnostics)
+            .Select(static (b, t) => b.Value)
             .WithTrackingName(TrackingNames.Bindings);
 
         context.RegisterPostInitializationOutput(spc =>
-        {
-            spc.AddSource("GeneratedBindingInterceptorsCommon.g.cs", BindingCodeWriter.GenerateCommonCode());
-        });
+            spc.AddSource("GeneratedBindingInterceptorsCommon.g.cs",
+                BindingCodeWriter.GenerateCommonCode()));
 
-        context.RegisterImplementationSourceOutput(bindings, (spc, binding) =>
-        {
-            var location = binding.SimpleLocation;
-            if (location == null) throw new InvalidOperationException("Location cannot be null");
-
-            var fileName = $"{location.FilePath}-GeneratedBindingInterceptors-{location.Line}-{location.Column}.g.cs";
-            var sanitizedFileName = fileName.Replace('/', '-').Replace('\\', '-').Replace(':', '-');
-            var methodNamePrefix = binding.MethodType switch
-            {
-                InterceptedMethodType.SetBinding => "SetBinding",
-                InterceptedMethodType.Create => "Create",
-                _ => throw new NotSupportedException()
-            };
-            var uniqueId = (uint)Math.Abs(location.GetHashCode());
-            var code = BindingCodeWriter.GenerateBinding(binding, $"{methodNamePrefix}{uniqueId}");
-            spc.AddSource(sanitizedFileName, code);
+        context.RegisterImplementationSourceOutput(bindings, (spc, binding) => {
+            var fileName = $"{binding.SimpleLocation.FilePath}-Generated-{binding.SimpleLocation.Line}-{binding.SimpleLocation.Column}.g.cs"
+                .Replace('/', '-').Replace('\\', '-').Replace(':', '-');
+            spc.AddSource(fileName,
+                BindingCodeWriter.GenerateBinding(binding, $"SetBinding{(uint)Math.Abs(binding.SimpleLocation.GetHashCode())}"));
         });
     }
 }
 ```
 
-**WHY 分析**：
-- **`IIncrementalGenerator`**：.NET 6+ 新源生成器接口，**WHY**：旧 `ISourceGenerator` 在每次 syntax tree 变化都全量重跑，IDE 编辑时性能崩溃。`IIncrementalGenerator` 让 Roslyn **缓存每一步结果**，只重跑变化的部分——MAUI 项目编辑时 CPU 占用从 100% 降到 5%。
-- **`predicate: static (node, _) => IsSetBindingMethod(node)`**：用 `static` lambda（无闭包变量）。**WHY**：Roslyn 会把 static lambda 编译到独立程序集缓存，**`CreateSyntaxProvider` 增量执行时不会重新分配 lambda 实例**。
-- **`WithTrackingName(TrackingNames.BindingsWithDiagnostics)`**：给 pipeline 步骤起名字，**WHY**：Roslyn 性能分析器会显示每步耗时，命名后能快速定位瓶颈步骤。
-- **`fileName = $"{location.FilePath}-GeneratedBindingInterceptors-{location.Line}-{location.Column}.g.cs"`**：用源码文件路径 + 行号 + 列号生成唯一文件名，**WHY**：Roslyn 要求每个生成的 source 必须有唯一标识，否则两个相同位置的 binding 会被合并冲突。**`sanitizedFileName.Replace('/', '-').Replace('\\', '-').Replace(':', '-')`** 处理 Windows 路径非法字符。
-- **`var uniqueId = (uint)Math.Abs(location.GetHashCode())`**：用源码位置的哈希作为生成方法名后缀，**WHY**：生成的方法名必须不与业务代码冲突，**用位置哈希保证唯一性**。
-- **`RegisterPostInitializationOutput` + `RegisterImplementationSourceOutput`** 双阶段：**WHY**：Common 代码（生成器共享 helper）只在编译启动时生成一次，业务相关代码每个 binding 生成一份。
+**关键参数**：
 
-**`PathParser.cs`（约 200 行，节选 80 行）**：
+| 字段 | 说明 |
+| --- | --- |
+| `IIncrementalGenerator` | .NET 6+ 增量源生成器，只重跑变化步骤 |
+| `static lambda` | 无闭包，Roslyn 编译到独立程序集缓存 |
+| `WithTrackingName(...)` | pipeline 步骤命名，性能分析器用 |
+| `RegisterPostInitializationOutput` | 共享 helper 只生成一次 |
+| `RegisterImplementationSourceOutput` | 每 binding 一份代码 |
 
+**最佳实践**：
+- ✅ 业务方用 `static` lambda 写 predicate/transform，零闭包分配
+- ✅ 命名每步 pipeline（`TrackingNames.BindingsWithDiagnostics`），便于性能分析
+- ✅ 文件名用源码位置哈希（`Line-Column-Hash`）保证唯一性
+- ✅ 共享代码 `PostInitialization` 只生成一次，业务代码 `Implementation` 逐项生成
+- ❌ 切勿在源生成器 `throw` 报告 binding 错误，会让整个编译失败——用 Result<T> + diagnostic
+- ❌ 切勿用旧 `ISourceGenerator`（全量重跑）
+
+### 3. Binding Path 解析器（PathParser）
+
+**问题场景**：binding path 支持 `User.Address.City` / `Items[0].Name` / `User as Admin.Email` 等复杂语法，runtime 解析用 reflection；编译期要转成 direct call 路径。
+
+**解决方案**：
 ```csharp
-internal class PathParser
+internal Result<List<IPathPart>> ParsePath(CSharpSyntaxNode? expressionSyntax)
 {
-    private readonly GeneratorSyntaxContext _context;
-    private readonly bool _enabledNullable;
-
-    internal PathParser(GeneratorSyntaxContext context, bool enabledNullable) { ... }
-
-    internal Result<List<IPathPart>> ParsePath(CSharpSyntaxNode? expressionSyntax)
+    return expressionSyntax switch
     {
-        return expressionSyntax switch
-        {
-            IdentifierNameSyntax _ => Result<List<IPathPart>>.Success(new List<IPathPart>()),
-            MemberAccessExpressionSyntax memberAccess => HandleMemberAccessExpression(memberAccess),
-            ElementAccessExpressionSyntax elementAccess => HandleElementAccessExpression(elementAccess),
-            ElementBindingExpressionSyntax elementBinding => HandleElementBindingExpression(elementBinding),
-            ConditionalAccessExpressionSyntax conditionalAccess => HandleConditionalAccessExpression(conditionalAccess),
-            MemberBindingExpressionSyntax memberBinding => HandleMemberBindingExpression(memberBinding),
-            ParenthesizedExpressionSyntax parenthesized => ParsePath(parenthesized.Expression),
-            BinaryExpressionSyntax asExpression when asExpression.Kind() == SyntaxKind.AsExpression => HandleBinaryExpression(asExpression),
-            CastExpressionSyntax castExpression => HandleCastExpression(castExpression),
-            _ => HandleDefaultCase(),
-        };
+        IdentifierNameSyntax _ => Result<List<IPathPart>>.Success(new()),
+        MemberAccessExpressionSyntax ma => HandleMemberAccessExpression(ma),
+        ElementAccessExpressionSyntax ea => HandleElementAccessExpression(ea),
+        ElementBindingExpressionSyntax eb => HandleElementBindingExpression(eb),
+        ConditionalAccessExpressionSyntax ca => HandleConditionalAccessExpression(ca),
+        MemberBindingExpressionSyntax mb => HandleMemberBindingExpression(mb),
+        ParenthesizedExpressionSyntax p => ParsePath(p.Expression),
+        BinaryExpressionSyntax asE when asE.Kind() == SyntaxKind.AsExpression => HandleBinaryExpression(asE),
+        CastExpressionSyntax ce => HandleCastExpression(ce),
+        _ => HandleDefaultCase(),
+    };
+}
+```
+
+**关键参数**：
+
+| 语法节点 | 含义 |
+| --- | --- |
+| `MemberAccessExpression` | `User.Address` 链式访问 |
+| `ElementAccessExpression` | `Items[0]` 索引访问 |
+| `ConditionalAccessExpression` | `User?.Address` 空安全 |
+| `BinaryExpression.AsExpression` | `User as Admin` 类型转换 |
+
+**最佳实践**：
+- ✅ 模式匹配语法节点类型比 `is XxxExpression` 链更易读
+- ✅ `ParenthesizedExpression` 递归去掉括号（罕见但合法 `User.(Address).City`）
+- ✅ `as Expression` 特殊处理：`User as Admin.Name` 也能解析（先转换再访问）
+- ❌ 切勿假设 source generator 一定能解析所有路径（RelayCommand 等 dynamic 类型会失败，要 fallback）
+- ❌ 切勿用 throw 报路径错误，让 Roslyn 看到 IDE 友好 diagnostic
+
+### 4. CompiledConverters 类型转换器（XAML Type Converter）
+
+**问题场景**：XAML 字符串 `BackgroundColor="Red"` / `Margin="10,20"` / `IsVisible="true"` 需要转成对应 .NET 类型；runtime 解析慢且 AOT 不友好。
+
+**解决方案**：
+```csharp
+// 业务方实现 ICompiledTypeConverter
+public class ThicknessTypeConverter : ICompiledTypeConverter
+{
+    public IEnumerable<Instruction> ConvertFromString(string value, ILContext ctx, BaseNode node)
+    {
+        // "10,20" → new Thickness(10, 20)
+        var parts = value.Split(',');
+        yield return Instruction.Create(OpCodes.Ldc_R4, float.Parse(parts[0]));
+        yield return Instruction.Create(OpCodes.Ldc_R4, float.Parse(parts[1]));
+        yield return Instruction.Create(OpCodes.Newobj, ctx.Cache.ImportCtor(
+            typeof(Thickness), typeof(float), typeof(float)));
     }
+}
 
-    private Result<List<IPathPart>> HandleMemberAccessExpression(MemberAccessExpressionSyntax memberAccess)
+// 注册
+TypeConverterRegistry.Register<Thickness, ThicknessTypeConverter>();
+```
+
+**关键参数**：
+
+| 转换器 | 输入 | 输出 |
+| --- | --- | --- |
+| `ColorTypeConverter` | `"Red"` / `"#FF0000"` | `Color` 结构体 |
+| `ThicknessTypeConverter` | `"10,20"` | `Thickness(10, 20)` |
+| `EnumTypeConverter` | `"Stretch"` | `Stretch.Fill` |
+| `BoolTypeConverter` | `"true"` | `true` |
+
+**最佳实践**：
+- ✅ 业务方自定义 XAML 属性时提供 `ICompiledTypeConverter`，避免 runtime 解析
+- ✅ 字符串解析用 `StringComparison.Ordinal` 避免文化歧义
+- ✅ 处理 HTML/CSS 与 .NET 命名差异（`lightgrey` vs `lightgray`）
+- ❌ 切勿让 XAML 字符串解析依赖当前 culture
+- ❌ 切勿在转换器中抛 `NotImplementedException`（会让 XamlC 整体失败）
+
+### 5. UnsafeAccessor 私有访问（NativeAOT Compatible）
+
+**问题场景**：binding 路径需要访问 ViewModel 私有属性，传统方式用 reflection 调 `PropertyInfo.GetValue`；NativeAOT 没有 metadata，runtime 反射崩。
+
+**解决方案**：
+```csharp
+// 业务方 ViewModel
+public partial class UserViewModel
+{
+    private string _name;  // 私有字段
+    public string Name
     {
-        var result = ParsePath(memberAccess.Expression);  // 递归解析左侧
-        // ...
-        var typeInfo = _context.SemanticModel.GetTypeInfo(memberAccess).Type;
-        var symbol = _context.SemanticModel.GetSymbolInfo(memberAccess).Symbol;
+        get => _name;
+        set => _name = value;
+    }
+}
 
-        // Handle known special cases when symbol or type are not resolved at compile time
-        if (symbol == null || typeInfo == null)
-        {
-            var expressionType = _context.SemanticModel.GetTypeInfo(memberAccess.Expression).Type;
-            if (expressionType != null && TryHandleSpecialCases(member, expressionType, out var specialCasePart) && specialCasePart != null)
-            {
-                result.Value.Add(specialCasePart);
-                return Result<List<IPathPart>>.Success(result.Value);
-            }
-            return Result<List<IPathPart>>.Failure(DiagnosticsFactory.UnableToResolvePath(memberAccess.GetLocation()));
-        }
-        // ...
+// 源生成器生成 UnsafeAccessor
+[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Field)]
+static extern ref string GetNameField(UserViewModel instance);
+
+class GeneratedBindingInterceptor
+{
+    public static object? Get(UserViewModel vm)
+        => GetNameField(vm);  // 直接拿 ref，无反射
+}
+```
+
+**关键参数**：
+
+| 字段 | 说明 |
+| --- | --- |
+| `UnsafeAccessorKind.Field` | 访问私有字段 |
+| `UnsafeAccessorKind.Method` | 访问私有方法 |
+| `UnsafeAccessorKind.Constructor` | 访问私有构造函数 |
+
+**最佳实践**：
+- ✅ NativeAOT 项目用 `UnsafeAccessor` 替代反射
+- ✅ 源生成器检测 private field 访问需求，自动 emit UnsafeAccessor stub
+- ✅ AOT 编译后无 metadata 也能跑（无 reflection）
+- ❌ 切勿在 AOT 项目中用 `PropertyInfo.GetValue`
+- ❌ 切勿混淆 `UnsafeAccessorKind.Field` 和 `Method`（签名前缀不同）
+
+---
+
+## 二、Handler 模式：跨平台 control 抽象
+
+### 6. IViewHandler 与 PlatformView（Handler Pattern）
+
+**问题场景**：Xamarin.Forms 的 `Renderer` 模式用继承 + override，加新平台必须新建子类；4 平台（iOS/Android/Mac/Win）每加一个 control 都要写 4 个 renderer。
+
+**解决方案**：
+```csharp
+// MAUI 抽象
+public interface IViewHandler : IElementHandler
+{
+    object PlatformView { get; }  // iOS UIView / Android View / ...
+    Microsoft.Maui.IView VirtualView { get; }  // MAUI 抽象 control
+    IMauiContext Context { get; }
+}
+
+// Button handler 注册
+public class ButtonHandler : ViewHandler<IButton, object>
+{
+    public ButtonHandler() : base(Mapper) { }
+}
+
+// iOS 平台实现
+public class ButtonHandler : ViewHandler<IButton, UIButton>
+{
+    protected override UIButton CreatePlatformView() => new UIButton();
+    protected override void ConnectHandler(UIButton platformView)
+    {
+        platformView.TouchUpInside += OnTouchUpInside;
+        base.ConnectHandler(platformView);
     }
 }
 ```
 
-**WHY 分析**：
-- **`switch` 模式匹配语法树节点类型**：**WHY**：`User.Address.City` 是嵌套的 `MemberAccessExpressionSyntax`，外层是 `User.Address`，内层是 `User`。模式匹配比 `instanceof` 链更易读。
-- **`ParenthesizedExpressionSyntax parenthesized => ParsePath(parenthesized.Expression)`**：递归处理括号，**WHY**：`User.(Address).City`（罕见但合法）也要正确解析。
-- **`asExpression when asExpression.Kind() == SyntaxKind.AsExpression`**：过滤掉其他 BinaryExpression（`+` `-` `*`），只处理 `as` 类型转换。**WHY**：`User as Admin.Name` 在 binding path 里也有意义（先转换类型再访问属性）。
-- **`if (symbol == null || typeInfo == null)` + `TryHandleSpecialCases`**：**WHY**：RelayCommand、ICommand 等 dynamic 类型在编译期 symbol 解析失败，需要 fallback 到"模式匹配"逻辑。这是源生成器在 dynamic + static 间妥协的常见手法。
-- **`Result<List<IPathPart>>` 自定义 Result 类型**：**WHY**：Roslyn 源生成器不能用 `throw` 报"绑定路径错误"（会让整个编译失败），需要返回带诊断信息的 Result，让生成器把 error 报告给 IDE 而不崩溃。
+**关键参数**：
 
-**`XamlCTask.cs` 头文件（节选 120 行）**：
+| 字段 | 说明 |
+| --- | --- |
+| `PlatformView` | native control 实例（iOS UIButton 等） |
+| `VirtualView` | MAUI 抽象 control（IButton） |
+| `Mapper` | 属性映射表 |
+| `IMauiContext` | 平台上下文（service provider） |
 
+**最佳实践**：
+- ✅ 业务方扩展新平台时实现 `IViewHandler` 而非继承
+- ✅ `ConnectHandler` 注册事件，`DisconnectHandler` 解绑避免泄漏
+- ✅ 通过 `Mapper.AppendToMapping` 替换默认行为
+- ❌ 切勿在 `ConnectHandler` 中 new 大对象
+- ❌ 切勿忘记 `DisconnectHandler` 解绑 platformView 事件
+
+### 7. Handler Mapper 属性映射（Mapper Pattern）
+
+**问题场景**：MAUI 抽象 `IButton.Text` 变化时，4 平台要分别同步到 `UIButton.TitleLabel.Text` / `Button.Text` / ...，override 链式分发慢且难扩展。
+
+**解决方案**：
 ```csharp
-namespace Microsoft.Maui.Controls.Build.Tasks
+// 业务方注册
+Mapper.AppendToMapping(nameof(IButton.Text), (handler, view) =>
 {
-    static class LoggingHelperExtensions
+    if (handler.PlatformView is UIButton native)
+        native.SetTitle(view.Text, UIControlState.Normal);
+});
+
+// 替换默认映射
+Mapper.PrependToMapping(nameof(IButton.Text), (handler, view) => {
+    // 完全自定义
+});
+```
+
+**关键参数**：
+
+| 方法 | 行为 |
+| --- | --- |
+| `Mapper.AppendToMapping` | 追加到默认映射之后 |
+| `Mapper.PrependToMapping` | 在默认映射之前（可拦截） |
+| `Mapper.ModifyMapping` | 替换默认映射 |
+
+**最佳实践**：
+- ✅ 业务方扩展属性映射用 `AppendToMapping`，不动默认行为
+- ✅ 平台特定优化用 `PrependToMapping`（如安卓 ripple 效果）
+- ✅ 跨平台代码不要直接 `PlatformView.X = Y`，要走 Mapper
+- ❌ 切勿在 `ConnectHandler` 内重写所有映射（性能问题）
+- ❌ 切勿 Mapper 中读可变全局状态
+
+### 8. MAUI Essentials 与跨平台 API（Essentials）
+
+**问题场景**：每个平台都有 `Preferences` / `SecureStorage` / `FileSystem` / `Geolocation` / `Connectivity` 等系统 API，4 平台重复实现 4 遍。
+
+**解决方案**：
+```csharp
+// MAUI Essentials 提供统一 API
+public partial class Preferences
+{
+    public static string Get(string key, string defaultValue)
+        => Microsoft.Maui.Storage.Preferences.Default.Get(key, defaultValue);
+}
+
+// iOS 实现
+public partial class Preferences
+{
+    static IPlatformApplication _platformApplication;
+    public static void Set(string key, string value)
     {
-        class LoggingHelperContext
-        {
-            public int WarningLevel { get; set; } = 4;
-            public bool TreatWarningsAsErrors { get; set; } = false;
-            public IList<int> WarningsAsErrors { get; set; }
-            public IList<int> NoWarn { get; set; }
-            public string PathPrefix { get; set; }
-        }
-
-        static LoggingHelperContext Context { get; set; }
-        internal static List<BuildException> LoggedErrors { get; set; }
-
-        public static void SetContext(
-            this TaskLoggingHelper loggingHelper,
-            int warningLevel, bool treatWarningsAsErrors, string noWarn,
-            string warningsAsErrors, string warningsNotAsErrors, string pathPrefix)
-        {
-            if (Context == null) Context = new LoggingHelperContext();
-            // ... 解析 NoWarn / WarningsAsErrors 字符串到 IList<int>
-        }
-
-        public static void LogWarningOrError(
-            this TaskLoggingHelper loggingHelper,
-            BuildExceptionCode code, string xamlFilePath,
-            int lineNumber, int linePosition, int endLineNumber, int endLinePosition,
-            params object[] messageArgs)
-        {
-            if (Context.NoWarn != null && Context.NoWarn.Contains(code.CodeCode)) return;
-            xamlFilePath = loggingHelper.GetXamlFilePath(xamlFilePath);
-            if ((Context.TreatWarningsAsErrors && ...) || (Context.WarningsAsErrors != null && ...))
-            {
-                loggingHelper.LogError("XamlC", ...);
-                LoggedErrors ??= new();
-                LoggedErrors.Add(new BuildException(code, new XmlLineInfo(lineNumber, linePosition), innerException: null, messageArgs));
-            }
-            else
-            {
-                loggingHelper.LogWarning("XamlC", ...);
-            }
-        }
+        // NSUserDefaults
+        NSUserDefaults.StandardUserDefaults.SetString(value, key);
     }
 }
 ```
 
-**WHY 分析**：
-- **`static LoggingHelperContext Context`**：MSBuild Task 是单实例多线程调用，全局 static 缓存上下文。**WHY**：避免每次 SetContext 都创建新对象——但要小心多项目并行编译会共享 Context（实际是 MSBuild 进程隔离的）。
-- **`NoWarn?.Split([';', ','], StringSplitOptions.RemoveEmptyEntries)`**：用 C# 12 collection expression + 多分隔符 Split，**WHY**：MSBuild 属性是分号或逗号分隔，统一处理。
-- **`code.HelpLink`**：每个 BuildExceptionCode 关联一个 docs URL，**WHY**：XAML 编译错误要给开发者"如何修"的可点击链接，VS 错误列表会渲染成蓝色超链接。
-- **`ErrorMessages.ResourceManager.GetString(code.ErrorMessageKey)`**：错误消息存于 `.resx` 资源文件支持多语言，**WHY**：XamlC 错误可能要给非英语开发者看。
-- **`LoggedErrors ??= new()` + `LoggedErrors.Add(...)`**：累积所有错误而非 throw，**WHY**：XAML 编译应该"一次性报所有错"而非"错一个就停"——开发者改一个错可能引入新错，需要看到全景。
-- **`if (Context == null) Context = new()`**：惰性初始化，**WHY**：LogWarningOrError 可能比 SetContext 先调用（如果 MSBuild 调度异常）。
+**关键参数**：
 
-**`eng/Directory.Build.props` 范本**：
+| API | 跨平台实现 |
+| --- | --- |
+| `Preferences` | NSUserDefaults / SharedPreferences / AppSettings |
+| `SecureStorage` | Keychain / EncryptedSharedPreferences / DPAPI |
+| `FileSystem.AppDataDirectory` | 平台特定 app data 路径 |
+| `Geolocation` | CoreLocation / LocationManager / WinRT |
+| `Connectivity` | NWPathMonitor / ConnectivityManager / WinRT |
 
+**最佳实践**：
+- ✅ 业务方只用 `Preferences.Set/Get`，不直接调平台 API
+- ✅ `SecureStorage` 存敏感数据，平台会加密（Keychain/DPAPI）
+- ✅ 业务方可以通过 `DeviceInfo.Platform` 区分平台做 fallback
+- ❌ 切勿在 `Preferences` 存大量数据（NSUserDefaults 同步写入慢）
+- ❌ 切勿跨平台混用平台 API（破坏跨平台性）
+
+### 9. Essentials.AI 与 .NET 9 AI 抽象（AI Cross-Platform）
+
+**问题场景**：.NET 9 引入 AI 抽象层（`Microsoft.Extensions.AI`），但不同平台（iOS / Android / Windows）调用本地 LLM（Core ML / MediaPipe / ONNX Runtime）的 API 差异巨大。
+
+**解决方案**：
+```csharp
+// 业务方使用
+public class MyViewModel
+{
+    readonly IChatClient _chat;
+    public MyViewModel(IChatClient chat) => _chat = chat;
+
+    public async Task<string> Ask(string q)
+        => await _chat.CompleteAsync(q);
+}
+
+// 平台特定
+#if IOS
+services.AddSingleton<IChatClient, AppleIntelligenceChatClient>();
+#elif ANDROID
+services.AddSingleton<IChatClient, MediaPipeChatClient>();
+#elif WINDOWS
+services.AddSingleton<IChatClient, OnnxRuntimeChatClient>();
+#endif
+```
+
+**关键参数**：
+
+| 平台 | LLM 运行时 |
+| --- | --- |
+| iOS 18+ | Apple Intelligence / Core ML |
+| Android | MediaPipe / LiteRT |
+| Windows | ONNX Runtime / Phi Silica |
+
+**最佳实践**：
+- ✅ 业务方代码只用 `IChatClient`，不感知平台
+- ✅ DI 注入平台特定实现
+- ✅ 模型下载走平台商店（App Store / Play Store），不走业务方 bundle
+- ❌ 切勿在跨平台代码中 `#if IOS` 调 Apple Intelligence
+- ❌ 切勿把 LLM 模型打进 MAUI app 包（体积 1GB+）
+
+### 10. BlazorWebView 与 Razor 混合（Hybrid）
+
+**问题场景**：业务方已有 Blazor 组件（Web 前端），想嵌入 MAUI 原生 app；不重写为 XAML。
+
+**解决方案**：
 ```xml
+<!-- MainPage.xaml -->
+<ContentPage xmlns:blazor="clr-namespace:Microsoft.AspNetCore.Components.WebView.Maui;assembly=Microsoft.AspNetCore.Components.WebView.Maui">
+    <blazor:BlazorWebView HostPage="wwwroot/index.html" Services="{StaticResource services}">
+        <blazor:BlazorWebView.RootComponents>
+            <blazor:RootComponent Selector="#app" ComponentType="{x:Type pages:Counter}" />
+        </blazor:BlazorWebView.RootComponents>
+    </blazor:BlazorWebView>
+</ContentPage>
+```
+
+**关键参数**：
+
+| 字段 | 说明 |
+| --- | --- |
+| `HostPage` | 入口 HTML 文件 |
+| `RootComponents` | Blazor 根组件 |
+| `Services` | DI 容器 |
+| `wwwroot/` | 静态资源目录 |
+
+**最佳实践**：
+- ✅ 业务方 Blazor 组件直接嵌入 MAUI，复用率 100%
+- ✅ 共享 Razor class library 在 MAUI + Blazor Server/WASM 间复用
+- ✅ native 控件（地图、相机）用 `JSInterop` 调 MAUI Handler
+- ❌ 切勿在 BlazorWebView 内做高频 DOM 更新（WebView overhead）
+- ❌ 切勿让 Blazor app 直接访问文件系统（走 MAUI Essentials）
+
+---
+
+## 三、性能与 AOT：让跨平台 app 启动 < 500ms
+
+### 11. NativeAOT 编译配置（AOT Compilation）
+
+**问题场景**：iOS / Android 现代 .NET 推 NativeAOT 编译（无 JIT），启动 < 200ms；MAUI 必须 AOT 友好（不依赖 runtime emit、reflection、动态加载）。
+
+**解决方案**：
+```xml
+<!-- MyMauiApp.csproj -->
 <PropertyGroup>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <TrimmerSingleWarn>false</TrimmerSingleWarn>
-    <DebugType>portable</DebugType>
-    <DebugSymbols>true</DebugSymbols>
-    <LangVersion>Latest</LangVersion>
-    <IsShipping>true</IsShipping>
-    <SignAssembly>false</SignAssembly>
-    <MauiRootDirectory>$(MSBuildThisFileDirectory)</MauiRootDirectory>
-    <MauiSrcDirectory>$(MSBuildThisFileDirectory)src/</MauiSrcDirectory>
+  <PublishAot>true</PublishAot>
+  <StripSymbols>true</StripSymbols>
+  <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+  <InvariantGlobalization>true</InvariantGlobalization>  <!-- 省 ICU 库 5MB -->
+  <UseInterpreter>false</UseInterpreter>  <!-- 关闭 IL 解释器 -->
 </PropertyGroup>
 ```
 
-**WHY 分析**：
-- **`TreatWarningsAsErrors=true`**：全仓库零警告，**WHY**：MAUI 是公共 API 框架，任何 warning 升级 minor 版本时可能成为 breaking change。
-- **`TrimmerSingleWarn=false`**：关闭 .NET 8 AOT trimmer 的"每个 warning 都报"模式，**WHY**：Xamarin 迁移期很多 trimming warning 是误报，关闭 single warn 后变成"按程序集聚合"。
-- **`DebugType=portable`**：用 portable PDB（不是 full PDB），**WHY**：portable PDB 跨平台、支持 source link，AOT 友好。
-- **`IsShipping=true`**：标记为"正式发布包"，**WHY**：Arcade SDK 会自动加 NuGet 元数据、license 检查、符号包发布。
-- **`MauiRootDirectory` + `MauiSrcDirectory`**：自定义 MSBuild 属性作为后续 `<Import>` 锚点，**WHY**：避免所有子项目用相对路径 `..\..\..\eng\xxx.props`。
+**关键参数**：
 
-### 5.3 设计模式
-
-- **Handler Mapper 模式**：属性变更通过 `Mapper.AppendToMapping("Text", (h, v) => h.PlatformView.Text = v)` 注册，**WHY** 比 override 灵活。
-- **Source Generator 增量管线**：`SyntaxProvider.CreateSyntaxProvider` + `.Where` + `.Select` + `RegisterImplementationSourceOutput` 链式过滤。
-- **Build Task 工具方法**：`LoggingHelperExtensions` 把 MSBuild 的 `TaskLoggingHelper` 包装成"支持 NoWarn / WarningsAsErrors"语义。
-- **Mono.Cecil IL emit**：每个 XAML 属性一个 `ICompiledTypeConverter`，输出 `IEnumerable<Instruction>`。
-
-### 5.4 反模式（学习点）
-
-- **`static LoggingHelperContext Context`**：全局 static 在 MSBuild 多项目并行下有竞争——MAUI 用"进程隔离"勉强 OK，**但本质脆弱**。
-- **`BannedSymbols.txt` 强约束**：禁止使用 `System.Reflection.Emit` 等——**WHY** AOT 兼容——但这让第三方贡献者经常 push 错代码。
-- **XamlCTask 与 XamlSourceGen 双引擎并存**：.NET 9 之前 XamlC 是 MSBuild Task，.NET 9 引入 Source Generator 替代部分功能，**双轨过渡期代码复杂度 +30%**。
-
-### 5.5 独特看点
-
-- **Mono.Cecil 直接写 IL**：MAUI 是**少有的用 Cecil 写业务逻辑的官方框架**（其他框架多用 Reflection.Emit 或 System.Linq.Expressions）。
-- **UnsafeAccessor 源生成**：Binding 访问私有属性无反射，**WHY**：在 NativeAOT 编译的 iOS app 上完全无 metadata 也能跑。
-- **Arcade SDK 工程化**：所有 .NET 官方仓库（runtime / aspnetcore / maui）共享同一套 eng/，**WHY**：让 100+ 贡献者用同一份 build 脚本。
-
-## 6. 运行机制（Bring It Up）
-
-### 启动脚本
-
-```bash
-# 一次性 bootstrap（拉 Arcade SDK）
-./build.sh -bootstrap
-
-# 编译 .NET MAUI workload
-./build.sh
-
-# 跑单元测试
-./build.sh -test
-
-# 跑设备测试 farm
-./build.sh -testDevices
-
-# 清理
-./build.sh -clean
-```
-
-### 本地起一个 MAUI app
-
-```bash
-dotnet new install Microsoft.Maui.Templates
-dotnet new maui -n MyApp
-cd MyApp
-dotnet build -t:Run -f net10.0-android   # Android
-dotnet build -t:Run -f net10.0-ios       # iOS（需 Mac）
-dotnet build -t:Run -f net10.0-maccatalyst
-dotnet build -t:Run -f net10.0-windows10.0.19041.0
-```
-
-### Smoke test
-
-```bash
-# 单元测试
-dotnet test test/Controls.UnitTests/
-
-# 设备测试（需要连真机/模拟器）
-dotnet test test/Controls.DeviceTest/
-```
-
-```mermaid
-sequenceDiagram
-    participant Dev as 开发者
-    participant Dotnet as dotnet CLI
-    participant XamlC as XamlCTask
-    participant SourceGen as BindingSourceGenerator
-    participant Cecil as Mono.Cecil
-    participant Device as 真机/模拟器
-    Dev->>Dotnet: dotnet build
-    Dotnet->>XamlC: 触发 XamlC
-    XamlC->>Cecil: 读 .xaml 写 IL
-    Cecil-->>XamlC: 生成 .g.cs
-    Dotnet->>SourceGen: 触发 Source Generator
-    SourceGen-->>Dotnet: 生成 Binding*.g.cs
-    Dotnet->>Device: 推送 .dll / .apk / .app
-    Device-->>Dev: App 启动
-```
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-    title MAUI 演进时间线
-    dateFormat YYYY-MM
-    section 前身
-    Xamarin (2011) 收购              :a1, 2011-01, 36M
-    Xamarin.Forms (2014)            :a2, 2014-05, 90M
-    section 改名
-    MAUI 公布 (2020 Build)          :a3, 2020-05, 24M
-    section 起步
-    MAUI 7 (.NET 6, 2022)          :a4, 2022-11, 12M
-    MAUI 8 (.NET 8, 2023)          :a5, 2023-11, 12M
-    section 成熟
-    MAUI 9 (.NET 9, 2024)          :a6, 2024-11, 12M
-    MAUI 10 (.NET 10, 2025)        :a7, 2025-11, 8M
-```
-
-**关键里程碑**：
-- 2011-02 Microsoft 收购 Xamarin（2016 正式）
-- 2014-05 Xamarin.Forms 1.0 发布
-- 2020-05 Build 大会公布 .NET MAUI 路线图
-- 2022-11 MAUI 7 随 .NET 6 GA，但因质量问题被社区批评
-- 2023-11 MAUI 8 性能大改进（Handler 优化）
-- 2024-11 MAUI 9 引入纯 Source Generator
-- 2025-11 MAUI 10 强化 AOT 和 Apple 平台
-
-## 8. 质量保障（How It Doesn't Break）
-
-### 8.1 测试
-
-- **xUnit 单元测试**：`test/Controls.UnitTests/`，覆盖控件逻辑不依赖 native runtime。
-- **设备测试 farm**：`test/Controls.DeviceTest/`，跑在微软 Helix 分布式 farm（iOS/Android/Windows 真机）。
-- **Compatibility 测试**：每个老 Xamarin 项目能跑通，验证兼容层。
-
-### 8.2 CI
-
-- **Helix**：微软自建测试 farm，每 PR 触发数百个真机测试。
-- **GitHub Actions**：lint + build 各 TFM 矩阵。
-- **依赖安全扫描**：`eng/Versions.props` 集中管理所有依赖版本。
-
-### 8.3 Lint
-
-- **`BannedSymbols.txt`**：禁止特定 API 出现在代码里。
-- **StyleCop + .editorconfig**：强制命名/格式。
-- **dotnet format**：CI 跑 formatter 检查。
-
-### 8.4 性能基准
-
-- AOT 体积回归测试（每个 PR 检查 DLL 大小）。
-- 启动时间基准（MeasureStartupTime 自定义 benchmark）。
-
-```mermaid
-flowchart LR
-    PR[PR] --> Helix[Helix 测试 farm]
-    Helix --> Win[Windows 真机]
-    Helix --> iOS[iOS 真机]
-    Helix --> Android[Android 真机]
-    Win --> Result[Test Result]
-    iOS --> Result
-    Android --> Result
-    Result --> Review[人工 review]
-    Review --> Merge
-```
-
-## 9. 生态依赖（Map of the World）
-
-**关键依赖**：
-- `Microsoft.Maui.Graphics`：跨平台 graphics 抽象
-- `Microsoft.Maui.Essentials`：设备 API 抽象（GPS、相机、文件系统）
-- `Microsoft.Extensions.DependencyInjection`：DI 容器
-- `CommunityToolkit.Maui`：社区扩展
-- `Syncfusion.Maui.Toolkit`：商业组件
-
-**合规检查清单**：
-- ✅ License：MIT
-- ✅ 多 TFM：`net10.0-android` / `net10.0-ios` / `net10.0-maccatalyst` / `net10.0-windows10.0.19041.0`
-- ✅ NuGet 源：nuget.org + Microsoft 内部 feed
-- ✅ NativeAOT 兼容
-- ✅ Trim 友好（AOT 修剪警告清零）
-
-## 10. 生产实践（Battle-Tested）
-
-| 维度 | 实现 |
-| --- | --- |
-| 配置热更新 | `IConfiguration` + `Microsoft.Extensions.Configuration` |
-| 优雅停服 | App 生命周期事件（iOS 走 `WillTerminate`） |
-| 限流 | 库项目无服务端 |
-| 链路追踪 | OpenTelemetry 包（第三方） |
-| 健康检查 | 库项目无服务端 |
-| 结构化日志 | Microsoft.Extensions.Logging |
-
-**生产建议**：
-- **必须** 用 `Handler Mapper` 模式重写跨平台适配，避免 override Renderer 死循环。
-- **必须** 打开 AOT 编译（`PublishAot=true`），iOS 启动时间从 800ms 降到 200ms。
-- **避免** 在 XAML 用 `x:Name` 太多（编译期生成 field 占用 AppDomain 内存）。
-- **建议** 用 `dotnet/maui-samples` 的 DeveloperBalance 模板作为起步骨架。
-
-## 11. 社区文化（People & Process）
-
-- **治理**：.NET Foundation + Microsoft .NET 移动团队
-- **维护者**：约 30 核心 maintainer，PR 审查 24h 内响应
-- **RFC**：GitHub Issues 标签 `rfc` + Discussion 区
-- **沟通**：Discord + GitHub Discussions
-- **议题活跃**：约 1500 open issues，PR 合并 2-5 天
-- **商业化**：Syncfusion、Telerik、ComponentOne 等商业组件生态
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **XAML 编译期 IL 注入**：用 Mono.Cecil 在 MSBuild Task 把 XAML 烧成 IL，**WHY** 启动期 0 解析。
-2. **Binding 源生成器 + UnsafeAccessor**：消除 binding 反射，性能 100x 提升。
-3. **Arcade SDK 工程化**：`eng/cake/` + `Directory.Build.props` 集中管理所有子项目，**WHY** 100+ 贡献者用同一套 build 流程。
-
-### 12.2 必避 3 坑
-
-1. **静态全局 Context**：`static LoggingHelperContext Context` 在多项目并行下 race，**改用每调用传参**。
-2. **XamlC + XamlSourceGen 双轨**：过渡期代码复杂度 +30%，**WHY** 老 path 删不掉。
-3. **BannedSymbols 过度严格**：禁止 API 让第三方贡献者频繁 push 错代码，**WHY** AOT 兼容但 community 不友好。
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7天复刻极简 MAUI 子集
-    dateFormat YYYY-MM-DD
-    section 基础
-    Day1 创 MSBuild Task 骨架    :a1, 2026-06-01, 1d
-    section XAML
-    Day2 实现 ColorTypeConverter :a2, after a1, 1d
-    Day3 写 XamlCTask 主流程     :a3, after a2, 1d
-    section Source Gen
-    Day4 实现 IIncrementalGenerator :a4, after a3, 1d
-    Day5 生成 Binding 拦截器     :a5, after a4, 1d
-    section 整合
-    Day6 端到端 .xaml 编译 .dll  :b1, after a5, 1d
-    Day7 sample app 跑通         :b2, after b1, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 评分 | 说明 |
+| 字段 | 推荐 | 说明 |
 | --- | --- | --- |
-| 架构清晰度 | ★★★★ | Handler/Mapper 抽象巧妙，但 build tooling 偏复杂 |
-| 代码可读性 | ★★★ | Cecil/Source Gen 概念门槛高 |
-| 测试覆盖 | ★★★★★ | Helix 设备 farm 业界最强 |
-| 文档质量 | ★★★★★ | Microsoft Learn 全套 |
-| 上手难度 | ★★★ | 需懂 MSBuild + Cecil + Roslyn |
-| 复刻价值 | ★★★★ | 仅复刻 build tooling，子集 7 天可完成 |
+| `PublishAot` | `true` | 启用 NativeAOT |
+| `StripSymbols` | `true` | 裁剪符号 |
+| `InvariantGlobalization` | `true` | 减少 ICU 库 5MB |
+| `IlcOptimizationPreference` | `Size` / `Speed` | 优化目标 |
+| `TrimmerSingleWarn` | `false` | 关闭 trimmer 单 warn 模式 |
 
-## 13. 学习萃取（Cheat Sheet）
+**最佳实践**：
+- ✅ iOS release 必须 AOT 编译（App Store 审核）
+- ✅ Android release 推 AOT，启动 200ms 内
+- ✅ `InvariantGlobalization` 减少 5MB 体积（业务方无多语言需求时）
+- ❌ 切勿在 AOT 项目用 `Reflection.Emit`（BannedSymbols.txt 禁止）
+- ❌ 切勿在 AOT 项目用 `Assembly.LoadFrom`（动态加载 AOT 不支持）
 
-**一句话价值**：MAUI 证明 **"编译期生成代码"是 NativeAOT 时代的必备技能**——XAML → IL、Binding → UnsafeAccessor，零反射零启动延迟。
+### 12. Startup Tracing 与 R2R（Ready To Run）
 
-**3 核心洞察**：
-1. **XAML 不是配置，是源码**——MAUI 把它烧成 IL，意味着 runtime 看到的是普通 C#，XAML 编辑器反馈循环可重入 IDE。
-2. **Source Generator 是新源生成器 API**——`IIncrementalGenerator` 的 cache-friendly 管线让 IDE 编辑零卡顿。
-3. **Arcade SDK 是 .NET 官方工程化范本**——100+ 仓库共享 eng/，让 contributor 进入新项目零成本。
+**问题场景**：AOT 编译慢（10+ 分钟），开发期间想快速冷启动；R2R 预编译 .NET IL 到 native，但只覆盖部分方法。
 
-**5 段必读代码**：
-1. `src/Controls/src/Build.Tasks/CompiledConverters/ColorTypeConverter.cs`：`IEnumerable<Instruction> + yield return` 模式生成 IL。
-2. `src/Controls/src/BindingSourceGen/BindingSourceGenerator.cs`：`IIncrementalGenerator` 增量管线完整范本。
-3. `src/Controls/src/BindingSourceGen/PathParser.cs`：Roslyn 语法树模式匹配 + `Result<T>` 错误恢复。
-4. `src/Controls/src/Build.Tasks/XamlCTask.cs`：`LoggingHelperExtensions` MSBuild Task 工具方法。
-5. `Directory.Build.props`：`TreatWarningsAsErrors` + Arcade SDK 入口配置范本。
-
-**1 反模式**：`static LoggingHelperContext Context` 全局缓存——多项目并行 build 时 race 隐患。
-
-**1 可复用模式**：每个 XAML 属性一个 `ICompiledTypeConverter` 实现类，**WHY** 单一职责 + 易测试 + 易于新增类型。
-
-**3 立刻能用**：
-1. 你的项目用 Mono.Cecil 写个 `JsonXPathILGenerator`——把 JSON path 编译成 IL 而非 reflection 调用。
-2. 抄 `BindingSourceGenerator` 写个 `DtoRecordGenerator`——自动为 record 生成 `IEquatable<T>`。
-3. 用 `Directory.Build.props` 集中你的所有子项目的 `TreatWarningsAsErrors` + `LangVersion`。
-
-## 14. 项目特点速查
-
-**独特看点**：
-- **XAML 编译期 IL 注入** 是行业唯一一家（其他 XAML 框架都是 runtime 解析）。
-- **UnsafeAccessor binding** 是 .NET 8 引入的源生成特性，MAUI 是首批采用者。
-- **Arcade SDK** 让 100+ .NET 仓库用同一套 build 流程——是微软工程化最值得偷的资产。
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title 跨平台 UI 框架对比
-    x-axis 弱原生 --> 强原生
-    y-axis 简单 --> 复杂
-    "MAUI": [0.75, 0.70]
-    "React Native": [0.70, 0.55]
-    "Flutter": [0.85, 0.60]
-    "Xamarin.Forms": [0.55, 0.50]
-    "Kotlin Multiplatform": [0.80, 0.65]
-    "Ionic": [0.30, 0.40]
+**解决方案**：
+```xml
+<PropertyGroup>
+  <PublishReadyToRun>true</PublishReadyToRun>  <!-- R2R 编译 -->
+  <PublishReadyToRunComposite>true</PublishReadyToRunComposite>  <!-- 多架构合并 -->
+  <PublishAot Condition="'$(Configuration)' == 'Release'">true</PublishAot>
+  <PublishAot Condition="'$(Configuration)' == 'Debug'">false</PublishAot>
+</PropertyGroup>
 ```
 
-## 附：仓库元信息
+**关键参数**：
 
-- 路径：G:\实战案例\GitHub顶尖项目\maui\
-- 大小：约 1.2GB（含 eng/、samples/、tests/）
-- 总文件：约 5 万
-- 解析时间：2026-06-02
-- 注：本仓库只含 **build tooling + source generators + 兼容层**，核心运行时在 NuGet 包
+| 模式 | 启动 | 包体积 | 编译时间 |
+| --- | --- | --- | --- |
+| JIT | 1500ms | 小 | 0s |
+| R2R | 800ms | 中（+30%） | 60s |
+| NativeAOT | 200ms | 小 | 600s |
 
-## 一句话总结
+**最佳实践**：
+- ✅ Debug 用 JIT 快编译，Release 用 AOT 优启动
+- ✅ 业务方既要快启动又要快发布，用 R2R 中间方案
+- ✅ Startup Tracing 让 AOT 编译器知道反射调用路径
+- ❌ 切勿 Debug 模式也开 AOT（编译 10 分钟改一行代码）
+- ❌ 切勿混用 R2R 和 AOT（互斥）
 
-.NET MAUI 是一份"**C# 跨平台 + 编译期生成代码 + AOT 友好**"的活范本——读它不是学移动开发，是学"如何用 MSBuild + Roslyn + Mono.Cecil 编织一整套源码到 IL 的工具链"。
+### 13. ILRepack 合并 DLL（Assembly Merging）
+
+**问题场景**：MAUI app 默认 50+ DLL，4 平台包体积都偏大；ILRepack 合并到单 DLL 减少包体积 40%。
+
+**解决方案**：
+```xml
+<!-- eng/Directory.Build.props -->
+<PropertyGroup>
+  <IlrepackEnabled>true</IlrepackEnabled>
+  <IlrepackExclude Assemblies="$(IlrepackExclude);System.*;Microsoft.Maui.*" />
+</PropertyGroup>
+
+<!-- 自定义 ILRepack target -->
+<Target Name="MergeAssemblies" AfterTargets="Build">
+  <Exec Command="$(ILRepack) /out:MauiMerged.dll $(AssemblyName).dll $(ReferenceAssemblies)" />
+</Target>
+```
+
+**关键参数**：
+
+| 字段 | 说明 |
+| --- | --- |
+| `IlrepackEnabled` | 是否启用合并 |
+| `IlrepackExclude` | 排除程序集（避免 System.* 被合并） |
+| `IlrepackInternalize` | 是否把 internal API 改为 private |
+
+**最佳实践**：
+- ✅ Library 项目不开 ILRepack（破坏多版本并存）
+- ✅ App 项目开 ILRepack 减少包体积
+- ✅ 排除 `System.*` 和 `Microsoft.Maui.*` 避免破坏 framework
+- ❌ 切勿在 ILRepack 后做 reflection（合并后类型名可能变）
+- ❌ 切勿对 NuGet 库做 ILRepack（违反 .NET 库规范）
+
+### 14. BannedSymbols.txt 强约束（Banned APIs）
+
+**问题场景**：MAUI 要 AOT 兼容，禁用 `System.Reflection.Emit` / `Assembly.LoadFrom` 等反射 API；但 .NET 库大量用反射，第三方贡献者容易引入。
+
+**解决方案**：
+```text
+# eng/BannedSymbols.txt
+T:System.Reflection.Assembly.LoadFrom;Use Assembly.Load instead
+T:System.Reflection.Emit.AssemblyBuilder;AOT not supported
+T:System.Runtime.Serialization.Formatters.Binary;Security risk, obsolete
+P:System.DateTime.Now;Use DateTime.UtcNow
+```
+
+**关键参数**：
+
+| 字段 | 说明 |
+| --- | --- |
+| `T:FullyQualifiedName` | 禁用类型 |
+| `P:FullyQualifiedName` | 禁用属性 |
+| `M:FullyQualifiedName` | 禁用方法 |
+| `;备注` | 替代方案说明 |
+
+**最佳实践**：
+- ✅ CI 跑 BannedSymbols.txt 检查，违规 build fail
+- ✅ 注释给出替代方案（`Use X instead`）
+- ✅ 提交 PR 前用 `grep -r Reflection.Emit src/` 自检
+- ❌ 切勿在 BannedSymbols 加 `System.Reflection`（太宽，连合法 reflection 也禁）
+- ❌ 切勿频繁改 BannedSymbols（破坏第三方贡献者 PR）
+
+### 15. XamlSourceGen 双引擎过渡（Hybrid Compilation）
+
+**问题场景**：.NET 9 之前 XamlC 是 MSBuild Task（重、慢），.NET 9 引入纯 Roslyn Source Generator 替代部分功能；过渡期需双引擎并存。
+
+**解决方案**：
+```xml
+<!-- MyMauiApp.csproj -->
+<PropertyGroup>
+  <MauiEnableXamlCBindingWithSourceCompilation>true</MauiEnableXamlCBindingWithSourceCompilation>
+  <MauiXamlCEnabled>true</MauiXamlCEnabled>
+  <MauiXamlSourceGenEnabled>true</MauiXamlSourceGenEnabled>
+</PropertyGroup>
+```
+
+**关键参数**：
+
+| 引擎 | 启动 | IDE 反馈 |
+| --- | --- | --- |
+| XamlC（MSBuild Task） | 快 | 慢（编辑后要 build） |
+| XamlSourceGen（Roslyn SG） | 稍慢 | 快（实时生成） |
+
+**最佳实践**：
+- ✅ 新项目开双引擎，IDE 体验 + 启动速度都最优
+- ✅ 老项目渐进式迁移，先开 XamlSourceGen，再关 XamlC
+- ❌ 切勿在 build 慢的机器上只开 XamlC（IDE 卡顿）
+- ❌ 切勿混用两个引擎的 generated 目录（冲突）
+
+---
+
+## 四、可靠性与工程化：CI、跨平台测试、设备 farm
+
+### 16. Helix 分布式测试矩阵（Device Farm）
+
+**问题场景**：MAUI 跑 iOS / Android / Mac / Windows，单元测试无法覆盖所有平台；需要分布式设备 farm。
+
+**解决方案**：
+```yaml
+# .github/workflows/helix.yml
+name: Helix
+on: pull_request
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build.sh -test -testDevices  # 上传到 Helix
+      # Helix 自动分配 4 平台设备池执行
+```
+
+**关键参数**：
+
+| 平台 | 设备 |
+| --- | --- |
+| iOS | iPhone 15 / iOS 18 / iPad Pro |
+| Android | Pixel 8 / Android 14 |
+| macOS | Mac mini M2 / macOS 15 |
+| Windows | Surface Pro / Windows 11 |
+
+**最佳实践**：
+- ✅ CI 跑 Helix 覆盖真实设备，单元测试只跑 PC 模拟器
+- ✅ 关键 PR（影响 control 渲染）必须过 Helix
+- ✅ 用 `Helix.workItem.create()` API 写自定义测试 case
+- ❌ 切勿跳过 Helix 通过 PR（设备 bug 进 release）
+- ❌ 切勿 Helix 测试超时（10 分钟硬限）
+
+### 17. Arcade SDK 工程化（Build Infrastructure）
+
+**问题场景**：.NET 官方仓库（runtime / aspnetcore / maui）100+ 贡献者，需统一 build 流程；Arcade SDK 提供 Cake 脚本 + Directory.Build.props 模板。
+
+**解决方案**：
+```csharp
+// build.cake
+Task("Build")
+    .IsDependentOn("Restore")
+    .Does(() => {
+    var msbuild = MakeAbsolute(File("./.dotnet/sdk/dotnet.exe"));
+    DotNetBuild("./Microsoft.Maui.sln", new DotNetBuildSettings {
+        MSBuildSettings = msbuildSettings
+    });
+});
+
+Task("Test").IsDependentOn("Build").Does(() => {
+    DotNetTest("./Microsoft.Maui.sln");
+});
+
+Task("Default").IsDependentOn("Test");
+RunTarget("Default");
+```
+
+**关键参数**：
+
+| 任务 | 职责 |
+| --- | --- |
+| `Restore` | nuget restore |
+| `Build` | 编译所有 TFM |
+| `Test` | 跑 xUnit |
+| `Pack` | 生成 NuGet 包 |
+| `Publish` | 上传到 Helix / Azure |
+
+**最佳实践**：
+- ✅ 业务方 monorepo 借鉴 Arcade SDK（`eng/` 目录 + `build.cake`）
+- ✅ `Directory.Build.props` 集中所有项目的 MSBuild 公共属性
+- ✅ `-bootstrap` 拉 Arcade SDK 一次性 setup
+- ❌ 切勿自定义 `eng/`（Arcade SDK 已统一）
+- ❌ 切勿绕过 Cake 直接调 MSBuild（破坏跨平台）
+
+### 18. 多 TFM 包发布（Multi-Targeting）
+
+**问题场景**：MAUI 同时支持 net10.0-android / net10.0-ios / net10.0-maccatalyst / net10.0-windows，单 TFM 包无法满足。
+
+**解决方案**：
+```xml
+<!-- Microsoft.Maui.Controls.csproj -->
+<PropertyGroup>
+  <TargetFrameworks>net10.0;net10.0-android;net10.0-ios;net10.0-maccatalyst;net10.0-windows10.0.19041.0</TargetFrameworks>
+  <MSBuild.Sdk.Extras Version="3.0.44" />
+</PropertyGroup>
+
+<ItemGroup>
+  <Compile Remove="PlatformSpecific\iOS\**\*.cs" />
+  <Compile Include="PlatformSpecific\iOS\**\*.cs" Condition="$(TargetFramework.Contains('-ios'))" />
+</ItemGroup>
+```
+
+**关键参数**：
+
+| TFM | 平台 |
+| --- | --- |
+| `net10.0-android` | Android API 30+ |
+| `net10.0-ios` | iOS 14+ |
+| `net10.0-maccatalyst` | Mac Catalyst 14+ |
+| `net10.0-windows10.0.19041.0` | Windows 10+ |
+
+**最佳实践**：
+- ✅ 业务方跨平台库用 `MSBuild.Sdk.Extras` 多 TFM
+- ✅ 平台特定代码用 `Condition` Include（`iOS\**` 只对 `-ios` 编译）
+- ✅ 共享代码放 `PlatformSpecific\Shared\`，平台代码放 `PlatformSpecific\iOS\` 等
+- ❌ 切勿单 TFM 包发多平台（NuGet 限制）
+- ❌ 切勿 hardcode `Path.DirectorySeparatorChar`（用 `Path.Combine`）
+
+### 19. 平台特定代码隔离（Platform-Specific Code）
+
+**问题场景**：业务方要在 iOS 用 Apple Pay、Android 用 Google Pay、Windows 用 Microsoft Pay；共享代码 + 平台代码必须清晰隔离。
+
+**解决方案**：
+```csharp
+// 共享接口
+public interface IPaymentService
+{
+    Task<bool> PayAsync(decimal amount);
+}
+
+// iOS 实现
+public class ApplePayService : IPaymentService
+{
+    public async Task<bool> PayAsync(decimal amount)
+    {
+        var request = new PKPaymentRequest();
+        // PKPayment API...
+        return await Task.FromResult(true);
+    }
+}
+
+// Windows 实现
+public class MicrosoftPayService : IPaymentService
+{
+    public async Task<bool> PayAsync(decimal amount)
+    {
+        var request = new PaymentRequest();
+        // WinRT API...
+        return await Task.FromResult(true);
+    }
+}
+```
+
+**关键参数**：
+
+| 平台 | 文件路径 | 支付 SDK |
+| --- | --- | --- |
+| iOS | `Platforms/iOS/ApplePayService.cs` | PassKit |
+| Android | `Platforms/Android/GooglePayService.cs` | Google Pay API |
+| Windows | `Platforms/Windows/MicrosoftPayService.cs` | WinRT Payments |
+
+**最佳实践**：
+- ✅ 业务方用 `IPaymentService` 接口，DI 注入平台实现
+- ✅ 文件放 `Platforms/<Platform>/`，IDE 自动识别
+- ✅ 用 partial class 共享接口签名（`partial class PaymentService`）
+- ❌ 切勿在共享代码中 `#if IOS`
+- ❌ 切勿让平台代码污染 `MainPage.xaml.cs`（隔离到 Services）
+
+### 20. 兼容层与 Xamarin.Forms 迁移（Compatibility）
+
+**问题场景**：存量 Xamarin.Forms 项目（10万+ line）要升级 MAUI；直接重写成本太高。MAUI 提供 `Compatibility` 兼容层。
+
+**解决方案**：
+```csharp
+// 老项目升级
+using Xamarin.Forms.Compatibility;  // 保留旧 API
+using Microsoft.Maui.Controls;       // 新 API
+
+[assembly: EnableXamlCBindingWithSourceCompilation]
+[assembly: UseCompatibilityRenderers]  // 启用 Renderer 兼容
+```
+
+**关键参数**：
+
+| 字段 | 说明 |
+| --- | --- |
+| `UseCompatibilityRenderers` | 用老 Renderer 模式 |
+| `EnableXamlCBindingWithSourceCompilation` | 启用 XamlC + SourceGen 双引擎 |
+| `LegacyRenderers` | 老 renderer 列表 |
+| `Material` | Material Design 主题 |
+
+**最佳实践**：
+- ✅ 升级时开 `UseCompatibilityRenderers`，渐进式切 Handler
+- ✅ 旧 Render 项目用 `Microsoft.Maui.Controls.Compatibility` namespace
+- ✅ 新代码用 Handler 模式，老代码继续 Renderer
+- ❌ 切勿一步到位废弃 Renderer（破坏老项目）
+- ❌ 切勿混用 `Xamarin.Forms` 和 `Microsoft.Maui` 类型
+
+---
+
+**标签**：#maui #dotnet #cross-platform #xaml
+**状态**：20/20 份详细内容
