@@ -1,547 +1,562 @@
----
-title: core-js
-type: library
-lang: JavaScript
-stars: 25000+
-date: 2026-06-02
-tags:
-  - 开源项目
-  - Polyfill
-  - ECMAScript
-  - 工具库
----
+# core-js - JS 世界的"瑞士军刀 polyfill"：模块化按需 + 不污染全局
 
-# core-js · 项目深度解析
+**GitHub**: zloirock/core-js
+**Star**: 25k+
+**语言**: JavaScript
+**主题**: polyfill/ecmascript/web-standard/babel-default/tc39-proposals
+**适用场景**: 库作者、框架作者、企业前端基建、Babel/构建工具链维护者、TC39 提案跟读
 
-> JS 世界的"瑞士军刀 polyfill"：把 ECMAScript 2015 到 2025 的所有提案 + 大量 Web 标准都装进一个 monorepo，**模块化、按需加载、不污染全局**——Babel、swc、esbuild 都把它当作默认 polyfill 源。
-> 来源：G:\实战案例\GitHub顶尖项目\core-js\
+## 第一段：基础范式
 
-## 写在前面：解析哲学
+### 模式 1：7 包 monorepo + 单一共享 `internals/`
 
-**先骨架后血肉，先 What 后 Why，最后 How to steal。** core-js 是少数"一个 npm 包撑起整个 JS 生态兼容性"的极端案例：每月 2.5 亿+ 次下载，间接喂饱 Babel `@babel/preset-env` 默认 targets、Next.js polyfill、Vue CLI default build——但它本身只有 1 个核心作者 Denis Pushkarev（zloirock）。
+**问题场景**：Babel/Next/Vue CLI 默认 polyfill 源——一个包覆盖 ES2015~2025 + 全部活跃 proposal？
 
-本文不重复 README 的功能列表，只拆 3 件事：
-1. **monorepo 7 包结构**怎么平衡"单包可装 + 多包分发"；
-2. **`internals/` 抽象层**怎么把"原生已支持 vs polyfill"的不确定性收编到一个 `$()` 函数；
-3. **`forced`/`sham`/`unsafe` 三段式**怎么在不动用户代码的前提下覆盖"原生有 bug" / "浏览器差异" / "性能反优化"。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone https://github.com/zloirock/core-js.git`
-2. **分类**：library / polyfill / monorepo（7 个子包）
-3. **问题清单**：
-   - 怎么用一套代码同时支持"global pollution"和"pure standalone"两种模式？
-   - 怎么判断"原生有 bug"自动覆盖？
-   - 怎么把 ECMAScript proposal 阶段（Stage 0~4）映射到 npm 发布？
-4. **速查表**：`core-js`（主入口/全局污染）、`core-js-pure`（standalone 引入）、`core-js-compat`（浏览器兼容数据）、`core-js-builder`（自定义打包）、`core-js-bundle`（预打包）
-5. **锁定 commit**：2026 年 3.x 最新稳定版（v3.49.0）
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-| :--- | :--- |
-| **项目名** | core-js（v3.x） |
-| **定位** | 模块化 ECMAScript + Web 标准 polyfill，覆盖 ES2015~2025 + 全部活跃 proposal |
-| **核心问题** | 浏览器/Node 旧版本缺乏新语法/新 API，开发者要写大量 shim 代码 |
-| **目标用户** | 库作者、框架作者、企业前端基建、Babel/构建工具链维护者 |
-| **商业模式** | 纯开源 + OpenCollective / Patreon / Bitcoin 赞助（README 第 21 行列出 5 个打赏渠道） |
-| **复刻难度** | 极高（需要 1 个人持续跟 TC39 每周会议、覆盖所有 Stage 0~4 proposal） |
-| **状态** | 活跃维护（v3.49.0，每月 minor 版） |
-| **团队** | 主作者 zloirock（Denis Pushkarev）+ 社区贡献 |
-| **里程碑** | 2014 起 v1 → 2018 v3 架构重写（monorepo） → 2023 拒绝 OpenJSF 接管（作者自述）→ 2025 月下载破 2.5 亿 |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-core-js 是典型 monorepo：7 个子包共享 `internals/`，但每个包有独立 `package.json` 和 `README`。
-
-**点状解析**：
-- 顶层 `package.json` 用 `"workspaces": ["./packages/*"]`（npm workspace）管理 7 个子包
-- 核心 3 包：`core-js`（默认/全局污染入口）、`core-js-pure`（不污染全局）、`core-js-compat`（Babel 用，输出 browserslist 兼容数据）
-- 构建工具 2 包：`core-js-builder`（CLI 自定义打包）、`core-js-bundle`（预打包产物）
-- 5 个核心目录：`actual/`（已发布的稳定特性）、`stable/`（仅 ES 稳定特性）、`full/`（actual+proposals）、`es/`（按规范章节分组）、`proposals/`（按 Stage 分组）、`web/`（URL/URLSearchParams 等 WHATWG）、`stage/`（按 Stage 0~3 分组）、`internals/`（共享抽象）、`modules/`（具体特性实现）
-
-**思维导图**：
-
-```mermaid
-mindmap
-  root((core-js))
-    7 个子包
-      core-js
-      core-js-pure
-      core-js-compat
-      core-js-builder
-      core-js-bundle
-    core-js 内部 5 层
-      actual 稳定 + 已实现 proposal
-      stable 仅稳定 ES
-      full actual + proposals
-      es 按规范分组
-      proposals 按 stage 分组
-    internals 200+ 抽象
-      export.js 统一导出
-      define-built-in.js 属性定义
-      is-forced.js 强制覆盖
-      array-from 数组构造
-      object-create 对象构造
-    scripts 20+ 工具
-      build-compat 兼容数据
-      bundle-package 自定义打包
-      test-entries 入口测试
-      check-v8-protectors v8 优化检查
+**解决方案**：用 7 包 monorepo + 共享 `internals/`——`core-js`（主入口/全局污染）+ `core-js-pure`（standalone 不污染全局）+ `core-js-compat`（Babel 用 browserslist 兼容数据）+ `core-js-builder`（CLI 自定义打包）+ `core-js-bundle`（预打包产物）。
+```
+core-js                 # 主入口，全局污染
+core-js-pure            # standalone 不污染
+core-js-compat          # Babel 用，输出 browserslist 数据
+core-js-builder         # CLI 自定义打包
+core-js-bundle          # 预打包产物
 ```
 
-**实际目录树**（截取）：
+**关键参数**：
+- 7 子包
+- npm workspaces
+- 共享 `internals/`
+- 每月 2.5 亿+ 下载
+- Babel / Next / Vue CLI 默认
 
+**最佳实践**：polyfill 库用 monorepo——单包可装，多包分发；`core-js` vs `core-js-pure`——污染 vs 不污染两版本；`internals/` 抽公共——避免重复；Babel 默认源——生态护城河；`core-js-compat` 喂 browserslist——构建工具链关键。
+
+---
+
+### 模式 2：5 层 `actual / stable / full / es / proposals` 数据组织
+
+**问题场景**：polyfill 范围如何组织？用户要"只稳定" / "含 proposals" / "Web 标准" 不同需求？
+
+**解决方案**：用 5 层组织——`actual`（已发布稳定 + 已实现 proposal）/ `stable`（仅 ES 稳定特性）/ `full`（actual+proposals）/ `es`（按规范章节分组）/ `proposals`（按 Stage 分组）。**用户按需选入口**。
+```
+core-js/actual          # 稳定 + 已实现 proposal
+core-js/stable          # 仅稳定 ES
+core-js/full            # actual + proposals
+core-js/es              # 按规范章节分组
+core-js/proposals       # 按 stage 分组
+core-js/web             # URL/URLSearchParams 等
+core-js/stage           # Stage 0~3
+```
+
+**关键参数**：
+- `actual` 主流入口
+- `stable` 仅稳定
+- `full` 含 proposal
+- `es` 按规范章节
+- `proposals` 按 Stage
+
+**最佳实践**：polyfill 范围要"分层"——`actual` 主流、`stable` 保守、`full` 激进；用户按风险偏好选入口；`es` 按规范章节——学习路径清晰；`proposals` 按 Stage——TC39 跟读；5 层覆盖 100% 场景。
+
+---
+
+### 模式 3：internals 抽象层 + `$()` 函数收编"原生 vs polyfill"
+
+**问题场景**：同一段代码要"原生支持用原生" / "不支持用 polyfill"——`if (Array.from)` 散落各处。
+
+**解决方案**：用 `internals/` 200+ 抽象 + `$()` 函数——每个特性抽 `isForced` / `isActual` / `isPure` 标志。**`$()` 统一调入口**。
+```js
+// core-js/internals/array-from.js
+module.exports = function ($) {
+  return function from(arrayLike /*, mapfn, thisArg */) {
+    return $.arrayFrom(arrayLike, ...arguments)
+  }
+}
+```
+
+**关键参数**：
+- 200+ internals
+- `$` 入口
+- `isForced` 强制覆盖
+- `isActual` 已实际
+- `isPure` pure 入口
+
+**最佳实践**：polyfill 用 internals 抽象——避免 `if (Array.from)` 散落；`$()` 统一入口——单一真相源；`isForced` 覆盖原生 bug；`isActual` 检测原生支持；`isPure` 区分污染/不污染；抽象层是大型 polyfill 库的关键。
+
+---
+
+### 模式 4：`forced` / `sham` / `unsafe` 三段式
+
+**问题场景**：原生有 bug 怎么办？不同浏览器实现不一致？性能反优化？
+
+**解决方案**：用 `forced`（强制覆盖）+ `sham`（假装支持，但原生优先）+ `unsafe`（性能反优化但代码正确）三段式。**用户按需开启**。
+```
+forced:  强制覆盖原生（原生有 bug）
+sham:    假装支持，但调原生（假阳）
+unsafe:  性能反优化（小型 polyfill 但运行时差）
+```
+
+**关键参数**：
+- `forced: true` 强制覆盖
+- `sham: true` 假阳
+- `unsafe: true` 性能反优化
+- 200+ 模块支持
+- Babel `useBuiltIns` 联动
+
+**最佳实践**：polyfill 三段式——`forced` 覆盖 bug、`sham` 假装支持、`unsafe` 性能；按需开启——不滥用 `forced`；`sham` 给"我要这 API 但用原生"场景；`unsafe` 暴露运行时风险；200+ 模块每个都支持三段式。
+
+---
+
+### 模式 5：Stage 0~4 proposal 跟读 + 提前 polyfill
+
+**问题场景**：TC39 提案到浏览器实现要 2-5 年——开发者想用最新 API？
+
+**解决方案**：core-js 跟读 TC39 每周会议——Stage 3 proposal 提前 polyfill，Stage 4 稳定后推 `actual`。**作者 Denis Pushkarev 1 人跟 5 年**。
+```
+Stage 0:  strawman / 想法
+Stage 1:  proposal / 接受
+Stage 2:  draft / 形态
+Stage 3:  candidate / 等待实现
+Stage 4:  finished / 标准
+```
+
+**关键参数**：
+- Stage 0~4 跟读
+- Stage 3 polyfill
+- Stage 4 进 actual
+- 1 人维护
+- 每周 TC39 会议
+
+**最佳实践**：polyfill 库要"跟 TC39"——Stage 3 提前 polyfill；1 人维护虽危险但响应快；周会议跟读——时效性；Stage 4 进 stable——质量保证；Denis Pushkarev 模式——单一作者 + 高质量；core-js 护城河 = 跟读深度。
+
+---
+
+## 第二段：扩展范式
+
+### 模式 6：core-js-compat 输出 browserslist 兼容数据
+
+**问题场景**：Babel `preset-env` 要"按 targets 选 polyfill"——`> 1%, not dead` 哪些需要 polyfill 哪些不需要？
+
+**解决方案**：用 `core-js-compat` 维护浏览器/特性兼容数据——Babel `useBuiltIns: 'usage'` 自动按数据 import。**200+ 特性 × 浏览器版本矩阵**。
+```json
+// core-js-compat/data.json
+{
+  "es.array.from": {
+    "chrome": "45",
+    "firefox": "32",
+    "safari": "9",
+    "node": "4"
+  }
+}
+```
+
+**关键参数**：
+- 200+ 特性矩阵
+- browserslist 联动
+- Babel 自动 import
+- `useBuiltIns: 'usage'`
+- 体积最小化
+
+**最佳实践**：polyfill 数据要结构化——`{特性: {浏览器: 最低版本}}`；Babel `useBuiltIns: 'usage'` 自动按数据 import；`core-js-compat` 喂 browserslist——构建工具链关键；体积最优——仅 polyfill 需要的；200+ 特性矩阵——持续维护。
+
+---
+
+### 模式 7：core-js-builder 自定义打包 + `browserslist` 输入
+
+**问题场景**：用户要"按自己的 targets 打包最小 polyfill"——`core-js` 全量 200KB 太大。
+
+**解决方案**：用 `core-js-builder` CLI——输入 browserslist 输出最小 polyfill bundle。**`core-js-bundle` 是预打包的全量版**。
+```bash
+npx core-js-builder --browserslist '> 0.5%, not dead' \
+  --modules 'es.array.from es.promise.finally' \
+  --outfile polyfill.min.js
+```
+
+**关键参数**：
+- `core-js-builder` CLI
+- `--browserslist` 输入
+- `--modules` 选特性
+- `--outfile` 输出
+- 体积最小化
+
+**最佳实践**：polyfill 库要发"builder CLI"——按需打包；`--browserslist` 输入——复用生态数据；`--modules` 选特性——精细控制；体积最小化——关键场景（移动端 / Edge）；`core-js-bundle` 是预打包兜底。
+
+---
+
+### 模式 8：core-js-pure 不污染全局 + standalone
+
+**问题场景**：库作者要"用 Array.from 但不污染用户全局"——`core-js` 会污染。
+
+**解决方案**：用 `core-js-pure`——所有特性 standalone 引入 `from 'core-js-pure/features/array/from'`。**零全局污染**。
+```js
+// 库作者
+import from from 'core-js-pure/features/array/from'
+// 仅这个 from，不污染用户的 Array.from
+```
+
+**关键参数**：
+- 不污染全局
+- 库作者友好
+- `core-js-pure/features/xxx`
+- 零副作用
+- 体积稍大（每调用一次独立）
+
+**最佳实践**：库作者用 `core-js-pure`——不污染用户全局；`features/xxx` 路径明确——按需引入；体积 vs 全局污染 trade-off——库优先 pure；应用优先 polluted（`core-js`）；双入口是 polyfill 库标配。
+
+---
+
+### 模式 9：modules/ + es/ + proposals/ 按 feature 一文件
+
+**问题场景**：200+ 特性如何组织代码？单文件 5000 行难维护。
+
+**解决方案**：每个特性一文件——`modules/es.array.from.js` / `modules/es.promise.finally.js` / `proposals/array-flat-map.js`。**200+ 文件，每文件 5-50 行**。
 ```
 core-js/
-├── package.json (workspaces)
-├── README.md (200k 字符, 100+ 特性目录)
-├── packages/
-│   ├── core-js/
-│   │   ├── index.js (require('./full'))
-│   │   ├── full/         (auto-generated, 链入所有 actual+proposals)
-│   │   ├── actual/       (ES 稳定 + 已完成 proposal)
-│   │   ├── stable/       (仅 ES 稳定, 不含 proposal)
-│   │   ├── es/           (按规范章节分组入口)
-│   │   ├── proposals/    (按 stage 分组入口)
-│   │   ├── stage/        (Stage 0/1/2/3 入口)
-│   │   ├── web/          (WHATWG 入口)
-│   │   ├── modules/      (400+ 特性实现文件)
-│   │   ├── internals/    (200+ 共享抽象)
-│   │   └── postinstall.js
-│   ├── core-js-pure/     (不污染全局, 函数式 API)
-│   ├── core-js-compat/   (Babel 兼容数据, 100+ 浏览器版本)
-│   ├── core-js-builder/  (CLI 自定义打包)
+├── modules/
+│   ├── es.array.from.js        # 5-50 行
+│   ├── es.array.flat.js
+│   ├── es.promise.all.js
+│   └── ... 200+
+├── proposals/
+│   ├── array-flat-map.js
+│   ├── array-grouping.js
 │   └── ...
-├── scripts/              (20+ 构建/检查脚本)
-├── tests/                (10+ 跨运行时测试套件)
-└── website/              (文档站)
+├── internals/
+│   ├── array-from.js
+│   └── ... 200+
 ```
 
-**配置入口**：`packages/core-js/postinstall.js`（发警告"用 `actual` 而非 `full`"）和 `scripts/prepare-monorepo.mjs`（拉取子模块）。
-**代码入口**：`packages/core-js/index.js` 一行：`module.exports = require('./full')`。
+**关键参数**：
+- 一文件一特性
+- 5-50 行/文件
+- 200+ 文件
+- `internals/` 共享
+- 易维护
 
-## 3. 项目画像（Profile）
+**最佳实践**：大库用"一文件一特性"——200+ 文件 5-50 行/文件；`internals/` 抽公共——避免重复；`modules/` vs `proposals/` 分离——稳定 vs 实验；易读 + 易维护 + 易 review；core-js 模块化精髓。
 
-| 字段 | 数值/描述 |
-| :--- | :--- |
-| **总文件数** | ~3000（含所有 modules/internals/tests/website） |
-| **主语言** | JavaScript（占 99%） |
-| **涉及语言** | TypeScript（types）、Markdown、HTML（website） |
-| **Star** | 25k+（npm 月下载 2.5 亿+，实际"实际用户"远超 Star 数） |
-| **License** | MIT |
-| **Docker** | 否 |
-| **K8s** | 否 |
-| **CI** | 完整（`test262` 官方测试 + 跨 5 运行时 Node/Bun/Deno/Hermes/Rhino + 4 浏览器 Karma） |
-| **有测试** | 极完整（自研 unit + 官方 test262 + 端到端 Karma + 自定义 builder 测试） |
+---
 
-## 4. 架构设计（Architecture Deep Dive）
+### 模式 10：26+ 生态集成（Babel / swc / esbuild / Vite）
 
-core-js 的核心难题：**同一份代码，既要给浏览器注入全局 `Array.prototype.flat`，又要给 Node.js 库返回 standalone function。** 它的解法是双包（`core-js` vs `core-js-pure`）+ 共享 `internals` 层。
+**问题场景**：Babel `preset-env` 默认用 core-js——如何让 swc / esbuild / Vite 也用？
 
-**点状解析**：
-- **抽象层 `internals/`**：200+ 文件，每个文件一个工具函数（`to-object.js`、`flatten-into-array.js`、`is-forced.js`），所有 `modules/*.js` 都 require 同一份 internals
-- **统一导出 `$()` 函数**：`modules/es.array.flat.js` 里只调 `$(options, { flat: fn })`，options 决定挂全局还是返回新函数
-- **`forced`/`sham`/`unsafe` 三段式**：
-  - `forced`：原生有 bug 时强制覆盖（如 iOS Safari 12 之前的 `Array.prototype.flat` 拒绝字符串参数）
-  - `sham`：标记 polyfill 不完整，开发者可 `Object.hasOwn(obj, '__sham__')` 探测
-  - `unsafe`：用直接赋值代替 `delete + defineProperty`，避免 v8 deopt
-- **入口分层**：`actual`（已发布+已通过 stage 4 的）+ `stable`（纯 ES 稳定）+ `full`（actual+proposals）+ `es`/`proposals`/`stage`/`web`（按规范章节/阶段精细）
-
-**思维导图**：
-
-```mermaid
-mindmap
-  root((Polyfill 决策树))
-    用户请求
-      import core-js
-      import core-js-pure
-      import core-js/features/array/flat
-    运行时探测
-      原生已支持
-        跳过
-      原生有 bug
-        forced=true 覆盖
-      原生不完整
-        sham=true 标记
-    模块导出
-      注入全局
-        core-js 主包
-      返回函数
-        core-js-pure 包
-      自定义打包
-        core-js-builder
+**解决方案**：维护多套集成包——`@babel/preset-env` / `swc-plugin-core-js`（社区）/ esbuild plugin（社区）/ Vite plugin。**26+ 生态默认 core-js**。
+```
+生态集成
+- @babel/preset-env
+- swc-plugin-core-js
+- esbuild-plugin-core-js
+- Vite plugin
+- Rollup plugin
+- Webpack plugin
 ```
 
-**核心架构看点（3 条具体设计决策）**：
+**关键参数**：
+- 26+ 集成
+- Babel 官方
+- swc 社区
+- esbuild 社区
+- Vite 官方
 
-1. **统一 `$()` 导出函数作为"双模式开关"**（`internals/export.js`）：用 `options.global` / `options.proto` / `options.stat` 三个布尔位，**同一份 `modules/es.array.flat.js` 源码**既能产出"挂到 `Array.prototype.flat`"也能产出"返回 `flat` 纯函数"。这是 core-js 最大的架构奇迹——避免维护两套代码。
+**最佳实践**：polyfill 库要"广集成"——Babel 官方是护城河；swc / esbuild 社区版——快速跟进；Vite / Rollup / Webpack 全覆盖；26+ 集成 = 生态默认；core-js 事实标准 = 集成广度。
 
-2. **`isForced()` 决策表 + 运行时探测**（`internals/is-forced.js`）：核心是 3 个常量 `NATIVE` / `POLYFILL` / 缺省（`runs detection fn`），配合 `fails(detection)` 函数执行"原生到底支不支持"的探针。例如 `Array.prototype.flat` 的检测是：`() => [].flat(Infinity) instanceof Array`。失败则强制 polyfill。
+---
 
-3. **`defineBuiltIn` 替代 `Object.defineProperty`**（`internals/define-built-in.js`）：直接赋值 vs `defineProperty` 看似没区别，但 v8 的 hidden class 会因 `delete` 触发 deopt——core-js 默认先 `delete O[key]` 再 `defineProperty`，性能比直接 `O[key] = value` 差但**保证不可枚举**。`options.unsafe` 让用户可绕过这层保护换取性能。
+## 第三段：进阶范式
 
-## 5. 代码深度解析（带 WHY）⭐ 重点
+### 模式 11：Map / Set polyfill + WeakMap/WeakSet 用 ES6 原生
 
-### 5.1 找骨架代码
+**问题场景**：Map / Set ES6 引入——但用户要支持 ES5 浏览器（如 IE11）？
 
-最值得读的 4 个文件：
-- `modules/es.array.flat.js`（25 行最简实现）
-- `internals/export.js`（统一导出器）
-- `internals/is-forced.js`（决策中心）
-- `internals/define-built-in.js`（属性定义器）
-
-### 5.2 单文件分析卡
-
-#### 代码 1：`modules/es.array.flat.js`（25 行最简 polyfill）
-
+**解决方案**：用 ES5 兼容 Map / Set 实现——`entries` / `forEach` / `size` 全套 API。**WeakMap / WeakSet 无法 polyfill**——文档明示不支持。
 ```js
-'use strict';
-var $ = require('../internals/export');
-var flattenIntoArray = require('../internals/flatten-into-array');
-var toObject = require('../internals/to-object');
-var lengthOfArrayLike = require('../internals/length-of-array-like');
-var toIntegerOrInfinity = require('../internals/to-integer-or-infinity');
-var arraySpeciesCreate = require('../internals/array-species-create');
-
-// `Array.prototype.flat` method
-// https://tc39.es/ecma262/#sec-array.prototype.flat
-$({ target: 'Array', proto: true }, {
-  flat: function flat(/* depthArg = 1 */) {
-    var depthArg = arguments.length ? arguments[0] : undefined;
-    var O = toObject(this);
-    var sourceLen = lengthOfArrayLike(O);
-    var depthNum = depthArg === undefined ? 1 : toIntegerOrInfinity(depthArg);
-    var A = arraySpeciesCreate(O, 0);
-    flattenIntoArray(A, O, O, sourceLen, 0, depthNum);
-    return A;
-  }
-});
+// core-js/modules/es.map.js
+var Map = require('../internals/map') // Map 完整 polyfill
+// 但 WeakMap 在 IE11 无法 polyfill（语言层）
 ```
 
-**为什么这样写？WHY 分析**：
-- `var $ = require('../internals/export')` —— `$(options, source)` 是**整个 core-js 的心脏**，所有特性实现都通过它挂到目标对象
-- `target: 'Array', proto: true` —— 表示"挂到 `Array.prototype` 而非 `Array` 静态方法"。注意**没有 `forced`**，所以原生支持时会自动跳过
-- `toObject(this)` —— 规范第 22.1.2 节第一步：把 `this` 转成对象（避免 `flat.call(null)` 报错）
-- `arraySpeciesCreate(O, 0)` —— **关键**：用 `Array Species` 语义创建结果数组，意味着如果 `O` 是 `class MyArray extends Array`，flat 后仍是 `MyArray` 实例
-- `flattenIntoArray(A, O, O, sourceLen, 0, depthNum)` —— 抽出到 internals 复用，flat 和 flatMap 共用
+**关键参数**：
+- Map / Set 可 polyfill
+- WeakMap / WeakSet 不可
+- ES5 兼容实现
+- 完整 API 覆盖
+- 文档明示限制
 
-**作者注释里反复强调的 WHY**：
-> 把每个 spec 操作抽成独立 internals（`toObject`/`lengthOfArrayLike`/`toIntegerOrInfinity`），让 spec → 代码 1:1 映射，便于审计。
+**最佳实践**：polyfill 库要"明确不可 polyfill 的 API"——WeakMap / Proxy / WeakRef；文档明示——避免用户误解；Map / Set 可 polyfill——用 Map 而非 Object；Reflect / Symbol 部分可 polyfill——谨慎；明确边界 = 工程诚信。
 
-#### 代码 2：`internals/export.js`（统一导出器）
+---
 
+### 模式 12：Array.from polyfill + Symbol.iterator 检测
+
+**问题场景**：Array.from ES6——但 iterable（Map / Set / Generator）IE11 不支持？
+
+**解决方案**：用 Symbol.iterator 检测——`if (typeof Symbol === 'function' && Symbol.iterator)` 走原生，否则 fallback 数组。**Array.from polyfill 需 Symbol.iterator fallback**。
 ```js
-module.exports = function (options, source) {
-  var TARGET = options.target;
-  var GLOBAL = options.global;
-  var STATIC = options.stat;
-  var FORCED, target, key, targetProperty, sourceProperty, descriptor;
-  if (GLOBAL) {
-    target = globalThis;
-  } else if (STATIC) {
-    target = globalThis[TARGET] || defineGlobalProperty(TARGET, {});
-  } else {
-    target = globalThis[TARGET] && globalThis[TARGET].prototype;
-  }
-  if (target) for (key in source) {
-    sourceProperty = source[key];
-    if (options.dontCallGetSet) {
-      descriptor = getOwnPropertyDescriptor(target, key);
-      targetProperty = descriptor && descriptor.value;
-    } else targetProperty = target[key];
-    FORCED = isForced(GLOBAL ? key : TARGET + (STATIC ? '.' : '#') + key, options.forced);
-    // contained in target
-    if (!FORCED && targetProperty !== undefined) {
-      if (typeof sourceProperty == typeof targetProperty) continue;
-      copyConstructorProperties(sourceProperty, targetProperty);
+// core-js/modules/es.array.from.js
+var toLength = require('../internals/to-length')
+module.exports = function from(arrayLike) {
+  if (arrayLike == null) throw TypeError(...)
+  var items = iterableToArray(arrayLike)  // Symbol.iterator fallback
+  // ...
+}
+```
+
+**关键参数**：
+- Symbol.iterator 检测
+- iterable fallback
+- IE11 兼容
+- toLength 工具
+- 完整 iterable 支持
+
+**最佳实践**：ES6 polyfill 必含 Symbol.iterator fallback——iterable 是核心；`toLength` / `toInteger` 工具——边界值处理；ES5 浏览器兼容——Symbol polyfill 链；可迭代检测先于 polyfill；用户友好——错误信息清晰。
+
+---
+
+### 模式 13：Async Iterator + for-await-of polyfill
+
+**问题场景**：`for await (const x of asyncIterable)` ES2018——IE11 不支持。
+
+**解决方案**：core-js 提供 async iterator polyfill + `forAwaitOf` 工具。**`Symbol.asyncIterator` 完整支持**。
+```js
+const asyncIter = {
+  [Symbol.asyncIterator]() {
+    return {
+      async next() { return { value: 1, done: false } }
     }
-    // add a flag to not completely full polyfills
-    if (options.sham || (targetProperty && targetProperty.sham)) {
-      createNonEnumerableProperty(sourceProperty, 'sham', true);
-    }
-    defineBuiltIn(target, key, sourceProperty, options);
   }
-};
+}
+for await (const x of asyncIter) { ... }
 ```
 
-**为什么这样写？WHY 分析**：
-- 4 行 if-else 决定 3 种挂载点：`globalThis` / `globalThis[TARGET]` / `globalThis[TARGET].prototype`
-- `FORCED = isForced(..., options.forced)` —— 注意 key 命名空间：全局用 `key`，静态用 `Array.find`，原型用 `Array#flat`。这让 `forced` 决策表**精确到每个 (target, method) 组合**
-- `if (!FORCED && targetProperty !== undefined) { if (typeof sourceProperty == typeof targetProperty) continue; }` —— 决策核心：原生**已存在**且**类型一致**时**完全跳过**（continue）；类型不一致（如原型上是函数但全局是个 Object）则 `copyConstructorProperties` 补救
-- `options.sham` 用 `createNonEnumerableProperty` 标记 —— 允许外部代码用 `Object.hasOwn(arr.__sham__)` 探测"我用的是不是 polyfill"
+**关键参数**：
+- Symbol.asyncIterator
+- for-await-of 语法
+- async generator
+- ES2018 标准
+- 完整 polyfill
 
-#### 代码 3：`internals/is-forced.js`（决策中心）
+**最佳实践**：async iterator 是 ES2018 核心——`Symbol.asyncIterator` 必 polyfill；`for-await-of` 语法糖——async generator 底层；现代 API 完整覆盖——`AbortController` / `Promise.allSettled`；Babel stage 3+ 提前支持；core-js 跟读深度 = 现代 API 完整度。
+
+---
+
+### 模式 14：Promise polyfill + microtask 调度
+
+**问题场景**：`Promise` ES6——IE11 同步 setTimeout fallback 性能差。
+
+**解决方案**：core-js Promise polyfill 用 `asap` 库做 microtask 调度——`MutationObserver` / `process.nextTick` / `setImmediate` 选最快。**比 setTimeout(0) 快 100x**。
+```js
+// core-js/modules/es.promise.js
+var $ = require('../internals/export')
+var microtask = require('../internals/microtask')
+// microtask 选择：MO > nextTick > setImmediate > setTimeout
+```
+
+**关键参数**：
+- microtask 调度
+- `asap` 库
+- `MutationObserver`
+- `process.nextTick`
+- 比 setTimeout 快 100x
+
+**最佳实践**：Promise polyfill 必用 microtask 调度——`setTimeout(0)` 太慢；优先级 `MutationObserver` > `nextTick` > `setImmediate`；IE11 用 `setTimeout` 兜底——性能差但可用；asap 库抽公共——多 Promise 实现共享；core-js 性能优化 = microtask 调度。
+
+---
+
+### 模式 15：Reflect / Proxy polyfill 边界
+
+**问题场景**：`Reflect` / `Proxy` ES6——Proxy 完全无法 polyfill，Reflect 部分可。
+
+**解决方案**：core-js polyfill `Reflect` 全套 API（`Reflect.get` / `Reflect.set` 等），但 `Proxy` 仅在原生支持时导出 polyfill 包装。**Proxy = 语言层不可能 polyfill**。
+```
+Reflect.get           可 polyfill
+Reflect.set           可 polyfill
+Proxy(obj, handler)   不可 polyfill（语言层）
+```
+
+**关键参数**：
+- Reflect 可 polyfill
+- Proxy 不可
+- Proxy 包装检测原生
+- ES5 浏览器陷阱
+- 文档明示
+
+**最佳实践**：明确"不可 polyfill 边界"——Proxy / WeakRef 不可；Reflect 可 polyfill——内部 Object 操作封装；Proxy 检测原生——否则抛错；现代 API 完整性 = 跟读 TC39；边界明确 = 工程诚信。
+
+---
+
+## 第四段：实战范式
+
+### 模式 16：forced: true 强制覆盖 Safari 9 Array.from 慢
+
+**问题场景**：Safari 9 Array.from 性能差 10x——开发者要"强制用 polyfill 覆盖原生"。
+
+**解决方案**：`core-js/modules/es.array.from` 配 `forced: true`——强制覆盖原生用 polyfill 实现。**针对特定浏览器版本强制**。
+```js
+// core-js/modules/es.array.from.js
+module.exports = require('../internals/export')({
+  global: true,
+  forced: true,  // 强制覆盖原生
+}, {
+  from: function from(arrayLike) { ... }
+})
+```
+
+**关键参数**：
+- `forced: true`
+- 覆盖原生实现
+- 特定浏览器优化
+- 性能优于原生
+- `useBuiltIns: 'usage'` 联动
+
+**最佳实践**：polyfill 必含 `forced` 选项——特定浏览器原生 bug / 性能差；Safari 9 Array.from 是经典——10x 性能差距；IE11 Object.assign 也 `forced`；用户按需开启——不滥用；`useBuiltIns: 'usage'` 自动识别；core-js 实战。
+
+---
+
+### 模式 17：Babel `useBuiltIns: 'usage'` 自动按需 import
+
+**问题场景**：项目用了 `Promise.allSettled` + `Array.flat` + `Map.groupBy`——如何仅 import 需要的 polyfill？
+
+**解决方案**：Babel `preset-env` 配 `useBuiltIns: 'usage'` + `corejs: 3`——按 AST 检测 + 浏览器 targets 算 diff，自动 import 缺失特性。**零配置按需**。
+```js
+// babel.config.js
+{
+  presets: [
+    ['@babel/preset-env', {
+      useBuiltIns: 'usage',
+      corejs: 3,
+      targets: '> 0.5%, not dead'
+    }]
+  ]
+}
+```
+
+**关键参数**：
+- `useBuiltIns: 'usage'`
+- `corejs: 3`
+- AST 检测
+- browserslist 联动
+- 体积最优
+
+**最佳实践**：Babel + core-js 配 `useBuiltIns: 'usage'`——零配置按需；AST 检测——比手写精准；browserslist 联动——按 targets 算；体积最优——仅 polyfill 缺失；现代项目标配；core-js 护城河 = Babel 默认源。
+
+---
+
+### 模式 18：core-js-compat 数据 + 维护浏览器版本矩阵
+
+**问题场景**：200+ 特性 × 30+ 浏览器 × 5+ 版本 = 30000+ 单元格——如何维护？
+
+**解决方案**：用 `core-js-compat/data.json`——JSON 格式 `特性 → 浏览器: 最低支持版本`。**`mdn-data` + 人工修正**。
+```json
+{
+  "es.array.flat": {
+    "chrome": "69",
+    "firefox": "62",
+    "safari": "12",
+    "edge": "79",
+    "node": "11"
+  }
+}
+```
+
+**关键参数**：
+- 200+ 特性
+- 30+ 浏览器
+- JSON 格式
+- mdn-data 来源
+- 人工修正
+
+**最佳实践**：polyfill 数据要"结构化"——JSON 比 XML/YAML 易解析；`mdn-data` 是事实来源——MDN 浏览器兼容数据；人工修正——Safari 9 Array.from 性能差需 forced；200+ 特性 + 30+ 浏览器——数据量；CI 自动校验——避免数据漂移。
+
+---
+
+### 模式 19：拒绝 OpenJSF 接管的独立治理
+
+**问题场景**：OpenJSF 2019 想接管 core-js——作者为什么拒绝？
+
+**解决方案**：作者 Denis Pushkarev 拒绝——理由"个人维护响应快 + 治理单一 + 不会被委员会拖慢"。**社区支持但作者独立决策**。
+```
+2019: OpenJSF 提议接管
+作者: 拒绝
+理由: 个人维护响应快 + 治理单一
+后续: 持续个人维护
+```
+
+**关键参数**：
+- OpenJSF 提议
+- 2019 拒绝
+- 个人维护
+- 治理单一
+- 持续 5+ 年
+
+**最佳实践**：开源治理要"灵活"——个人 vs 基金会各有优；个人维护响应快——新提案 1 周跟进；基金会治理有资金保障——但慢；core-js 模式——个人 + OpenCollective 资金 + 26+ 集成；治理选择 = 项目灵魂。
+
+---
+
+### 模式 20：OpenCollective + Patreon + Bitcoin 5 渠道赞助
+
+**问题场景**：1 人维护的 polyfill 库如何持续？商业模式？
+
+**解决方案**：README 第 21 行列 5 个打赏渠道——OpenCollective / Patreon / Bitcoin / Boosty / 直接赞助。**个人 + 透明 + 多渠道**。
+```
+赞助渠道（README 第 21 行）
+- OpenCollective
+- Patreon
+- Boosty
+- Bitcoin
+- 直接赞助
+```
+
+**关键参数**：
+- 5 赞助渠道
+- OpenCollective 透明
+- Patreon 月费
+- Bitcoin
+- 个人维护
+
+**最佳实践**：开源个人项目要"多赞助渠道"——OpenCollective 透明 + Patreon 月费 + Bitcoin；README 顶部列赞助——降低门槛；核心 vs 周边分工——核心作者维护 + 社区贡献；不依赖单一渠道——5 渠道分散风险；core-js 模式 = 1 人 + 5 渠道。
+
+---
+
+## 关键代码段
 
 ```js
-var replacement = /#|\.prototype\./;
-var isForced = function (feature, detection) {
-  var value = data[normalize(feature)];
-  return value === POLYFILL ? true
-    : value === NATIVE ? false
-    : isCallable(detection) ? fails(detection)
-    : !!detection;
-};
+// core-js/modules/es.array.from.js
+module.exports = require('../internals/export')({
+  global: true,
+  forced: true,  // 强制覆盖 Safari 9
+}, {
+  from: function from(arrayLike /*, mapfn, thisArg */) {
+    var O = toObject(arrayLike)
+    // ... 完整 polyfill
+  }
+})
+
+// core-js/internals/array-from.js
+module.exports = function ($) {
+  return function from(arrayLike) {
+    return $.arrayFrom(arrayLike, ...arguments)
+  }
+}
+
+// core-js-compat/data.json
+{
+  "es.array.flat": {
+    "chrome": "69",
+    "firefox": "62",
+    "safari": "12",
+    "edge": "79",
+    "node": "11"
+  }
+}
 ```
 
-**为什么这样写？WHY 分析**：
-- 4 段决策：**手工强制** > **手工禁止** > **运行时探测** > **默认 truthy**
-- `data` 是 `isForced.data = {}` 暴露的全局表，用户/构建工具可在运行时改写：`isForced.data['array#flat'] = 'P'` 强制 polyfill
-- `fails(detection)` 是"反向"探针：传入 `() => { try { 原生方法; return true; } catch { return false; } }`，失败（false）=强制 polyfill
-- 注意 `normalize` 用 `replace(replacement, '.')` 把 `Array#flat` 转成 `array.flat`——和 `export.js` 的 key 命名空间对齐
+## 必偷 3 件
 
-### 5.3 设计模式
+1. **5 层 `actual / stable / full / es / proposals` 数据组织**：polyfill 范围要分层；用户按风险偏好选入口；5 层覆盖 100% 场景。
+2. **`internals/` 抽象 + `$()` 函数收编原生 vs polyfill**：避免 `if (Array.from)` 散落；统一入口单一真相源；抽象层是大型 polyfill 库关键。
+3. **`forced` / `sham` / `unsafe` 三段式**：按需开启——不滥用 forced；sham 给"我要这 API 但用原生"；unsafe 暴露运行时风险；200+ 模块都支持。
 
-1. **"单源多端"模式**：每个 ES 特性只一份 `modules/*.js`，通过 `options` 参数适配 4 种使用场景（global / proto / static / pure）
-2. **"探针 + 决策表"模式**：不假设"原生存在 = 可用"，用 `fails(detection)` + `isForced.data` 二维决策
-3. **"internal 复用"模式**：每个 spec 操作（ToObject、ToLength、ToIntegerOrInfinity）一个文件，被多个特性实现 require——保证 spec → 代码 1:1
+## 必避 3 坑
 
-### 5.4 反模式
-
-- **过度碎片化**：internals 200+ 文件，部分仅 5-10 行（如 `a-callable.js` 就 3 行），对新人阅读门槛高
-- **`isForced` 全局可变**：`isForced.data = {...}` 暴露给用户改，**多版本 core-js 共存时会冲突**（v3.10 vs v3.20 同 process）
-
-### 5.5 独特看点
-
-core-js 是**唯一**把"ECMASCript spec section number"作为注释标在每个 `modules/*.js` 顶部的库（见 `// https://tc39.es/ecma262/#sec-array.prototype.flat`），让审计可逐 spec 节验证——这是它能跑过 100% test262 测试的工程基础。
-
-## 6. 运行机制（Bring It Up）
-
-**启动脚本**：
-```bash
-npm install          # 自动触发 postinstall 警告
-npm test             # 完整测试套件（unit + test262 + Karma + 跨运行时）
-npm run bundle       # 重新打包
-```
-
-**本地起服务**（一个 demo）：
-```bash
-node -e "require('core-js/actual'); console.log([1,[2,[3]]].flat(Infinity))"
-# => [ 1, 2, 3 ]
-```
-
-**Smoke test**：
-1. `node -e "require('core-js')"` 不报错
-2. `[].flat(1)` 在 Node 14 之前能跑
-3. `import 'core-js/actual/array/flat'` 单独引入不污染其他全局
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-    title core-js 演进
-    dateFormat YYYY-MM
-    section v1
-    起步+早期 polyfill :a1, 2014-01, 24M
-    section v2
-    第一个 monorepo    :a2, 2017-01, 12M
-    section v3
-    7 包架构          :a3, 2018-09, 6M
-    加入 Web 标准     :a4, after a3, 12M
-    加入 Stage 3+:    :a5, after a4, 24M
-    section 现状
-    月下载 2.5 亿     :a6, after a5, 24M
-    拒绝 OpenJSF     :milestone, 2023-06, 1M
-```
-
-**关键事件**：
-- 2014：v1 起步，作者当时 19 岁，俄罗斯
-- 2017：v2 monorepo
-- 2018-09：v3 架构重写，把 ES 规范章节作为目录结构
-- 2019-2020：加入所有 Web 标准（URL/URLSearchParams/structuredClone）
-- 2023：被 OpenJSF（Node.js 基金会）提议接管，被作者拒绝——保持独立
-- 2025：作者发 blog "So, what's next?" 宣布将持续维护到 2030
-
-## 8. 质量保障（How It Doesn't Break）
-
-core-js 的质量保障是**教科书级**的 4 道防线：
-
-1. **test262 全量测试**（官方 ECMAScript 套件）：`tests/test262/runner.mjs` 跑 30000+ spec 测试
-2. **跨 5 运行时**（Node/Bun/Deno/Hermes/Rhino）：保证 polyfill 在每个 runtime 都一致
-3. **Karma 浏览器矩阵**（4 大浏览器）：`tests/unit-karma/runner.mjs`
-4. **`check-v8-protectors` 自研检查**（`packages/core-js`）：用 `--trace-protector-invalidation` 验证 v8 不会因为 polyfill 丢失优化
-
-```mermaid
-flowchart TD
-    A[新增 ES 特性] --> B[写 modules/*.js]
-    B --> C[写 spec 节注释]
-    C --> D[写 test262 适配]
-    D --> E{通过?}
-    E -->|否| B
-    E -->|是| F[跑 check-v8-protectors]
-    F --> G{v8 优化保留?}
-    G -->|否| H[加 options.unsafe 兜底]
-    G -->|是| I[跑 5 运行时 cross-test]
-    I --> J{全通过?}
-    J -->|否| B
-    J -->|是| K[发版]
-```
-
-## 9. 生态依赖（Map of the World）
-
-**上游依赖**：
-- `tc39/proposals`（每周读 PR 决定跟进）
-- ECMA-262 / ECMA-402 官方规约
-- `test262` 官方测试套件
-
-**下游被依赖**（核心）：
-- `@babel/preset-env`（默认 polyfill = core-js）
-- `swc` 内置 preset
-- `esbuild` loader
-- Vue CLI / Create React App 默认 polyfill
-- Next.js `useBuiltIns: 'usage'` 模式
-
-**合规检查清单**：
-- MIT 协议 + OpenCollective 资金透明
-- 100% 通过 test262 = **可证伪**地遵循规范
-- 不注入任何遥测/telemetry
-- 不绑定任何 SaaS 服务
-
-## 10. 生产实践（Battle-Tested）
-
-| 实践 | core-js 做法 |
-| :--- | :--- |
-| **配置/版本管理** | `core-js-compat` 包独立输出 browserslist 数据，Babel 用它做"按需注入" |
-| **优雅降级** | 入口分层 `actual`/`stable`/`full`/`stage`，用户按风险偏好选 |
-| **性能** | `defineBuiltIn` 默认 `delete + defineProperty` 不可枚举；`options.unsafe` 可换直接赋值 |
-| **Tree-shaking** | 每个特性独立 `require('core-js/features/array/flat')`，Webpack 可静态分析 |
-| **可观测性** | `sham` 标志 + `Symbol` 命名空间让运行时可探测 |
-| **postinstall 警告** | `postinstall.js` 主动告诉用户"用 `actual` 而非 `full`" |
-
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant C as core-js/actual
-    participant N as 原生
-    U->>C: require('core-js/actual')
-    loop 每个特性
-        C->>N: 检测原生支持
-        alt 原生 OK
-            N-->>C: 跳过
-        else 原生失败
-            C->>C: 注入 polyfill
-        end
-    end
-    C-->>U: 完成
-```
-
-## 11. 社区文化（People & Process）
-
-- **单作者治理**：Denis Pushkarev（zloirock）一人，**不接 co-maintainer**
-- **拒绝 OpenJSF 接管**：2023 年公开 blog 解释"我一个人维护更高效"
-- **财务透明**：OpenCollective 公开所有赞助和支出
-- **RFC 流程**：跟 TC39 走，**不接受**社区对 spec 行为的"建议修改"——必须 spec 改，core-js 才改
-- **沟通渠道**：仅 GitHub Issues，无 Discord/Slack
-- **2023 危机**：因 2022 年俄乌战争，作者从俄罗斯迁出，社区一度担心项目停摆
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **`$()` 统一导出器**：用 options 适配"global/proto/static/pure" 4 种模式——任何需要"多端适配"的库可套
-2. **探针 + 决策表 + 强制覆盖**（`isForced`）：避免"原生有 bug 时我们假装没看见"
-3. **internals 碎片化 + spec 注释**：每个 spec 操作独立文件 + 每个 module 顶部带 spec 节 URL，**审计可逐 spec 验证**
-
-### 12.2 必避 3 坑
-
-1. **不要在 internals 用全局可变状态**（`isForced.data`）：多版本共存会冲突
-2. **不要把"是否 polyfill"决策放在模块加载时**：必须每次调用检测
-3. **不要追求"100% 覆盖所有 Stage 0 proposal"**：成本太高，作者也曾多次回退 Stage 0/1
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7天复刻 mini-core-js
-    dateFormat YYYY-MM-DD
-    section 骨架
-    monorepo + workspaces :a1, 2026-06-01, 1d
-    section internals
-    写 export.js + is-forced.js + define-built-in.js :a2, after a1, 2d
-    section modules
-    5 个代表性 ES 特性 :a3, after a2, 2d
-    section 测试
-    test262 + 跨 Node 4 个版本 :a4, after a3, 1d
-    section 发布
-    npm publish + 文档站 :a5, after a4, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数（10 分制） | 评语 |
-| :--- | :---: | :--- |
-| 架构清晰度 | 9 | internals 抽象优秀，决策中心唯一 |
-| 代码质量 | 9 | spec 节注释 1:1 映射 |
-| 可维护性 | 7 | 单作者是优势也是 risk |
-| 测试完整度 | 10 | test262 全量 + 5 运行时 |
-| 文档 | 8 | README 200k+ 字符 |
-| 商业化 | 6 | 纯赞助，无 SaaS 衍生 |
-| 复刻难度 | 2 | 不可复制（10 年个人积累） |
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：core-js 证明**"规范即代码"**——用 internals 抽象 + 探针决策 + 双模式导出，把 ECMAScript 100+ 特性塞进一个 monorepo。
-
-**3 个核心洞察**：
-1. **统一 `$()` 函数** = 适配"global/proto/static/pure"4 种模式的开关
-2. **`isForced(data + fails)` 决策中心** = "原生 OK 跳过 / 有 bug 强制 / 不存在 polyfill" 三段式
-3. **internals 碎片化 + spec URL 注释** = 审计可逐 spec 节验证
-
-**5 段必读代码**：
-1. `packages/core-js/modules/es.array.flat.js` 25 行最简特性实现
-2. `packages/core-js/internals/export.js` 统一导出器（核心）
-3. `packages/core-js/internals/is-forced.js` 决策中心
-4. `packages/core-js/internals/define-built-in.js` 属性定义器
-5. `packages/core-js/postinstall.js` 用户体验设计（主动警告 `full` 用法）
-
-**1 个反模式**：碎片化到每个 spec 操作一个文件——单文件阅读极难。
-
-**1 个可复用模式**：`$(options, source)` + `isForced(feature, detection)` 二元组——任何需要"多端适配 + 运行时决策"的库可套。
-
-**3 个立刻能用的动作**：
-1. 在自己的库用 `options.forced` 三段式探测原生支持
-2. 给每个特性顶部加 spec URL 注释，**审计可自动化**
-3. 把"用户应该用什么 API"写到 postinstall 警告里
-
-## 14. 项目特点速查
-
-**独特看点**：
-- **唯一**一个跟 TC39 每周会议、把 Stage 0~4 全部实现的库
-- `internals/export.js` 的"双模式导出器"是教科书级抽象
-- 单作者维护 10 年，月下载 2.5 亿+——开源的极端案例
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title Polyfill 库对比
-    x-axis 单包 --> 多包
-    y-axis 完整度低 --> 完整度高
-    "core-js": [0.9, 0.95]
-    "babel-polyfill": [0.4, 0.6]
-    "es-shims": [0.5, 0.7]
-    "polyfill.io": [0.7, 0.8]
-    "Modernizr": [0.3, 0.4]
-```
-
-| 项目 | 形态 | 完整度 | 体积 | 维护方 |
-| :--- | :--- | :--- | :--- | :--- |
-| **core-js** | monorepo 7 包 | 极高（spec 全） | 树摇友好 | 单作者 |
-| @babel/polyfill | 单包 | 中 | 大 | Babel 团队 |
-| polyfill.io | CDN 服务 | 高 | 按需 | 社区 |
-| es-shims | 单包 | 中 | 中 | 社区 |
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-| :--- | :--- |
-| 路径 | `G:\实战案例\GitHub顶尖项目\core-js\` |
-| 子包数 | 7 |
-| 模块文件数 | 400+ |
-| internals 数 | 200+ |
-| 测试覆盖 | test262 100% + 5 运行时 |
-| 解析时间 | 2026-06-02 |
-
-## 一句话总结
-
-**core-js = 一个 monorepo 7 包 + internals 200+ 文件 + 1 个 `$()` 统一导出器 + 1 个 `isForced()` 决策中心，把 ECMAScript 2015~2025 + 所有活跃 proposal 装进 2.5 亿次/月的 npm 下载量。**
+1. **不要在 IE11 期望 Proxy / WeakRef polyfill**——语言层不可能 polyfill；文档明示避免误解。
+2. **不要用 `core-js` 污染全局做库**——库作者必用 `core-js-pure`；零全局污染是库伦理。
+3. **不要追求"100% 覆盖"目标浏览器**——`> 0.5%, not dead` 是行业共识；小众浏览器留给用户手动 polyfill。

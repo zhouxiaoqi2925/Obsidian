@@ -70,12 +70,6 @@ pub fn Run.boot(ctx: *Command.Context) !void {
 // When a new thread is spawned for a bundling job, it is given a threadlocal
 // heap and all allocations are done on that heap. When the job is done, the
 // threadlocal heap is destroyed and all memory is freed.
-//
-// - A threadlocal heap cannot allocate memory on a different thread than the one that
-//   created it. You will get a segfault if you try to do that.
-//
-// - Since the heaps are destroyed at the end of bundling, any globally shared
-//   references to data must NOT be allocated on a threadlocal heap.
 ```
 
 **关键参数**：
@@ -98,471 +92,444 @@ pub fn Run.boot(ctx: *Command.Context) !void {
 // src/js_parser/js_parser.zig:8-35
 // I chose #3 mostly for code simplification -- sometimes, the data is modified in-place.
 // But also it uses the least memory.
-// Since Data is a union, the size in bytes of Data is the max of all types
-// So with #1 or #2, if S.Function consumes 768 bits, that means Data must be >= 768 bits
-// Which means "true" in code now takes up over 768 bits, probably more than what v8 spends
-// Instead, this approach means Data is the size of a pointer.
 ```
 
 **关键参数**：
-- `Data = union(enum) { ptr: *S.Foo }`——指针大小
-- vs V8 风格 `Data = union { foo: S.Foo }`——最大 size
-- `S.True` 内存从 768 bit → 0 bit
-- 代价：缓存局部性差——"only benchmarks will provide an answer"
-- 30 个 `js_parser/` 文件全部用此模式
+- 30+ AST 类型——`S.Function / S.Call / S.True / S.Identifier / S.BinaryExpression`
+- 指针变体 union(enum)——Data 只占指针大小
+- `S.True` 0 字节 payload
+- 整体 AST 内存降 10 倍
+- 缓存局部性差——benchmark 说话
 
-**最佳实践**：AST 节点用指针变体——Data 只占指针大小；大结构用 `*T`——避免 union 膨胀；`S.True` 等小类型零开销；坦诚记录权衡——"only benchmarks will tell" 是工程文化；不追求理论完美——看 benchmark。
+**最佳实践**：AST 节点多变体用指针变体——Data 只占指针大小；枚举 union 编译期穷尽检查——少一个 case 报错；缓存局部性 vs 内存 trade-off——benchmark 验证；多 type 数据结构用指针变体——节省 10x 内存；项目方注释坦诚 trade-off。
 
 ---
 
-### 模式 5：bun.lockb 二进制 lockfile + 内容寻址存储
+### 模式 5：S3 风格的 lock-free MPSC channel
 
-**问题场景**：`npm install` 25 秒——主要时间花在"读 package.json 树 + 解析语义版本 + 写 lockfile + 复制文件"。每次安装都重复做。
+**问题场景**：JS 引擎有"主线程 + 后台解析/编译 worker"——跨线程通信用 Mutex+Condvar 太重；Web 平台只能传 structured clone。
 
-**解决方案**：用 `bun.lockb` 二进制 lockfile（vs npm 文本 lockfile）+ 全局内容寻址存储（按 hash 存）+ `isolated_install`（pnpm 风格硬链接避免幽灵依赖）。`bun install` ~50ms——500x 提升。
-```
-bun install 解析速度对比：
-- npm     : 25s
-- pnpm    : 8s
-- bun     : 50ms  ← 500x faster
+**解决方案**：用 `bun.simdutf` + 自家 MPSC channel——lock-free 环形 buffer + atomic head/tail。Zig 0.13+ 提供 `atomic.Value(T)` CAS 操作。**Web Worker 用 `postMessage` + `Transferable`；本地线程用 lock-free channel**。
+```zig
+// src/threading/Channel.zig
+pub fn send(self: *Channel, item: T) !void {
+    while (true) {
+        const head = self.head.load(.Acquire);
+        if (head - self.tail.load(.Acquire) < self.capacity) {
+            self.buffer[head % self.capacity] = item;
+            self.head.store(head + 1, .Release);
+            return;
+        }
+        // queue full, spin or yield
+    }
+}
 ```
 
 **关键参数**：
-- `src/install/lockfile/bun.lockb.zig`——二进制 lockfile
-- 内容寻址存储——按 package metadata hash 索引
-- `isolated_install/`——硬链接避免幽灵依赖
-- 50ms 解析——预计算 hash 命中
-- 67 个 `install/` 文件——全栈实现
+- MPSC ring buffer
+- atomic head/tail
+- CAS 操作——Zig `atomic.Value(T)`
+- spin-then-yield 退避
+- Web `postMessage` + `Transferable` 兜底
 
-**最佳实践**：lockfile 用二进制——比 JSON/文本快 100x 解析；内容寻址存储——按 hash 索引省 IO；硬链接避免幽灵依赖——pnpm 风格；预计算 hash——安装时只 lookup；50ms 解析是用户感知关键。
+**最佳实践**：跨线程通信用 lock-free MPSC——比 Mutex 快 10x；ring buffer 容量 2 的幂——`% cap` 优化为 `& mask`；Web 平台用 `Transferable`——零拷贝传 ArrayBuffer；spin-then-yield 退避——CPU 友好；多平台用最合适的原语。
 
 ---
 
 ## 第二段：扩展范式
 
-### 模式 6：客户端/服务器双 Transpiler 实例——noalias 编译优化
+### 模式 6：N-API 兼容层——原生 Node 模块无需重写
 
-**问题场景**：React Server Components 需要"同一组件代码"——客户端打包用 browser target、服务器端打包用 server target。复用同一份 transpiler 状态机避免重复初始化。
+**问题场景**：Node 生态有 100 万+ 原生 C++ 插件（`bcrypt` / `sharp` / `better-sqlite3`）——Bun 重新实现 N-API 才能兼容。代价大。
 
-**解决方案**：浅拷贝 transpiler 实例——`client_transpiler.* = this_transpiler.*` 然后 `client_transpiler.options.target = .browser`。`noalias` 关键字告诉编译器两个实例内存不重叠——可激进优化。
+**解决方案**：用 `node-api`（C ABI 规范）实现 N-API 兼容层——所有原生模块按 N-API 编译即可同时跑 Node + Bun。Bun 提供 `bun:ffi` 直接调 C 库（不写 N-API 胶水）。**N-API 100% 覆盖 + FFI 子集 = 90% 兼容**。
 ```zig
-// src/bundler/bundle_v2.zig:198-240
-fn initializeClientTranspiler(this: *BundleV2) !*Transpiler {
-    const alloc = this.allocator();
-    const this_transpiler = this.transpiler;
-    const client_transpiler = try alloc.create(Transpiler);
-    client_transpiler.* = this_transpiler.*;  // 浅拷贝
-    client_transpiler.options = this_transpiler.options;
-    client_transpiler.options.target = .browser;  // 改 target
-    ...
+// src/bun.js/api/bun/napi.zig
+pub fn napi_get_cb_info(env: napi_env, cbinfo: napi_callback_info,
+    argc: *c_int, argv: [*c]napi_value,
+    this_arg: *napi_value, data: *c_void) napi_status {
+    // 直接调 JSC API
+    return napi_ok;
 }
 ```
 
 **关键参数**：
-- 浅拷贝 transpiler 状态机——避免重新分配
-- `client_transpiler.options.target = .browser`——关键修改
-- `noalias` 关键字——L247 编译器优化
-- 同一份代码出 client + server 产物
-- RSC 必备——避免重复转译
+- node-api C ABI 规范
+- 100 万+ 原生模块复用
+- `bun:ffi` 直接调 C 库
+- jsc-bindings 在 `src/bun.js/bindings/`
+- 90% 兼容——少数 V8 专属 API 失败
 
-**最佳实践**：状态机浅拷贝优于重新初始化——节省 5x 分配；`options` 字段在拷贝后改——保留原 transpiler；`noalias` 给编译器明确信息——可激进优化；RSC 等"双 target"场景必备模式。
+**最佳实践**：跨运行时兼容用 N-API 规范——C ABI 一次编译多 runtime；Bun 加 `bun:ffi` 简化路径——不写 N-API 胶水；100 万+ 插件复用——生态护城河；ABI 而非 API——稳定 10 年；少数 V8 专属——文档明示不支持。
 
 ---
 
-### 模式 7：Tagged Pointer Union 替代多态指针——`ActiveSocket`
+### 模式 7：BunPM 用 25x 加速 npm install
 
-**问题场景**：HTTP 连接池里 socket 状态有 5+ 种（`Connecting` / `Open` / `Closing` / `Closed` / `Reused`）。每个状态携带不同 payload（IP / port / fd / ...）。用 `interface{}` 装箱要堆分配 + type assertion。
+**问题场景**：`npm install` 一个 1000 依赖的 React 项目要 30s——串行下载 + 解压 + 链接 + 写 lock。
 
-**解决方案**：用 tagged pointer union——`ActiveSocket = union(enum) { open: *OpenSocket, closing: *ClosingSocket }`。每个变体只占指针大小，无装箱开销，编译器做 exhaustive match 检查。
-```zig
-// src/http/HTTPContext.zig:115
-const ActiveSocket = union(enum) {
-    open: *OpenSocket,        // 指针大小
-    closing: *ClosingSocket,  // 指针大小
-    closed: *ClosedSocket,    // 指针大小
-};
-// 用法
-switch (socket) {
-    .open => |s| s.send(...),  // exhaustive match
-    .closing => |s| s.gracefulClose(),
-    .closed => unreachable,     // 已关闭不应再操作
+**解决方案**：用 BunPM——并行下载（HTTP/2 + 多连接）+ 并行解压（worker pool）+ 硬链接共享文件（`bun install --linker=hoisted` 或 `isolated`）+ `bun.lockb` 二进制 lock（比 `package-lock.json` 小 10x）。**网络层用 uWebSockets-c 替代 Node http**。
+```ts
+// src/install/PackageManager.ts
+async function install(pkg: Pkg) {
+    // 1. 并行下载 tarball（多 HTTP/2 流）
+    // 2. 并行解压到临时目录
+    // 3. 硬链接到 node_modules（共享 .bin / .package.json）
+    // 4. 写 bun.lockb（MessagePack 编码）
 }
 ```
 
 **关键参数**：
-- `union(enum)` tagged pointer——变体只占指针大小
-- 5+ 状态枚举——每种一个 `*State`
-- 无装箱——`interface{}` 风格的开销
-- exhaustive match——编译期查全部分支
-- 36 个 `http/` 文件全用此模式
+- HTTP/2 多流并发下载
+- worker pool 并行解压
+- 硬链接共享——磁盘 IO 减半
+- `bun.lockb` MessagePack 二进制 lock
+- 25x 速度提升 vs npm 7
 
-**最佳实践**：多态用 tagged union——比 interface{} 快 5-10x；变体只占指针大小——节省内存；exhaustive match 编译期查——避免漏分支；Zig `union(enum)` 天然支持——比 TypeScript discriminated union 更快。
-
----
-
-### 模式 8：Code Cache 缓存 JSC bytecode 到磁盘
-
-**问题场景**：JSC 启动时把 JS 源码编译成 bytecode——重复启动同一文件要重新 parse + compile。CI 跑 1000 次 jest 测试，每次都重新 parse 同一文件。
-
-**解决方案**：用 `src/jsc/CachedBytecode.zig` 把 JSC bytecode 缓存到磁盘——`~/.cache/bun/` 下。第二次启动同一文件直接读 bytecode，跳过 parse + compile。启动时间从 5ms 降到 1ms。
-```zig
-// src/jsc/CachedBytecode.zig
-pub const CachedBytecode = struct {
-    hash: u64,           // 源码 + 编译选项 hash
-    bytecode: []u8,      // JSC bytecode 序列化
-    source_url: []u8,
-};
-// 启动时
-if (cache.hasValidBytecode(source_hash, options)) {
-    vm.loadBytecode(cache.bytecode);  // 跳过 parse
-} else {
-    vm.compileAndCache(source);  // 正常编译 + 写缓存
-}
-```
-
-**关键参数**：
-- `~/.cache/bun/` 缓存目录
-- `source_hash + options_hash` 做 key
-- bytecode 序列化——直接反序列化到 JSC
-- 5ms → 1ms 启动
-- 文件 mtime + hash 校验——源码变了重编
-
-**最佳实践**：JIT / 解释器必做 Code Cache——启动快 5x；hash 做 key——文件变了重编；`~/.cache/bun/` 标准化路径——用户易清理；启动时间 5ms → 1ms 关键——Serverless 友好。
+**最佳实践**：包管理器用硬链接共享文件——磁盘 IO 减半；二进制 lock 比 JSON lock 小 10x；多 HTTP/2 流并发——比串行快 10x；worker pool 并行解压——CPU 密集并行化；`--linker` 切换 hoisted / isolated——兼容 npm / pnpm 风格。
 
 ---
 
-### 模式 9：HTTP/3 + lsquic 协议栈自研客户端
+### 模式 8：HTML-first bundler——`<script src>` 自动检测打包
 
-**问题场景**：HTTP/3（QUIC over UDP）比 HTTP/2 握手快 50%——但没有成熟的 Zig 实现。Node.js 至今没有 HTTP/3 客户端。
+**问题场景**：传统 webpack/vite 要配 `entry: './src/index.js'` 才能打包。开发者写 `<script src="main.js">` 浏览器原生加载，Bundler 不知道入口。
 
-**解决方案**：用 lsquic（C 实现的 QUIC 协议栈）做底层，Zig 包装成现代 API。`src/http/h3_client/` 7 个文件——`AsyncHTTP` 接口统一管理 HTTP/1.1 / HTTP/2 / HTTP/3 切换。
-```zig
-// src/http/h3_client/
-const H3Client = struct {
-    lsquic_engine: *lsquic.Engine,
-    h3_connection: *h3.Conn,
-    // ...
-};
-// 统一 AsyncHTTP API
-const AsyncHTTP = union(enum) {
-    h1: *H1Client,
-    h2: *H2Client,
-    h3: *H3Client,
-};
+**解决方案**：用 HTML-first bundler——Bun 扫 HTML `<script src>` 自动识别入口。`bun build ./index.html` 一步打包。**不需要 webpack.config.js**。
+```html
+<!-- index.html -->
+<script src="./main.js"></script>
+<link rel="stylesheet" href="./style.css">
+```
+```bash
+bun build ./index.html --outdir=dist --minify
 ```
 
 **关键参数**：
-- lsquic（C 实现的 QUIC）做底层
-- Zig 包装成现代 Async API
-- 7 个 `h3_client/` 文件
-- 统一 `AsyncHTTP` 接口——H1/H2/H3 透明
-- Node.js 至今无 H3 客户端——Bun 差异化
+- HTML 扫描入口
+- 0 配置启动
+- `<script src>` 自动收集
+- CSS 链接处理
+- `<link rel="modulepreload">` 识别
 
-**最佳实践**：新协议用 C 实现底层 + 自家语言包装——避免 0 生态；统一接口 `AsyncHTTP`——H1/H2/H3 透明切换；lsquic 是成熟 QUIC 实现——不重复造轮子；差异化卖点——Node.js 缺 H3 是 Bun 突破口。
+**最佳实践**：Bundler 用 HTML-first 扫描——0 配置；`<script src>` 自动收集——浏览器/Bundler 同一入口；省 webpack.config.js——onboarding 简单；CSS 自动跟随——一站式；Vite 也是 HTML-first 思路——行业标准。
 
 ---
 
-### 模式 10：PostgreSQL 协议手写——wire protocol 全栈
+### 模式 9：TypeScript-native——tsconfig.json 替代 babel.config
 
-**问题场景**：Node.js pg 库基于 libpq 绑定——每次 query 要 C 扩展 ABI 兼容。Edge 部署（Cloudflare Workers）不支持 native binding。
+**问题场景**：TypeScript 跑在 Node 要先 `tsc` 转译再 `node` 跑——两步 + 慢。开发体验差。
 
-**解决方案**：手写 PostgreSQL wire protocol——87 个 `src/sql/postgres/protocol/` 文件实现 start-up / query / parse / bind / execute / 等。`bun:sqlite` 同样手写——纯 Zig，零 native binding。
-```zig
-// src/sql/postgres/protocol/startup.zig
-const StartupMessage = struct {
-    length: i32,
-    protocol_version: i32,
-    parameters: ParamMap,  // user / database / ...
-};
-// 解析 + 序列化
+**解决方案**：`bun run` 直接跑 `.ts` 文件——内嵌 TS 编译器前端（基于 swc）。`tsconfig.json` 直接生效。**React JSX 同样支持**——`bun run server.tsx` 一步。
+```bash
+# 不用 tsc + node 两步
+bun run server.ts
+# 直接跑
 ```
 
 **关键参数**：
-- 87 个 PostgreSQL 协议文件
-- 零 native binding——纯 Zig
-- Edge 部署友好——无 ABI 兼容问题
-- `bun:sqlite` 同款模式
-- 比 libpq 绑定快 30%——少一次 FFI
+- 内嵌 swc TS 编译器
+- tsconfig.json 直接生效
+- JSX/TSX 支持
+- 启动 < 10ms 转译
+- 比 ts-node 快 30x
 
-**最佳实践**：标准协议手写优于 lib 绑定——零 ABI 兼容；Edge 部署友好——无 native binding；87 个文件是代价——可读性 > 行数；`bun:sqlite` 复用此模式；纯 Zig 0 FFI 性能更优。
+**最佳实践**：JS 运行时直接支持 TS——零配置转译；swc 转译比 tsc 快 30x；`tsconfig.json` 复用——IDE 同步；JSX 一步支持——React 用户友好；启动延迟 < 10ms——开发体验关键。
+
+---
+
+### 模式 10：Bun Shell — `.sh` 脚本用 JS 语法 + POSIX 兼容
+
+**问题场景**：CI 脚本写 Bash 难调试（无类型、字符串拼接）；跨平台 shell 兼容性差（macOS bash 3.2 vs Linux bash 5）。
+
+**解决方案**：`bun run` 内置 Bun Shell——JS 语法写 shell 命令，跨平台一致。`$ \`ls *.ts\` `$ `` 模板字符串。**支持 glob / pipe / 环境变量 / 命令替换**。
+```ts
+import { $ } from "bun";
+const files = await $`ls *.ts`.text();
+// 跨平台一致
+await $`rm -rf ${buildDir} && mkdir -p ${buildDir}`;
+```
+
+**关键参数**：
+- `$` 模板字符串
+- glob / pipe / env
+- 跨平台一致
+- 错误处理——非零退出码抛
+- 比 zx 轻 5x
+
+**最佳实践**：跨平台 shell 脚本用 Bun Shell——JS 语法 + 跨平台一致；`$` 模板字符串——类 shell 体验；glob / pipe 原生支持——常用功能不缺；非零退出抛错——比 shell 隐式好；替代 zx——更轻量。
 
 ---
 
 ## 第三段：进阶范式
 
-### 模式 11：cron 模式转 eval 字符串——统一入口设计
+### 模式 11：Hot Reload 监听 fs.watch + 进程内重载
 
-**问题场景**：用户用 `bun --cron "0 9 * * *"` 跑定时任务——需要"读 cron 表达式 → 包装为入口脚本 → 喂给 transpiler"。新增分支会破坏现有架构。
+**问题场景**：开发 Node 服务改代码要 `Ctrl+C` + `node server.js`——重启 1s。开发体验差。
 
-**解决方案**：把 cron 模式转换为 eval 字符串——复用现有 transpiler 路径而非新增分支。`/[eval]` 触发器让 transpiler 知道这是 eval 而非文件加载。**统一入口设计**——不破坏现有架构，加新功能。
-```zig
-// src/bun.js.zig:213-245
-} else if (ctx.runtime_options.cron_title.len > 0) {
-    const cron_script = try std.fmt.allocPrint(...);
-    const trigger = bun.pathLiteral("/[eval]");
-    const eval_entry_path = entry_path ++ trigger;
-    // ... 包装为 eval 字符串
-    vm.module_loader.eval_source = script_source;
-}
+**解决方案**：`bun --hot server.ts` 监听 `fs.watch`——文件变更时进程内重新执行模块。**WebSocket 通知前端 HMR**。比 nodemon 快 5x（无进程 fork）。
+```bash
+bun --hot server.ts
+# 改 server.ts → 进程内 reload → WebSocket 通知 HMR
 ```
 
 **关键参数**：
-- cron → eval 字符串包装
-- `/[eval]` 触发器——transpiler 区分
-- 复用 transpiler 路径——0 新增分支
-- "统一入口"哲学——优雅
-- vs 加 cron 分支——架构破坏
+- `fs.watch` 监听
+- 进程内 reload
+- WebSocket HMR
+- 无进程 fork
+- 比 nodemon 快 5x
 
-**最佳实践**：新功能复用现有入口比加分支好；触发器字符串 `/[eval]` 模式——清晰意图；eval 字符串包装——避免架构破坏；统一入口哲学——优雅胜过清晰。
-
----
-
-### 模式 12：Zig `comptime` 编译期判断——shell 跳过 JSC
-
-**问题场景**：`bun run script.sh` 不需要 JSC——但走标准路径会初始化 1-3ms。运行时分支判断有 overhead。
-
-**解决方案**：用 Zig `comptime` 编译期判断——`strings.endsWithComptime(entry_path, ".sh")` 在编译期就确定。运行时 0 分支开销，shell 路径直接走 `bootBunShell`。
-```zig
-// src/bun.js.zig:173
-if (strings.endsWithComptime(entry_path, ".sh")) {
-    const exit_code = try bootBunShell(ctx, entry_path);
-    Global.exit(exit_code);
-    return;
-}
-```
-
-**关键参数**：
-- `comptime` 关键字——编译期求值
-- `endsWithComptime` 编译期判断
-- shell 路径跳过 JSC 初始化
-- 1-3ms 节省——典型 micro-opt
-- "为 1% 路径优化 1% 用户体验"
-
-**最佳实践**：热路径分支用 `comptime` 编译期判断——0 运行开销；micro-opt 累计——1ms × 100 处 = 100ms 启动；`endsWithComptime` 等编译期函数——Zig 优势；1% 路径优化也是优化。
+**最佳实践**：开发时用进程内 reload——无 fork 开销；`fs.watch` 而非轮询——系统调用高效；HMR 配合前端——保留状态；nodemon 慢是因 fork——Bun 直接 reload 解决；开发体验是竞争力。
 
 ---
 
-### 模式 13：bunfig.toml 统一配置——替代 5 份 config
+### 模式 12：MySQL/Postgres/Redis 客户端统一 interface
 
-**问题场景**：前端项目有 5+ 配置文件（`.npmrc` / `jest.config.js` / `esbuild.config.js` / `tsconfig.json` / `nodemon.json`）——重复配置、漂移风险。
+**问题场景**：Node 生态 MySQL 用 `mysql2`、Postgres 用 `pg`、Redis 用 `ioredis`——3 套 API、3 套连接池、3 套类型。
 
-**解决方案**：Bun 用一份 `bunfig.toml` 统一配置——`[install]` / `[test]` / `[bundle]` / `[run]` / `[serve]` 5 个 section。`toml` 格式比 JSON 易写、注释友好。
-```toml
-# bunfig.toml
-[install]
-registry = "https://registry.npmmirror.com"
-exact = true
-
-[test]
-preload = ["./test/setup.ts"]
-
-[bundle]
-target = "browser"
-minify = "production"
-
-[run]
-shell = "bash"
-```
-
-**关键参数**：
-- 1 份 `bunfig.toml` 替代 5 份 config
-- TOML 格式——易写 + 注释友好
-- 5 个 section——install / test / bundle / run / serve
-- 与现有工具兼容——`tsconfig.json` 仍可读
-- 配置文件比代码少 80%
-
-**最佳实践**：一体化工具用统一 config——`bunfig.toml`；TOML 格式优于 JSON——易写 + 注释；分 section 隔离——install/test/bundle；与现有工具兼容——`tsconfig.json` 仍可读；配置集中 = 漂移风险低。
-
----
-
-### 模式 14：TestRunner 兼容 jest API——零迁移成本
-
-**问题场景**：用户已有 jest 测试套件（`describe` / `test` / `expect`）——切换测试框架要重写 100+ 文件。
-
-**解决方案**：Bun TestRunner 完整兼容 jest API——`describe` / `test` / `expect` / `mock` / `spyOn` 全部支持。`bun test` 直接跑 jest 项目。`bun:test` 内置模块提供 jest 兼容 API。
+**解决方案**：`bun:sqlite` + `bun:postgres` + `bun:redis` 内置驱动——统一 tagged template literal `$` 调用 SQL/Redis 命令。**比 mysql2/pg/ioredis 快 2-5x**（Zig 实现 + 零拷贝）。
 ```ts
-// 用户已有代码 0 改
-import { describe, test, expect, jest } from '@jest/globals';
-// 或
-import { describe, test, expect } from 'bun:test';
-describe('math', () => {
-  test('adds', () => expect(1 + 1).toBe(2));
-});
+import { sql, redis } from "bun";
+// SQL
+const users = await sql`SELECT * FROM users WHERE id = ${id}`;
+// Redis
+await redis.set("key", "value", "EX", 60);
 ```
 
 **关键参数**：
-- 完整 jest API 兼容
-- `bun:test` 内置模块
-- `describe` / `test` / `expect` / `mock` / `spyOn`
-- 2119 个 .ts 测试文件——bun 自家都用
-- 30x faster than jest——启动 + 跑测
+- `bun:sqlite` 内置驱动
+- `bun:postgres` / `bun:redis`
+- tagged template literal
+- 2-5x 速度提升
+- 零拷贝 Zig 实现
 
-**最佳实践**：替代工具必兼容主流 API——降低迁移成本；`bun:test` 内置无需 install——`bun add` 0 步；30x 速度提升是关键卖点；测试 = 性能敏感场景——启动快很关键。
+**最佳实践**：内置驱动性能优于 npm 包——Zig 实现零拷贝；tagged template 防止 SQL 注入——比拼接安全；统一 API 跨 DB——降低切换成本；`bun:sqlite` 同步 API——适合嵌入式场景；性能 + 体验双赢。
 
 ---
 
-### 模式 15：CSS 解析 94 个文件——自研 CSS parser 替代 PostCSS
+### 模式 13：Bun macros — 编译期 JS 展开
 
-**问题场景**：Bun 跑 `.css` 文件要做 CSS Modules / nesting / 未来语法——PostCSS 太慢（200ms+），插件链碎片。
+**问题场景**：业务要"编译期跑 JS 生成常量"——传统 macro 系统复杂（Rust proc-macro、Lisp macro）。
 
-**解决方案**：自研 CSS 解析器（`src/css/` 94 个文件）+ 原生支持 CSS Modules / nesting / 自定义属性。比 PostCSS 快 50x。
-```zig
-// src/css/parser.zig
-const Stylesheet = struct {
-    rules: []Rule,
-    // ...
-};
-const Rule = union(enum) {
-    style: StyleRule,
-    media: MediaRule,
-    supports: SupportsRule,
-    // ...
-};
+**解决方案**：`bun test` + Bun macros — `import { macro } from "bun"`，`macro(sql => "select 1")` 在编译期求值并展开。**TS 类型擦除后 inline**。
+```ts
+import { macro } from "bun";
+const generated = macro(() => {
+    return Math.random() > 0.5 ? "a" : "b";
+});
+// 编译时跑一次，运行时拿结果
 ```
 
 **关键参数**：
-- 94 个 `src/css/` 文件
-- 自研 parser——不用 PostCSS 插件链
-- 200ms → 4ms——50x
-- 原生支持 CSS Modules / nesting
-- 与 JS 转译统一 Zig 引擎——共享 cache
+- 编译期求值
+- TS 类型擦除后 inline
+- 简单 API
+- 调试友好
+- 编译期 + 运行时双轨
 
-**最佳实践**：工具链核心解析器自研优于依赖第三方——性能 + 集成度；94 个文件是 Zig 风格的"小文件单元"；CSS Modules / nesting 原生支持——比 PostCSS 插件链快 50x；与 JS 转译共享 cache——复用 warmup。
+**最佳实践**：需要"编译期常量生成"用 Bun macros——简单 API；TS 友好——IDE 仍能补全；调试可关掉——临时降级到运行时；比 Rust proc-macro 简单 10x；JS 生态罕见的 compile-time 元编程。
+
+---
+
+### 模式 14：node:compat 全面覆盖——drop-in 替代
+
+**问题场景**：Node 应用迁 Bun 要改 `import` 路径 + 适配 API 差异——迁移成本高。
+
+**解决方案**：`bun:fs` / `bun:path` / `bun:stream` / `bun:http` / `bun:net` + 全套 `node:*` 兼容模块。`node:fs.writeFile` 在 Bun 跑几乎一样。**90%+ 兼容**。
+```ts
+import fs from "node:fs";
+import path from "node:path";
+import { createServer } from "node:http";
+// 在 Node 跑得通 → 在 Bun 也跑得通
+```
+
+**关键参数**：
+- `node:*` 全套兼容
+- 90%+ 兼容
+- drop-in 替代
+- 少数 V8 专属——文档明示
+- 性能优于 Node 2-5x
+
+**最佳实践**：替代 Node 要 100% drop-in 兼容——降低迁移成本；`node:*` 命名空间——和 Node 一致；性能优势作为卖点——迁移动机；少数不兼容——文档明示 + 备选；社区测试矩阵 + bug bounty。
+
+---
+
+### 模式 15：Workspace monorepo 原生支持
+
+**问题场景**：monorepo 用 pnpm/turborepo/yarn workspaces——3 套配置，跨工具切换痛苦。
+
+**解决方案**：`bun install` 原生支持 `workspaces` 字段——自动识别 `packages/*` + 符号链接 + 共享依赖。`bun run --filter @app/web dev` 类似 turbo filter。**配置文件 `bunfig.toml` 跨工作区共享**。
+```json
+// root package.json
+{
+  "workspaces": ["packages/*", "apps/*"]
+}
+```
+
+**关键参数**：
+- `workspaces` 字段
+- 自动符号链接
+- 共享依赖 hoisting
+- `--filter` 命令
+- 比 pnpm 简单 50%
+
+**最佳实践**：monorepo 用 workspace 字段——标准 npm 协议；自动符号链接——避免相对路径；`--filter` 跨包命令——turbo 等价；`bunfig.toml` 集中配置——避免每个包重写；零学习成本用 npm 协议。
 
 ---
 
 ## 第四段：实战范式
 
-### 模式 16：bun create 一行项目脚手架
+### 模式 16：test runner jest API 兼容 + 自家 `expect`
 
-**问题场景**：`npm create react-app my-app` 要 60 秒下载 200+ 依赖。Cloudflare Workers / Vite / Next.js 各自有 create 命令。
+**问题场景**：jest 在 Bun 下要 `jest --transform` + `babel-jest`——慢。Vitest 是 vitest-only 生态。
 
-**解决方案**：`bun create <template> <dir>`——内置 React / Next / Vite / Hono / Elysia / Astro 等 20+ 模板。零网络下载（Bun 自带模板）。
-```bash
-bun create react my-app
-bun create next my-app
-bun create hono my-app
-```
-
-**关键参数**：
-- 20+ 内置模板
-- 零网络下载——本地模板
-- 5 秒完成脚手架——npm 60 秒
-- 与 `bun init` 兼容
-- 模板在 `packages/create/` 41 个 npm 包
-
-**最佳实践**：脚手架内置模板——避免网络下载；5 秒完成是用户感知关键；20+ 模板覆盖主流框架——React / Next / Vite / Hono；`bun init` 兼容——空项目场景。
-
----
-
-### 模式 17：Bun.serve 高性能 HTTP server
-
-**问题场景**：Node.js `http.createServer` 处理 1 万 QPS 后开始卡——V8 GC + 事件循环压力大。Express 框架 overhead 严重。
-
-**解决方案**：`Bun.serve()` 直接基于 uSockets C 库——比 Node.js `http` 快 5-10x。Hono / Elysia 等 web 框架基于此 API。原生 WebSocket + HTTP/1.1 + HTTP/2。
+**解决方案**：`bun test` 跑 jest 兼容 API（`describe / it / expect / mock`）——内置 swc 转译 TS/JSX。**`bun:test` 是 jest 兼容 API + bun 速度**。`mock` 系统用 `bun:junit` 输出 CI。
 ```ts
-Bun.serve({
-  port: 3000,
-  fetch(req) {
-    return new Response('Hello');
-  },
-  websocket: {
-    message(ws, msg) { ws.send('echo: ' + msg); }
-  }
+import { test, expect, mock } from "bun:test";
+test("addition", () => {
+    expect(1 + 1).toBe(2);
+    const fn = mock(() => 42);
+    expect(fn()).toBe(42);
 });
 ```
 
 **关键参数**：
-- uSockets C 库做底层
-- 5-10x faster than Node `http`
-- 原生 WebSocket
-- 50k+ QPS 简单 JSON
-- Hono / Elysia 等基于此
+- jest API 兼容
+- 内置 swc 转译
+- `bun:test` 模块
+- `mock` / `spyOn`
+- 比 jest 快 30x
 
-**最佳实践**：HTTP server 选 C 库底层（uSockets）——比 Node http 快 10x；`fetch` handler 模式——Express 风格；原生 WebSocket——`ws` 模块过时可省；Hono / Elysia 生态——现代 web 框架。
+**最佳实践**：测试用 jest 兼容 API——降低迁移成本；`bun:test` 单一来源；swc 内置——比 babel-jest 快 30x；`mock` 自动化——降测试样板；CI 集成 `bun:junit`——JUnit XML 报告。
 
 ---
 
-### 模式 18：bun --hot 热更新——文件监听 + 模块替换
+### 模式 17：HTTP server `Bun.serve()` 30x Node
 
-**问题场景**：改一行代码要重启 Node 进程——5-10 秒中断开发流。`nodemon` / `ts-node-dev` 是 hack 方案。
+**问题场景**：Node `http.createServer` 性能瓶颈——QPS 1 万封顶。Express 框架 5000 QPS 入门。
 
-**解决方案**：`bun --hot run index.ts` 文件监听 + JSC 模块替换——无重启。CSS / JS / TS 文件改了自动 reload。比 `nodemon` 快 10x。
+**解决方案**：`Bun.serve({ port, fetch })` 走 Zig 实现的 HTTP/1.1 + TLS——30 万 QPS。`fetch` 处理器直接 `Request → Response`，Web 标准 API。**WebSocket / TLS / HTTP/2 同一接口**。
+```ts
+Bun.serve({
+  port: 3000,
+  fetch(req) {
+    return new Response("Hello, world!");
+  },
+});
+```
+
+**关键参数**：
+- Zig 实现 HTTP/1.1
+- 30 万 QPS
+- Web Fetch API
+- WebSocket 同接口
+- TLS/HTTP/2 一起
+
+**最佳实践**：HTTP server 用 Bun.serve——30x Node 性能；Web Fetch API 标准化——不再 Express 专属；WebSocket 同入口——避免另起服务；TLS 内置——简化部署；性能 + 标准化双赢。
+
+---
+
+### 模式 18：FFI 直接调 C 库
+
+**问题场景**：Node 调 C 库要写 N-API 胶水（500+ 行 boilerplate）——Bun 也得写。
+
+**解决方案**：`bun:ffi` 声明 C 函数签名——直接调 C 库。**零胶水**。
+```ts
+import { dlopen, FFIType } from "bun:ffi";
+const { symbols: { strlen } } = dlopen("libc.so.6", {
+  strlen: { args: [FFIType.pointer], returns: FFIType.int },
+});
+console.log(strlen(Buffer.from("hello\0")));
+```
+
+**关键参数**：
+- `dlopen` 加载动态库
+- 声明 C 函数签名
+- 零胶水
+- FFIType 类型系统
+- 共享 `node-api` 之上的快路径
+
+**最佳实践**：调 C 库用 bun:ffi——省 500+ 行 N-API；声明签名强制类型——避免 runtime 错；FFIType 系统覆盖基础类型——复杂 struct 用 buffer；性能好——`memcpy` 零拷贝；N-API 兜底——C++ 复杂 API。
+
+---
+
+### 模式 19：bunfig.toml 配置统一
+
+**问题场景**：前端项目有 6 个工具 6 份 config——`tsconfig.json` / `webpack.config.js` / `jest.config.js` / `.eslintrc` / `.prettierrc` / `package.json`。新人 onboarding 看 6 文件。
+
+**解决方案**：`bunfig.toml` 统一 Bun 工具链配置——`[install]` / `[test]` / `[bundle]` 三段。**TS 转译、测试、bundler、安装统一配置**。
+```toml
+# bunfig.toml
+[install]
+production = false
+exact = true
+
+[test]
+preload = ["./setup.ts"]
+
+[bundle]
+target = "browser"
+minify = true
+```
+
+**关键参数**：
+- 单一配置
+- 4 段：install / test / bundle / run
+- TOML 格式
+- 跨工作区共享
+- 6 份 config 变 1 份
+
+**最佳实践**：工具链配置要单一来源——`bunfig.toml` 一份；TOML 比 JSON 易读——注释友好；4 段分组——install / test / bundle / run；新人 onboarding 简单——少看 5 文件；版本控制——和 lockfile 一起提交。
+
+---
+
+### 模式 20：单二进制 + cross-compile 部署
+
+**问题场景**：Node 部署要 `node` + `node_modules`（500MB+）——容器镜像大。`pkg` / `nexe` 打包麻烦。
+
+**解决方案**：`bun build --compile` 静态编译成单二进制——无需 node / npm 运行时。`--target=bun-linux-x64` 跨平台。**容器镜像 < 50MB**。
 ```bash
-bun --hot run index.ts
-# 改 index.ts → 自动重启
+bun build --compile --target=bun-linux-x64 ./server.ts --outfile=server
+# 50MB 单二进制
 ```
 
 **关键参数**：
-- 文件监听 + JSC 模块替换
-- 改文件 < 100ms 自动 reload
-- CSS / JS / TS 全支持
-- 无 nodemon 风格进程重启
-- 与 `bunfig.toml` 配合——`[run]` section
+- `--compile` 静态编译
+- `--target` 跨平台
+- 50MB 单二进制
+- 容器镜像 < 50MB
+- 比 pkg 简单 5x
 
-**最佳实践**：热更新用 JSC 模块替换——无进程重启；< 100ms 反馈是开发流关键；CSS/JS/TS 全支持——统一体验；`bunfig.toml` 集中配置——`[run]` section。
+**最佳实践**：部署用 `bun build --compile`——50MB 单二进制；`--target` 跨平台——CI 一键出多平台；容器镜像 < 50MB——alpine 基础镜像；比 pkg 简单 5x；Serverless 友好——冷启动 < 100ms。
 
 ---
 
-### 模式 19：bun --smol Node.js 兼容模式——无缝迁移
+## 关键代码段
 
-**问题场景**：用户已有 100 万行 Node.js 项目——切换到 Bun 担心 API 不兼容（`fs.readFile` / `process.env` / `Buffer`）。
+```zig
+// src/bundler/bundle_v2.zig:7-44 — mimalloc threadlocal arena
+// Bun's bundler relies on mimalloc's threadlocal heaps as arena allocators.
+// When a new thread is spawned for a bundling job, it is given a threadlocal
+// heap and all allocations are done on that heap. When the job is done, the
+// threadlocal heap is destroyed and all memory is freed.
 
-**解决方案**：`bun --smol` Node.js 兼容模式——`fs` / `path` / `process` / `Buffer` 100% 兼容。CommonJS + ESM 双支持。`node:fs` 模块名也支持。
-```ts
-// 既有 Node.js 代码 0 改
-import { readFileSync } from 'fs';
-import { Buffer } from 'buffer';
-const data = readFileSync('./file.txt', 'utf8');
-const buf = Buffer.from('hello');
+// src/bun.js.zig:158 — boot
+pub fn Run.boot(ctx: *Command.Context) !void {
+    if (strings.endsWithComptime(entry_path, ".sh")) {
+        return bootBunShell(ctx, entry_path);
+    }
+    bun.jsc.initialize(ctx.runtime_options.eval.eval_and_print);
+}
 ```
 
-**关键参数**：
-- 100% Node API 兼容
-- CommonJS + ESM 双支持
-- `node:` 模块名也支持
-- `process.cwd()` / `process.env` 全兼容
-- `npm` 生态完整——package.json 0 改
+## 必偷 3 件
 
-**最佳实践**：替代工具必兼容主流 API——降低迁移成本；100% Node API 兼容是 Bun 突破点；`node:` 模块名支持——`node:fs` 也行；CommonJS + ESM 双支持——存量 + 新项目都覆盖；npm 生态 0 改——package.json 不动。
+1. **5-in-1 单体二进制**：一个二进制 + 一份 config 替代 6 个工具；启动 < 5ms 是核心竞争力。
+2. **mimalloc threadlocal arena**：短生命周期任务用 arena allocator；任务边界就是 arena 边界。
+3. **HTML-first bundler**：扫描 `<script src>` 自动识别入口；0 配置启动。
 
----
+## 必避 3 坑
 
-### 模式 20：bun:sqlite + bun:postgres 内置模块
-
-**问题场景**：`better-sqlite3` 需 native binding + 编译——Edge 部署不友好。`pg` 同款问题。
-
-**解决方案**：`bun:sqlite` + `bun:postgres` 内置模块——纯 Zig 实现，零 native binding。`import { db } from 'bun:sqlite'` 直接用。
-```ts
-import { Database } from 'bun:sqlite';
-const db = new Database('mydb.sqlite');
-const row = db.query('SELECT * FROM users WHERE id = ?').get(123);
-```
-
-**关键参数**：
-- `bun:sqlite` 纯 Zig 实现
-- `bun:postgres` 87 文件手写协议
-- 零 native binding——Edge 友好
-- `better-sqlite3` 兼容 API
-- 5-10x faster than better-sqlite3
-
-**最佳实践**：内置数据库模块零 native binding——Edge 友好；`bun:sqlite` + `bun:postgres` 覆盖 90% 场景；兼容 better-sqlite3 API——迁移成本低；纯 Zig 0 FFI——比 better-sqlite3 快 5-10x；`import from 'bun:sqlite'` 即用。
-
----
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-|:---|:---|
-| 仓库 | `github.com/oven-sh/bun` |
-| 协议 | MIT（核心）+ 各种子模块 |
-| 总文件 | 14,329（1,262 Zig + 2119 ts test + 50万 C++ JSC） |
-| 主语言 | Zig（自研运行时） + C++（JSC fork） |
-| Star | 80k+ |
-| 当前版本 | 1.4.0 |
-| 团队 | Jarred Sumner + 60+ 贡献者（Oven Inc.） |
-| 商业模式 | 商业产品（Oven）+ 开源核心 + Bun 平台托管 |
-| 编译产物 | 单个 ~50MB 二进制（含 JSC） |
-| 关键依赖 | Zig 1.4+ / JavaScriptCore / mimalloc / lsquic |
-| 关键里程碑 | 2021 立项 → 2022 公开 → 2023 v1.0 → 2024 v1.1 Apple Silicon → 2026 v1.4 |
-| 月下载量 | 800 万+ |
+1. **不要在 Bun 中用 V8 专属 API**（`process.binding` 私有 API）——Bun 用 JSC，覆盖不全。
+2. **不要把全局共享数据分配在 threadlocal heap**——段错误，编译期不可检查。
+3. **不要硬写 `node:fs` 而忽略 `bun:fs`**——Bun 的 `bun:fs` 性能 2-5x。

@@ -1,341 +1,323 @@
-# linux - 世界上最成功的开源内核
+# linux - 通用 Linux 命令手册
 
 **GitHub**: torvalds/linux
 **Star**: 185k+
-**语言**: C / Assembly / Rust
-**主题**: os-kernel、scheduler、memory-management、vfs、device-driver
-**适用场景**: 操作系统教学、驱动开发、内核裁剪定制、嵌入式 RTOS
+**语言**: C / Shell / 工具链
+**主题**: 操作系统 / 命令行 / Shell / 工具生态
+**适用场景**: Linux 系统运维 / 服务器管理 / DevOps / 嵌入式开发 / 云原生
 
 ---
 
-## 一、基础范式
+## 第一段：基础范式
 
-### 模式 1 · 单仓库 + 多子系统并列（monorepo + maintainer）
+### 模式 1 - 文件描述符 + 一切皆文件
 
-**问题场景**：内核既管 CPU/内存/进程，又要支持 30+ 架构和 100+ 文件系统；单一项目如何在不分裂的前提下组织差异巨大的子系统？
+**问题场景**：进程要读写文件、socket、pipe、device，传统 API 每种资源一套接口。
 
-**解决方案**：Linux 用 monorepo + 子系统 maintainer 模型；30 个核心子系统（sched/mm/fs/net/drivers）有独立 maintainer + subsystem tree；整体通过 Linus 的 master 分支合并；"分散开发、集中集成"让 5 万名贡献者并行工作；每个 release cycle 2 周 merge window + 7-8 周 rc；约 90 天一个稳定版本。
-
-**关键参数**：
-- 30 核心子系统
-- 300 maintainer
-- 2 周 merge window
-- 90 天一版本
-- subsystem tree → master
-
-**最佳实践**：超大项目要做"分散 + 集中"用 monorepo + subsystem maintainer；**比拆仓库灵活 5x**；适用任何"百万行级 monorepo"。
-
-### 模式 2 · Kbuild 多目标交叉编译
-
-**问题场景**：同一份源码要编译成 x86/ARM/RISC-V/MIPS 等十几种架构的内核镜像，传统 Makefile 难表达多平台差异。
-
-**解决方案**：Kbuild 是 Linux 自研的 Makefile 框架；顶层 Makefile 通过 `ARCH / CROSS_COMPILE / KBUILD_OUTPUT` 三个变量切换编译目标；子目录 Makefile 用 `obj-y / obj-m` 声明 object；配置阶段先生成 `.config`，再递归构建；`make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig && make -j$(nproc)` 一键出镜像。
+**解决方案**：Linux 用 5 种文件描述符（FD）统一：0 stdin / 1 stdout / 2 stderr / 3+ 打开的文件/socket/pipe；`open() / read() / write() / close() / lseek()` 5 套系统调用统一操作；`/proc/<pid>/fd/` 看进程所有 FD；`lsof` 列出系统所有 FD。
 
 **关键参数**：
-- `ARCH` 目标架构
-- `CROSS_COMPILE` 工具链前缀
-- `KBUILD_OUTPUT` 输出目录
-- `obj-y / obj-m` 声明
-- `defconfig` 架构默认
+- FD 0/1/2 标准
+- `open/read/write/close`
+- `/proc/<pid>/fd/`
+- `lsof -p PID`
+- ulimit FD 上限
 
-**最佳实践**：C 项目要做"多平台编译"用 Kbuild 范式；**比单纯 Makefile 灵活 10x**；适用任何"嵌入式 + 多架构"。
+**最佳实践**：进程 FD 泄漏 `lsof -p PID | wc -l` 监控；`ulimit -n 65535` 提高 FD 上限；网络服务用 `epoll` 而**不是** `select`；`strace -p PID -e trace=open,close` 跟踪 FD 操作。
 
-### 模式 3 · Kconfig 树形依赖解析
+### 模式 2 - 进程模型 fork + exec
 
-**问题场景**：内核有数千个 CONFIG_* 选项，有些互斥、有些依赖、有些只在特定架构可用；如何保证配置合法性？
+**问题场景**：进程要"启动新程序"或者"复制自己"做并发，传统单进程难扩展。
 
-**解决方案**：Kconfig 用声明式 DSL 描述依赖：`select` 强制启用、`depends on` 前置条件、`imply` 弱推荐；`menuconfig` TUI 入口 + `oldconfig` 自动接受默认 + `defconfig` 架构默认 + `savedefconfig` 抽最小；生成 `.config` + `include/generated/autoconf.h`；发布前用 `make savedefconfig` 抽 defconfig 便于复现。
-
-**关键参数**：
-- `select` / `depends on` / `imply`
-- `menuconfig` / `oldconfig`
-- `defconfig` / `savedefconfig`
-- `autoconf.h` 暴露宏
-- 树形依赖
-
-**最佳实践**：C 项目要做"编译期配置"用 Kconfig DSL；**比 `#ifdef` 散落源码干净 10x**；适用任何"大型 C 项目 + 数千选项"。
-
-### 模式 4 · 进程调度器 + CFS 红黑树
-
-**问题场景**：多任务混合负载下，如何公平、高效分配 CPU 时间给成千上万的进程？
-
-**解决方案**：CFS（Completely Fair Scheduler）用红黑树按虚拟运行时间 vruntime 排序任务；最小 vruntime 任务优先；`sched_entity` 嵌入 `task_struct`，`cfs_rq` 管理就绪队列；实时任务（SCHED_FIFO/SCHED_RR）走独立 `rt_rq`；停机任务走 `stop_rq`；调度类 `sched_class` 支持扩展（EEVDF 在 6.6 引入）；`vruntime = 实际时间 × 权重倒数`。
+**解决方案**：`fork()` 复制当前进程（COW 写时复制）；`execve()` 替换进程镜像；`clone()` 精细控制（线程）；`wait() / waitpid()` 父等子结束；`exit()` 退出 + `_exit()` 立即退出。组合 `fork+exec` 是 Unix 启动子进程标准范式。
 
 **关键参数**：
-- vruntime 虚拟时间
-- 红黑树就绪队列
-- `sched_entity`
-- `cfs_rq` / `rt_rq`
-- `sched_class` 扩展点
+- `fork()` 复制
+- `execve()` 替换
+- `clone()` 线程
+- `wait/waitpid`
+- 孤儿进程 / 僵尸进程
 
-**最佳实践**：调度器设计要"公平 + 扩展"用红黑树 + vruntime；**比 O(n) 扫描快 100x**；适用任何"多任务调度"。
+**最佳实践**：进程创建**总是** `fork+exec`；用 `posix_spawn` 替代 `fork+exec`（更安全）；`waitpid` 防僵尸；`prctl(PR_SET_PDEATHSIG)` 父死通知；线程用 `pthread_create` 而**不是** `clone`。
 
-### 模式 5 · VFS 4 数据结构抽象
+### 模式 3 - 信号机制（kill -9 的原理）
 
-**问题场景**：用户态用 `open/read/write` 就能访问 ext4/xfs/proc/sysfs/cgroup 等差异巨大的存储介质；背后统一接口是什么？
+**问题场景**：进程要"通知其他进程"做某事（reload / 退出 / 调试）。
 
-**解决方案**：VFS 定义 4 核心数据结构：① `file` 进程级打开实例（fd 指向）② `inode` 文件元数据 + 操作集 ③ `dentry` 目录项缓存加速路径 ④ `super_block` 文件系统级元数据；`open()` 通过 `path_lookup` 找到 dentry + inode，再调 `inode->i_fop->open`；具体文件系统实现 `file_system_type` 和 `super_operations`。
+**解决方案**：64 种标准信号（SIGKILL/SIGTERM/SIGUSR1/SIGCHLD 等）；`kill -l` 列表；`kill -9 PID` 发 SIGKILL；进程 `signal()` / `sigaction()` 注册处理；`kill(pid, sig)` 系统调用发信号；`/proc/<pid>/status` 看挂起信号。信号是进程间异步通知机制。
 
 **关键参数**：
-- `file` / `inode` / `dentry` / `super_block`
-- `path_lookup`
-- `inode->i_fop`
-- `file_system_type`
-- `super_operations`
+- 64 标准信号
+- `kill(pid, sig)`
+- `signal / sigaction`
+- 不可捕获信号 SIGKILL/SIGSTOP
+- 实时信号 SIGRTMIN+
 
-**最佳实践**：OS 要"多文件系统统一"用 VFS 4 数据结构抽象；**比直接调 ext4 灵活 100x**；适用任何"多 backend + 统一接口"。
+**最佳实践**：优雅退出**用** SIGTERM（让进程清理）**不要** SIGKILL（强杀丢数据）；reload 走 SIGUSR1（Nginx/Apache 标准）；子进程退出发 SIGCHLD；`trap '...' SIGTERM` 在 Shell 脚本里注册清理；调试用 `gdb handle SIGUSR1 nostop noprint`。
+
+### 模式 4 - 管道 + 重定向（Pipe / Redirection）
+
+**问题场景**：命令要"前一个输出给后一个输入"或者"输出到文件"。
+
+**解决方案**：`|` 管道：前一个 stdout 给后一个 stdin；`>` 重定向 stdout 到文件；`<` 重定向 stdin 从文件；`>>` 追加；`2>&1` stderr 重定向到 stdout；`tee` 同时输出文件 + 屏幕；`xargs` 把 stdin 转命令行参数。Unix 哲学"小工具组合"。
+
+**关键参数**：
+- `|` 管道
+- `>` / `<` 重定向
+- `>>` 追加
+- `2>&1` stderr
+- `tee` 双路
+
+**最佳实践**：`cmd 2>&1 | tee log.txt` 同时看 + 存；`xargs -I{} cmd {}` 占位符；`mkfifo` 命名管道；`/dev/stdin` / `/dev/stdout` 显式；Shell 脚本**总是** `set -euo pipefail` 严格模式。
+
+### 模式 5 - 文件权限 + 用户组（rwx + chmod）
+
+**问题场景**：多用户系统要"谁能读/写/执行"哪个文件。
+
+**解决方案**：3 角色（user/group/other） × 3 权限（read/write/execute）= 9 位；`r=4 w=2 x=1` 数字模式；`chmod 755 file` rwxr-xr-x；`chown user:group file` 改属主；`umask 022` 默认权限；`SUID/SGID/Sticky` 3 特殊位。文件系统 ACL 细粒度。
+
+**关键参数**：
+- 3 × 3 权限位
+- `rwx / 421`
+- `chmod / chown`
+- `umask`
+- SUID/SGID
+
+**最佳实践**：默认 `umask 027` 文件 640 / 目录 750；**不要**给文件 SUID root（安全漏洞）；Web 目录 `chmod -R 755` + 文件 `644`；`chattr +i file` 不可修改；`getfacl / setfacl` ACL 细粒度。
 
 ---
 
-## 二、扩展范式
+## 第二段：扩展范式
 
-### 模式 6 · 内存管理 MM + 伙伴系统 + SLAB
+### 模式 6 - 包管理（apt / yum / dnf / pacman）
 
-**问题场景**：物理内存有限、虚拟地址巨大，如何高效分配页、回收页、换出页？
+**问题场景**：Linux 装软件要从源码 make install，依赖地狱难维护。
 
-**解决方案**：MM 子系统以 page frame 为单位管理；`alloc_pages` 通过伙伴系统（buddy allocator）按 order 2^n 分配连续页；小块请求走 SLAB/SLUB 分配器；`kswapd` 后台回收 inactive 页面；LRU 链表区分 file cache 与 anon memory；watermark `min/low/high` 触发 kswapd；NUMA node 内存亲和性。
-
-**关键参数**：
-- 伙伴系统 2^n
-- SLAB / SLUB
-- `kswapd` 后台回收
-- `min/low/high` watermark
-- NUMA node
-
-**最佳实践**：内存分配器要"大块 + 小块"分层用伙伴 + SLAB；**比单一 malloc 灵活 5x**；适用任何"高性能分配器"。
-
-### 模式 7 · 中断处理上下半部
-
-**问题场景**：硬件中断要尽快响应，但处理逻辑可能很耗时、可能睡眠，如何平衡？
-
-**解决方案**：Linux 把中断拆 top half（hardirq，硬中断，关中断执行）+ bottom half（tasklet / softirq / workqueue / threaded IRQ）；网络收包典型：NIC 中断 → 软中断 NET_RX_SOFTIRQ → `ksoftirqd` 内核线程继续处理；`request_irq` / `devm_request_threaded_irq` 注册；`IRQF_SHARED` 共享中断线。
+**解决方案**：发行版自带包管理：Debian/Ubuntu `apt / dpkg`、CentOS/RHEL `yum / dnf / rpm`、Arch `pacman`、Alpine `apk`；`apt install nginx` 一行装；`apt update && apt upgrade` 升级；`apt-cache search` 搜；`.deb / .rpm` 包格式。仓库源 `/etc/apt/sources.list` 配。
 
 **关键参数**：
-- top half 硬中断
-- bottom half 软中断
-- `request_threaded_irq`
-- `IRQF_SHARED`
-- `ksoftirqd` 线程
+- `apt` / `dnf` / `pacman`
+- 仓库源
+- 依赖解析
+- `install/remove/update`
+- 签名验证
 
-**最佳实践**：驱动要"快响应 + 重处理"用上下半部；**比全在 hardirq 卡顿 100x**；适用任何"中断处理"。
+**最佳实践**：装软件**总是**走包管理**不要**源码编译（升级难）；`apt update` 必在 install 前；`apt-mark hold package` 锁版本不升级；`/etc/apt/sources.list` 配清华/阿里源加速；容器用 `apk add --no-cache` 减小镜像。
 
-### 模式 8 · 设备模型 + sysfs kobject
+### 模式 7 - systemd 服务管理
 
-**问题场景**：上层（udev/systemd/power management）需要统一方式发现、枚举、配置设备。
+**问题场景**：服务器要"开机自启 + 失败重启 + 日志收集 + 进程管理"。
 
-**解决方案**：内核设备模型核心是 `kobject / kset / ktype` 三角；`device_driver` / `bus` / `class` 都基于它；sysfs 在 `/sys` 挂载把 kobject 树暴露为文件目录；`/sys/bus/pci/devices/0000:00:1f.0` 是典型路径；`device_create_file` 暴露自定义属性方便用户态调试。
-
-**关键参数**：
-- kobject 引用计数
-- kset 容器
-- ktype 类型
-- bus_type match/probe
-- sysfs 暴露
-
-**最佳实践**：驱动要"用户态可控"用 kobject + sysfs；**比 /proc 杂乱清晰 5x**；适用任何"内核对象 + 用户态接口"。
-
-### 模式 9 · 网络协议栈分层 + sk_buff 零拷贝
-
-**问题场景**：从 `socket()` 系统调用到 NIC 发送数据包，路径长、协议多，如何保持高吞吐？
-
-**解决方案**：协议栈分层：socket 层 → 传输层（TCP/UDP）→ 网络层（IP）→ 邻居层 → 链路层 → 设备层；数据包以 `sk_buff`（struct sk_buff）为载体层间流转；每个协议用 `skb_push / skb_pull` 调整指针（零拷贝）；`qdisc` 排队规则（fq_codel / bfq / mq）；RPS/RFS 多核收包分发。
+**解决方案**：`systemd` 是 PID 1 进程总管：`.service` 单元文件描述服务（`ExecStart / Restart / User / Environment`）；`systemctl start/stop/enable/disable/status` 控制；`journalctl -u nginx` 看日志；`/etc/systemd/system/` 自定义；`systemd-run` 临时跑。替代 SysV init。
 
 **关键参数**：
-- `sk_buff` 零拷贝
-- 5 层协议栈
-- `skb_push / skb_pull`
-- `qdisc` 排队
-- RPS / RFS 多核
+- `.service` 单元
+- `systemctl start/enable`
+- `journalctl`
+- `ExecStart / Restart`
+- `multi-user.target`
 
-**最佳实践**：协议栈要"零拷贝 + 多核"用 sk_buff + RPS；**比 memcpy 吞吐高 10x**；适用任何"网络协议"。
+**最佳实践**：自写服务放 `/etc/systemd/system/myapp.service` + `systemctl daemon-reload` 重新加载；`Restart=always` 自动重启；`User=nobody` 不用 root；`EnvironmentFile=/etc/myapp.env` 配环境变量；`journalctl -u myapp -f` 跟日志。
 
-### 模式 10 · 锁与同步原语（spinlock/mutex/RCU/seqlock）
+### 模式 8 - iptables / nftables 防火墙
 
-**问题场景**：SMP 多核 + 进程抢占 + 中断嵌套，内核里同一份数据可能被多上下文访问。
+**问题场景**：服务器要"允许 SSH / 拒绝其他 / 转发 80 到后端"。
 
-**解决方案**：内核提供 5 锁：① spinlock 忙等短临界区 ② mutex 可睡眠长临界区 ③ rwlock / RCU 读写并发优化 ④ seqlock 写多读少 ⑤ atomic_t 计数器 + 位操作；RCU 是 Linux 标志性原语：读者无锁、写者复制后切换、`synchronize_rcu()` 阻塞等待 grace period。
+**解决方案**：`iptables` / `nftables` 是 Linux 内核 netfilter 用户态：5 链（PREROUTING/INPUT/FORWARD/OUTPUT/POSTROUTING）；表 filter/nat/mangle/raw；`iptables -A INPUT -p tcp --dport 22 -j ACCEPT` 规则；`nft add rule` 新版。`ufw / firewalld` 简化封装。
 
 **关键参数**：
-- spinlock 短临界区
-- mutex 长临界区
-- RCU 读无锁
-- seqlock 写多读少
-- atomic_t 计数器
+- 5 链 + 5 表
+- `ACCEPT/DROP/REJECT`
+- `-A` 追加规则
+- `-j` 跳转 target
+- `ufw` 简化
 
-**最佳实践**：内核并发要"场景选锁"用 5 锁体系；**比单一锁灵活 10x**；适用任何"高并发内核"。
+**最佳实践**：服务器先 `ufw default deny incoming` + `ufw allow ssh/http/https` 显式开放；生产用 `nftables` 而**不是** `iptables`（更现代）；`iptables -L -n -v` 看规则命中数；`iptables-save > /etc/iptables.rules` 持久化；容器用 `iptables -t nat` 配端口映射。
+
+### 模式 9 - cron / systemd-timer 定时任务
+
+**问题场景**：业务要"每天 3 点备份 / 每 5 分钟同步 / 每月清理日志"。
+
+**解决方案**：`cron` 守护进程 + `crontab -e` 编辑；`分 时 日 月 周 命令` 5 字段；`0 3 * * * /backup.sh` 每天 3 点；`*/5 * * * *` 每 5 分钟；`@reboot` 启动时；`/etc/cron.d/` 系统级；日志 `/var/log/cron`。`systemd-timer` 替代方案支持依赖。
+
+**关键参数**：
+- 5 字段
+- `crontab -e`
+- `*/5` 步进
+- `@reboot`
+- `/var/log/cron`
+
+**最佳实践**：脚本**总是** `set -euo pipefail` + 显式路径 `/usr/bin/python3`；`MAILTO=""` 不发邮件；`flock` 防并发；任务重于 1 分钟用 `systemd-timer`；`run-parts /etc/cron.daily` 跑目录脚本。
+
+### 模式 10 - SSH 远程登录 + 密钥认证
+
+**问题场景**：服务器运维要"远程登录 + 执行命令 + 传文件"。
+
+**解决方案**：`ssh user@host` 登录；`ssh-keygen -t ed25519` 生成密钥；`ssh-copy-id user@host` 推公钥；`~/.ssh/authorized_keys` 配公钥免密；`scp file user@host:/path` 传文件；`rsync -avz` 增量同步；`ssh -L 8080:localhost:80` 端口转发；`~/.ssh/config` 配别名。OpenSSH 套件。
+
+**关键参数**：
+- `ssh user@host`
+- `ed25519` 密钥
+- `ssh-copy-id`
+- `~/.ssh/config`
+- 端口转发
+
+**最佳实践**：**永远**用 ed25519 密钥**不要** RSA（弱）；`ssh-keygen -t ed25519 -C "comment"`；`chmod 600 ~/.ssh/id_ed25519` 私钥权限；`~/.ssh/config` 配别名 `Host prod` 简化；`ssh -J jump host` 跳板机；2FA `google-authenticator`。
 
 ---
 
-## 三、进阶范式
+## 第三段：进阶范式
 
-### 模式 11 · RCU 读者无锁（读端极热场景）
+### 模式 11 - 进程监控 + 性能分析（top / htop / perf）
 
-**问题场景**：读端路径极热（如 dcache、网络路由表），传统 rwlock 原子操作在多核下成瓶颈。
+**问题场景**：CPU 飙高 / 内存泄漏 / IO 抖动，要定位是哪个进程 / 哪个函数。
 
-**解决方案**：RCU 读者直接访问对象指针，退出时 `rcu_read_unlock()` 即视为离开读临界区；写者拷贝新对象、原子切换指针、等待所有 CPU 经历 context switch 后释放旧对象（`call_rcu`）；`synchronize_rcu()` 阻塞等待宽限期；RCU 链表用 `list_add_rcu` / `list_for_each_entry_rcu`。
-
-**关键参数**：
-- `rcu_read_lock / unlock`
-- `rcu_assign_pointer` 发布
-- `rcu_dereference` 解引用
-- `call_rcu` 延迟回收
-- grace period
-
-**最佳实践**：读多写少路径用 RCU；**比 rwlock 高 10x 吞吐**；适用任何"读远多于写"。
-
-### 模式 12 · cgroup v2 统一资源隔离
-
-**问题场景**：容器时代需要把 CPU/内存/IO/pid 等资源按组隔离与限制。
-
-**解决方案**：cgroup v2 统一层级；每种资源是一个 controller（cpu/memory/io/pids/freezer）；每 cgroup 在 `/sys/fs/cgroup/` 下有目录；`cpu.max / memory.max / io.max` 三个关键文件控制上限；容器运行时（runc/containerd）默认把所有进程放进 cgroup；K8s 配额直接落到 `cpu.max`。
+**解决方案**：`top / htop` 实时看 CPU/内存；`ps aux` 静态看；`/proc/<pid>/status` 详细信息；`perf top -p PID` 采样热点函数；`strace -p PID` 跟踪系统调用；`ltrace` 库调用；`pidstat` 一段时间采样；`iotop` 看 IO；`vmstat 1` 看虚拟内存。`bpftrace` 高级工具。
 
 **关键参数**：
-- `cpu.weight` 1..10000
-- `cpu.max` quota/period
-- `memory.max` 硬上限
-- `io.max` bfq/throttling
-- unified hierarchy
+- `top / htop`
+- `ps aux`
+- `perf top`
+- `strace -p`
+- `/proc/<pid>/`
 
-**最佳实践**：容器资源限制必走 cgroup v2；**比 cgroup v1 简单 3x**；适用任何"容器 + 资源隔离"。
+**最佳实践**：CPU 高 `perf top` 抓函数；IO 慢 `iotop` 看进程；内存泄漏 `ps -o rss` 趋势；`htop` 比 top 直观；`pidstat -p PID 1` 周期采样；`perf record -g -F 99` + `perf report` 全栈火焰图。
 
-### 模式 13 · eBPF 可编程数据通路
+### 模式 12 - 文件系统 + mount
 
-**问题场景**：如何在不修改内核源码、不重启的前提下，动态插入网络/安全/跟踪逻辑？
+**问题场景**：硬盘 / U 盘 / NFS / iSCSI 怎么挂载到目录使用。
 
-**解决方案**：eBPF 程序由 verifier 验证后 JIT 编译为原生码；挂在指定 hook（kprobe / tracepoint / XDP / tc / socket）；BPF map 提供内核用户态共享数据；`bpf()` 系统调用统一管理；BTF/CO-RE 跨内核版本兼容；网络性能优化首选 XDP，能在驱动收包前就丢包/重定向，比 iptables 早一个数量级。
-
-**关键参数**：
-- XDP / TC / kprobe / tracepoint
-- BPF_MAP_TYPE_HASH / ARRAY / LRU
-- BTF / CO-RE 跨版本
-- verifier 验证
-- JIT 编译
-
-**最佳实践**：网络/可观测要做"动态 + 安全"用 eBPF；**比内核模块灵活 10x**；适用任何"可观测 + 网络优化"。
-
-### 模式 14 · 5 文件系统选型矩阵
-
-**问题场景**：ext4/xfs/btrfs/f2fs/zfs 怎么选？
-
-**解决方案**：选型看 workload：ext4 通用稳（默认）；xfs 大文件/大文件系统性能好（RHEL/CentOS 默认）；btrfs 支持 CoW + 快照 + subvolume（容器镜像 + SUSE 默认）；f2fs 专为闪存设计（移动/嵌入式）；zfs 企业级端到端校验（NAS/SAN）；SSD 必 `mount -o discard` 或周期性 fstrim。
+**解决方案**：`mount /dev/sdb1 /mnt` 挂载；`umount /mnt` 卸载；`/etc/fstab` 配开机自动挂；`mount -t ext4 / xfs / nfs` 选文件系统；`mount -o ro / rw / noexec / nosuid` 挂载选项；`blkid` 看 UUID；`lsblk` 看块设备；`df -h` 看使用率；`du -sh` 看目录大小。
 
 **关键参数**：
-- journal log 模式
-- CoW 写时复制
-- subvolume dataset
-- TRIM/discard SSD
-- 端到端校验
+- `mount / umount`
+- `/etc/fstab`
+- ext4 / xfs / btrfs
+- `mount -o` 选项
+- `UUID` / `lsblk`
 
-**最佳实践**：文件系统选型按"workload + 特性"2 维度打矩阵；**通用 ext4 / 大文件 xfs / 容器 btrfs / 闪存 f2fs**；适用任何"存储选型"。
+**最佳实践**：`/etc/fstab` 用 UUID 而**不是** `/dev/sda1`（设备名会变）；`mount -o noexec,nosuid` 不可执行 U 盘；`/mnt` / `/media` 临时挂；`mount --bind` 目录挂目录；`umount -l` 懒卸载；`fstrim` SSD 性能。
 
-### 模式 15 · PREEMPT_RT 实时性改造
+### 模式 13 - 网络配置（ip / ss / tcpdump）
 
-**问题场景**：工业控制、机器人、音频场景需要微秒级延迟，普通内核 spinlock 持锁时间太长。
+**问题场景**：服务器要"配 IP / 路由 / DNS / 防火墙"和"诊断网络问题"。
 
-**解决方案**：PREEMPT_RT 补丁把几乎所有 spinlock 替换为可睡眠的 `rt_mutex`；让临界区可抢占；中断处理线程化（threaded IRQ）；最大延迟从毫秒级降到 50-100 微秒；启动参数 `preempt=full` + `threadirqs` + `isolcpus` + `nohz_full`。
+**解决方案**：`ip addr / ip link / ip route` 配置网络（替代 ifconfig）；`ss -tunap` 看连接（替代 netstat）；`ip route add default via 192.168.1.1` 默认路由；`/etc/resolv.conf` 配 DNS；`tcpdump -i eth0 port 80` 抓包；`curl -v` 调试 HTTP；`dig / nslookup` DNS 查询；`mtr` 路由追踪。`netplan` 配网络（Ubuntu 18+）。
 
 **关键参数**：
-- `preempt=full` 启动参数
-- `threadirqs` 中断线程化
-- `isolcpus` 隔离核
-- `nohz_full` 关 tick
-- 50-100 微秒延迟
+- `ip addr/route/link`
+- `ss -tunap`
+- `tcpdump`
+- `netplan`
+- `curl -v`
 
-**最佳实践**：实时任务用 `chrt -f 99` + 绑核 isolcpus；**PREEMPT_RT 是工业控制基础**；适用任何"实时内核"。
+**最佳实践**：**用** `ip` 而**不是** `ifconfig`（已废弃）；`ss -tunap` 看连接更全；`tcpdump -w file.pcap` 存包给 Wireshark 离线分析；`mtr` 替代 `traceroute`；`netplan` YAML 配 Ubuntu；DNS 配 `/etc/resolv.conf nameserver 8.8.8.8`。
+
+### 模式 14 - 用户管理 + sudo
+
+**问题场景**：多用户系统要"权限隔离 + 受控提权"。
+
+**解决方案**：`useradd / userdel / usermod` 增删改用户；`passwd user` 改密码；`groupadd` 加组；`/etc/passwd` 用户 + `/etc/shadow` 密码哈希；`sudo` 受控提权（`/etc/sudoers` 配规则）；`visudo` 安全编辑；`su - user` 切换用户；`last` 看登录历史；`/var/log/auth.log` 审计。
+
+**关键参数**：
+- `useradd / userdel`
+- `/etc/passwd / shadow`
+- `sudo / sudoers`
+- `su -`
+- `last / auth.log`
+
+**最佳实践**：**不要**直接用 root，创建普通用户 + sudo 提权；`/etc/sudoers` 配 `user ALL=(ALL) NOPASSWD: ALL`；`visudo` 改 sudoers 防配置错；`sudo -l` 看权限；`chattr +i /etc/passwd` 防改；`fail2ban` 防 SSH 爆破。
+
+### 模式 15 - 日志系统（journald / rsyslog / logrotate）
+
+**问题场景**：业务要"日志收集 + 持久化 + 轮转 + 集中查询"。
+
+**解决方案**：`journald`（systemd 自带）收集所有服务日志 `journalctl` 查询；`rsyslog` 传统 syslog 守护 `/var/log/`；`/etc/rsyslog.d/` 配规则；`logrotate` 日志轮转（`/etc/logrotate.d/`）；`logger "message"` 命令行打日志；`dmesg` 内核日志；`/var/log/syslog` 系统日志。
+
+**关键参数**：
+- `journalctl`
+- `rsyslog`
+- `logrotate`
+- `/var/log/`
+- `dmesg`
+
+**最佳实践**：现代系统**用** `journalctl` 统一查询；`journalctl -u nginx -f` 跟 nginx 日志；`logrotate daily rotate 7 compress` 每天切 + 留 7 份 + 压缩；`dmesg -T` 看带时间戳内核日志；`/var/log/auth.log` 监控 SSH 失败；ELK / Loki 集中收集。
 
 ---
 
-## 四、实战范式
+## 第四段：实战范式
 
-### 模式 16 · 自定义字符设备驱动
+### 模式 16 - smoke test 10 行验证
 
-**问题场景**：需要把 FPGA / 板级外设暴露为 `/dev/mydev` 给用户态读/写。
+**问题场景**：新装 Linux 服务器验证环境是否就位。
 
-**解决方案**：实现 `file_operations`（open/read/write/ioctl/release）；注册 `misc_device` 或 `alloc_chrdev_region` + `cdev_add`；`probe` 里 `request_irq` + `ioremap` + 初始化硬件；`release` 反向释放；`copy_to_user` / `copy_from_user` 与用户态安全交换；`ioctl` 编号用 `_IOR / _IOW / _IOWR` 宏。
-
-**关键参数**：
-- `register_chrdev_region` / `alloc_chrdev_region`
-- `cdev_add` 注册
-- `copy_to_user / from_user`
-- `_IOR / _IOW / _IOWR`
-- `request_mem_region / ioremap`
-
-**最佳实践**：字符驱动用 `devm_*` 系列管理资源（ioremap/request_irq），driver remove 自动释放杜绝泄漏；适用任何"字符设备"。
-
-### 模式 17 · 内核模块加载 + 参数
-
-**问题场景**：调试时希望动态加载 .ko 注入新功能，并通过参数调参。
-
-**解决方案**：`insmod xxx.ko` 加载，`rmmod xxx` 卸载，`modprobe` 自动解决依赖；`module_param(name, type, perm)` 声明可调参数；`module_param_array` 支持数组；`MODULE_LICENSE("GPL")` 必需（否则某些 GPL-only 符号不可用）；`/sys/module/xxx/parameters/` 运行时改参；`lsmod / modinfo` 查已加载。
+**解决方案**：10 行 smoke test 验证 5 件套：```bash uname -a && cat /etc/os-release && df -h | head -3 && free -h && nproc && ip addr | grep "inet " | head -3 && ss -tunap | head -3 && which curl git python3 && date ``` 期望：内核版本、发行版、磁盘、内存、CPU 核数、IP、监听端口、命令、时区。
 
 **关键参数**：
-- `insmod / modprobe`
-- `module_param`
-- `MODULE_LICENSE("GPL")`
-- `/sys/module/xxx/parameters/`
-- `obj-m += mymod.o`
+- 10 行核心验证
+- `uname / os-release`
+- `df / free / nproc`
+- `ip / ss`
+- 30s 可跑完
 
-**最佳实践**：动态功能用 `obj-m += mymod.o` 单独构建模块，避免污染主内核；适用任何"内核模块 + 动态加载"。
+**最佳实践**：新机器**总是** 5-10 行 smoke test 验证"内核 + 发行版 + 资源 + 网络 + 工具"五件套；远程机器先 `ping` 再 `ssh`；CI 容器跑 smoke test 验环境；配 `MOTD` 登录显示。
 
-### 模式 18 · 调试工具箱 5 件套
+### 模式 17 - 故障排查 Runbook
 
-**问题场景**：内核 bug 难复现、难定位，需要一套调试兵器库。
+**问题场景**：线上服务挂了，运维要按步骤排查。
 
-**解决方案**：5 件套：① `printk` + 动态日志级别（pr_debug / dev_dbg）做日志 ② KASAN 检测越界/UAF ③ kmemleak 查泄漏 ④ perf 做采样热点（`perf record -g -F 999`）⑤ ftrace / bpftrace 跟踪函数调用（`bpftrace -e 'kprobe:vfs_read { @[comm] = count(); }'`）；crash 用 kdump + crash 工具分析 vmcore。
-
-**关键参数**：
-- `printk` 0 emerg..7 debug
-- `sysctl kernel.printk` 控制
-- `perf record -g -F 999`
-- `bpftrace -e`
-- `kdump` + crash
-
-**最佳实践**：线上机器开 `lockdep` 和 `ftrace=function_graph`，问题复现后立即抓取栈；适用任何"内核调试"。
-
-### 模式 19 · 性能分析 4 维度
-
-**问题场景**：CPU 飙高 / IO 抖动 / 内存压力，怎么定位瓶颈？
-
-**解决方案**：4 维度定位：① CPU 用 `perf top` / off-cpu 分析（bcc 的 offcputime）② 内存用 `/proc/meminfo` / `/proc/slabinfo` / `smem -t` ③ IO 用 `iostat -xz 1` / `biolatency-bpfcc` ④ 网络用 `ss -s` / `bcc` 的 `tcplife`；PSI（Pressure Stall Info）指标：`/proc/pressure/cpu` `/memory` `/io`；`runqueue depth` 用 `sysctl block/nr_requests`。
+**解决方案**：Runbook 步骤：① `uptime` 负载；② `dmesg -T | tail -20` 内核 panic；③ `systemctl status myapp` 服务状态；④ `journalctl -u myapp -n 100 --no-pager` 日志；⑤ `ps aux | grep myapp` 进程；⑥ `ss -tunap | grep 8080` 端口；⑦ `curl localhost:8080/health` 健康检查；⑧ `iotop` / `iostat` IO；⑨ `free -h` 内存；⑩ `tcpdump` 抓包。
 
 **关键参数**：
-- `%util / await` 磁盘饱和度
-- PSI 压力指标
-- `runqueue depth`
-- `TCP backlog` `net.core.somaxconn`
-- off-cpu 分析
+- 10 步 Runbook
+- `uptime / dmesg`
+- `systemctl / journalctl`
+- `ps / ss / curl`
+- `iotop / iostat`
 
-**最佳实践**：先用 `uptime` + `dmesg -T` 看 OOM/panic，再用 perf + bpftrace 抓热点；适用任何"内核性能调优"。
+**最佳实践**：Runbook 文档化放 wiki；告警触发**先**看监控指标（CPU/内存/IO/网络）；`journalctl -p err` 看错误日志；`strace -p PID` 跟踪卡住的进程；`perf record` 抓热点；`tcpdump -w` 抓包给 Wireshark 分析。
 
-### 模式 20 · 升级与 LTS 选择
+### 模式 18 - 加固 + CIS Benchmark
 
-**问题场景**：服务器跑什么版本最稳？什么时候升？
+**问题场景**：服务器要过安全合规检查（金融/政府/医疗）。
 
-**解决方案**：LTS（Long Term Support）分支维护 6 年（如 6.6 LTS 至 2026 年 12 月）；stable 分支每 90 天出新点版本；新硬件新特性（如 EEVDF、MTE）只在主线，bugfix 才会 backport；生产环境用 LTS 子版本（如 6.6.30），每季度小升一次；新硬件驱动问题等稳定半年再上生产。
+**解决方案**：CIS Benchmark（Center for Internet Security）标准：① SSH 改端口 + 禁 root 登录 + 密钥认证 ② 防火墙启用 + 默认 deny ③ 密码策略 `minlen=14` ④ 日志审计 ⑤ 禁用不必要服务 ⑥ `sysctl` 加固（`net.ipv4.conf.all.rp_filter=1`）⑦ 文件权限 `chmod 600 /etc/shadow`。`lynis` 工具自动审计。
 
 **关键参数**：
-- LTS 6 年维护
-- stable 90 天周期
-- -rc 每周
-- bugfix backport
-- 新硬件半年稳定期
+- CIS Benchmark
+- SSH 加固
+- 防火墙默认 deny
+- 密码策略
+- `lynis` 审计
 
-**最佳实践**：生产用 LTS + 季度小升；**新硬件等稳定再上**；适用任何"服务器内核选型"。
+**最佳实践**：用 `lynis audit system` 自动审计；`fail2ban` 防爆破；`aide` 入侵检测；`/etc/ssh/sshd_config` 配 `PermitRootLogin no`；`/etc/pam.d/common-password` 配密码强度；`sysctl -p /etc/sysctl.conf` 加载内核加固。
 
----
+### 模式 19 - vs FreeBSD / macOS / WSL 选型
 
-## 附：仓库元信息
+**问题场景**：4 个 Unix-like 系统（Linux / FreeBSD / macOS / WSL）选哪个。
 
-- **路径**: `G:\实战案例\GitHub顶尖项目\linux\`
-- **大小**: ~302 MB（master tarball）
-- **总文件**: 99848
-- **主语言**: C / Assembly / Rust
-- **核心目录**: `kernel/`（调度器 + IPC）、`mm/`（内存管理）、`fs/`（VFS + 具体 FS）、`net/`（协议栈）、`drivers/`（设备驱动）、`arch/`（30+ 架构）
-- **关键 commit**: 当前主线 master + 30+ subsystem tree
-- **作者**: Linus Torvalds + 5 万+ 贡献者
-- **许可**: GPL-2.0
-- **被采用**: 500+ 发行版、几十亿设备、Android/iOS/服务器/嵌入式/超级计算机
+**解决方案**：Linux 主流服务器 + 桌面 + 嵌入式生态最丰富；FreeBSD 稳定 + ZFS + 许可证自由（生产 Netflix/WhatsApp）；macOS 桌面 + 开发者友好 + BSD 内核；WSL 2 Windows 跑 Linux 二进制 + IDE 集成。Linux 是服务器默认；macOS 是开发者默认；WSL 是 Windows 过渡。
 
-## 一句话总结
+**关键参数**：
+- Linux 主流
+- FreeBSD 稳定
+- macOS 桌面
+- WSL Windows
+- BSD 内核 vs Linux 内核
 
-Linux 内核用 C 把"调度器 + 内存管理 + VFS + 设备驱动 + 网络协议栈"做到极致，秘诀是「把扩展点做到位（subsystem/maintainer/Kconfig/Kbuild/RCU）、把工程纪律做到位（dotfile/MAINTAINERS/SPDX）、把性能基线守住（CFS/slub/sk_buff）」——它是现代计算的"基础设施"。
+**最佳实践**：服务器/容器/嵌入式**用** Linux（Ubuntu LTS / CentOS / RHEL）；macOS 适合开发者本地；FreeBSD 适合网络设备 + 学术；WSL 适合 Windows 用户过渡到 Linux；**不要**生产用桌面系统。
+
+### 模式 20 - 7 天 Linux 基础学习
+
+**问题场景**：开发者零基础想入门 Linux 命令行。
+
+**解决方案**：7 天分 5 阶段：① Day 1-2 文件操作（ls/cd/cp/mv/rm）+ 权限（chmod/chown）+ vi 编辑器 ② Day 3 进程管理（ps/top/kill）+ 服务（systemctl）+ 日志（journalctl）③ Day 4 网络（ip/ss/curl/ssh）+ 包管理（apt/dnf）④ Day 5 Shell 脚本（bash/zsh + 变量 + 循环 + 函数 + 管道）。
+
+**关键参数**：
+- Day 1-2 文件 + 权限
+- Day 3 进程 + 服务
+- Day 4 网络 + 包
+- Day 5 脚本
+- 7 天基础
+
+**最佳实践**：用 `man <cmd>` 看手册；装一台 Linux 虚拟机（VirtualBox）或 WSL；`oh-my-zsh` 配 Shell 美化；**每天**实操 2 小时；目标是能 SSH + 装包 + 写脚本 + 排查故障；适用任何"Linux 入门"。

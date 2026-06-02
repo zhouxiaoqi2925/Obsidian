@@ -1,356 +1,323 @@
-# less.js - CSS 预处理器的工程范本
+# less.js - 工业级 CSS 预处理器
 
 **GitHub**: less/less.js
-**Star**: 17.1k+
-**语言**: JavaScript (ESM)
-**主题**: css-preprocessor、compiler、ast、visitor、frontend-tooling
-**适用场景**: CSS 扩展语言、DSL 编译器学习、AST 多 pass 工程实践
+**Star**: 17k+
+**语言**: JavaScript (Node + Browser)
+**主题**: css-preprocessor / dynamic-stylesheet / mixin / function
+**适用场景**: 中大型 Web 项目 CSS 工程化 / 主题切换 / 响应式样式 / 旧项目渐进式升级
 
 ---
 
-## 一、基础范式
+## 第一段：基础范式
 
-### 模式 1 · 单遍 Parser + AST 多 Pass Visitor
+### 模式 1 - Parser → AST → Visitor 三段式
 
-**问题场景**：传统编译器"lexer→parser→AST→optimize→codegen"5 阶段写死；增加一个 pass 要改主循环；浏览器场景下 1MB 的 .less 文件 lexer 生成 token 数组是巨大开销；DSL 经常要"加新 pass"。
+**问题场景**：CSS 预处理器要解析 `.less` 文件成抽象语法树（AST），再做变量替换、Mixin 展开、嵌套展平。
 
-**解决方案**：`lib/less/parser/parser.js` 顶部注释明确"a relatively straight-forward predictive parser. There is no tokenization/lexing stage"——输入分块（`chunks` + `j` + `currentPos`）单遍扫完直接构 AST；后续 `ImportVisitor` → `Eval` → `JoinSelectorVisitor` → `ExtendVisitor` → `MarkVisibleSelectorsVisitor` → `ToCSSVisitor` → `SourceMapBuilder` 各自独立的 Visitor 跑同一棵 AST。新加 pass = 写一个 Visitor 类 + 在 `transform-tree.js` 注册。
-
-**关键参数**：
-- 单遍 parser 不用 token
-- chunks 三指针 4x 加速
-- `Anonymous` 节点 fast-path
-- `transform-tree.js` 调度
-- `isPreEvalVisitor` / `isPreVisitor` 钩子
-
-**最佳实践**：DSL 编译器要"加新 pass 不改旧代码"用单遍 parser + 多 Visitor；**比传统 5 阶段简单 5x**；适用任何"DSL 编译器 + 可扩展 transform"。
-
-### 模式 2 · Visitor typeIndex 字典化
-
-**问题场景**：35+ AST 节点类型，每次 visit 走 `if/else` 链或 `switch` 性能差；用 `instanceof` 又有继承问题。
-
-**解决方案**：`lib/less/visitors/visitor.js` 一次性遍历 `tree` 注册表给每个节点类打 `typeIndex`（自增数字 ID）；`visit(node)` 用 `node.typeIndex` 作 O(1) 字典查找 `_visitInCache[typeIndex]`；`_hasIndexed` 单次性 guard 避免重复索引；`visitXxxIn` / `visitXxxOut` 是 enter/exit 钩子。
+**解决方案**：less.js 用三段式：① `Parser` 把源码切成 token 流生成 AST（`Ruleset / Declaration / Expression / Operation` 节点）② `Visitor` 树遍历执行替换（变量查找、Mixin 注入、运算求值）③ `ImportVisitor` 单独处理 `@import` 递归；AST 节点类型丰富支持完整语义。
 
 **关键参数**：
-- `indexNodeTypes` 启动时遍历
-- `typeIndex` 数字 ID
-- `_visitInCache` / `_visitOutCache` 字典
-- `_hasIndexed` 单次 guard
-- enter/exit 钩子
+- `Parser` 词法 + 语法
+- AST 节点 `Ruleset`
+- `Visitor` 遍历
+- `ImportVisitor` 递归
+- `tree` 模块
 
-**最佳实践**：库要做"多类型节点事件分发"用 `typeIndex` 字典 + 启动时索引；**比 `switch` 快 5-10x**；适用任何"事件分发 + 多种节点类型"。
+**最佳实践**：理解 less.js 源码从 `lib/less/tree/` 起步；所有转换都是 AST 节点操作；扩展自定义函数走 `tree/functions.js`；性能调优看 `Visitor.visit` 缓存。
 
-### 模式 3 · 5 Pass 流水线架构
+### 模式 2 - lessc CLI + Node API
 
-**问题场景**：DSL 编译器要把"解析 → import 解析 → 变量展开 → 选择器嵌套 → extend 重写 → CSS 输出 → sourcemap"7 步串起来，单一函数 5000 行难维护。
+**问题场景**：CSS 预处理器要"命令行编译 + 库 API 调用 + 浏览器运行时"3 种使用场景。
 
-**解决方案**：`lib/less/transform-tree.js` 显式 5 阶段：`preEvalVisitors`（如 ImportVisitor）→ `root.eval(evalEnv)`（imperative method dispatch，递归 eval 子节点）→ `JoinSelectorVisitor` → `MarkVisibleSelectorsVisitor` → `ExtendVisitor` → `ToCSSVisitor`；`transform-tree.js` 第 44-99 行"两轮 visitor 注册"是核心魔法：plugin 在 `isPreEvalVisitor` 跑在 eval 前、`isPreVisitor` 排到队首、其他排到队尾。
-
-**关键参数**：
-- preEvalVisitors 分桶
-- eval 阶段 imperative dispatch
-- 5 个内置 visitor
-- plugin 双轮注册
-- unshift/push 排序
-
-**最佳实践**：DSL 编译器要"plugin 注入 + 多 pass"用 `transform-tree.js` 双轮注册；**允许 plugin 动态修改 visitor 列表**是 plugin 体系能 work 的核心；适用任何"编译器 + 扩展点"。
-
-### 模式 4 · 跨环境抽象层（Node + Browser）
-
-**问题场景**：同一份编译核心要跑在 Node（用 `fs`）和浏览器（用 `XHR`）两种 runtime；硬写 `if (typeof window)` 污染核心。
-
-**解决方案**：`lib/less/environment/abstract-file-manager.js` 定义 IO 接口（`loadFile` / `getPath` / `join` / `pathDiff`）；`lib/less-node/file-manager.js` 实现 fs 版；`lib/less-browser/file-manager.js` 实现 XHR 版；`createFromEnvironment(environment, [FileManager, UrlFileManager], version)` 工厂把 environment + fileManagers 注入核心；核心编译代码零 `if (isNode)`。
+**解决方案**：`lessc input.less output.css` CLI 命令行单文件编译；`lessc --watch` 监听变更；`lessc --source-map` 生成 sourcemap；Node API `less.render(input, options, callback).then` 返回 `{ css, map, imports }`；浏览器版本 `<script src="less.js"></script>` + `<link rel="stylesheet/less" href="main.less">` 实时编译。
 
 **关键参数**：
-- AbstractFileManager 抽象类
-- Node / Browser 双实现
-- 工厂 `createFromEnvironment`
-- dependency injection
-- 核心零 runtime 判断
+- `lessc input output` CLI
+- `--watch` 监听
+- `--source-map` 调试
+- `less.render()` Node API
+- 浏览器 `<link rel="stylesheet/less">`
 
-**最佳实践**：库要做"同一代码多 runtime"用抽象层 + 工厂注入；**比 `typeof window` 优雅 10x**；适用任何"跨 Node/Browser/Worker/Deno"。
+**最佳实践**：现代项目用 `less-watch-compile` 或 `gulp-less` 自动编译**不要**浏览器运行时（性能差）；Node API 走 `less.render` Promise 风格；CI 用 `lessc --strict-math on` 严格数学。
 
-### 模式 5 · 函数注册表 + 链式 inherit 模拟作用域
+### 模式 3 - 变量 + 嵌套 + Mixin 3 武器
 
-**问题场景**：DSL 函数要"全局函数（darken/lighten）+ ruleset 内 `@function` 局部函数 + 子作用域继承父作用域"；用 class 继承或 Map 嵌套都复杂。
+**问题场景**：CSS 硬编码颜色/尺寸散落几百处，改一次要全局搜索；嵌套选择器写重复代码。
 
-**解决方案**：`lib/less/functions/function-registry.js` 36 行极简：`makeRegistry(base)` 返回 `{_data, add, get, inherit, create}`；`get(name)` 优先查自己再向上找 `base`，把"作用域"做成 prototype-chain 模式；ruleset 内 `@function: ...` 时 `inherit()` 拿父表，查不到 fallback 到父表；`create(base)` 给顶层做无 base 的根表。
+**解决方案**：3 武器：① `@primary: #4285f4;` 变量声明 ② `&:hover { color: @primary; }` 嵌套 + `&` 父选择器引用 ③ `.border-radius(@r) { border-radius: @r; }` Mixin 函数 + `.border-radius(4px)` 调用。3 武器组合替代 60% 重复 CSS。
 
 **关键参数**：
-- 36 行极简
-- `get` 递归向上
-- `inherit()` 子继承父
-- `create(base)` 根表
-- prototype-chain 模拟
+- `@var: value` 变量
+- `&` 父选择器
+- `.mixin(@arg)` 函数
+- `@arguments` 全参
+- `+:` / `+_:` 合并
 
-**最佳实践**：库要做"作用域 + 函数注册"用 `inherit()` 链式；**比 class 继承省 50% 代码**；适用任何"配置中心 + 多租户 / 主题切换"。
+**最佳实践**：变量名语义化 `@brand-primary` 不 `c1`；Mixin 参数必填给默认值 `.btn(@bg: @primary)`；嵌套**最多** 3 层（4 层难维护）；变量在 `:root` 声明走 CSS Custom Properties 双轨。
+
+### 模式 4 - 运算 + 函数 + 单位处理
+
+**问题场景**：CSS 写 `@width: 100px; @width: @width * 2;` 直接给 200px，跨单位换算麻烦。
+
+**解决方案**：`@w: 100px; @w2: @w * 2;` 数学运算支持 +、-、*、/；`round(3.6)` / `ceil(3.2)` / `floor(3.8)` / `percentage(0.5)` 内置函数；`@var: ~"calc(100% - 20px)";` 字符串转义绕过编译；`unit(@w, px)` 强制换单位。运算结果自动推导单位。
+
+**关键参数**：
+- `+ - * /` 运算
+- `round/ceil/floor`
+- `percentage()` 百分比
+- `~"..."` 转义
+- `unit(@x, em)` 换算
+
+**最佳实践**：运算结果单位自动推导（`5px * 2 = 10px`）；`~"calc(@a + @b)"` 保留 calc 表达式让浏览器算；不混用 `px` 和 `em` 单位；用 `darken(@primary, 10%)` 而**不是**写死颜色。
+
+### 模式 5 - 5 Pass 编译管线
+
+**问题场景**：从 `.less` 源码到 `.css` 输出要经过多个阶段（解析、变量替换、Mixin 展开、嵌套展平、压缩）。
+
+**解决方案**：5 Pass 管线：① Parse（源码 → AST）② Process（变量 + Mixin + 函数求值）③ Join（嵌套展平，Ruleset 合并）④ PrependPrefixes（autoprefixer 简化版）⑤ Compress（CSS 压缩）。每个 Pass 单独 `less.parse / less.process / less.joinTree` 可独立调用。
+
+**关键参数**：
+- 5 阶段管线
+- `parse` 词法
+- `process` 求值
+- `joinTree` 展平
+- `compress` 压缩
+
+**最佳实践**：调试 less 编译慢用 `--verbose` 看每阶段耗时；自定义函数在 `process` 阶段注册；`tree.join()` 手动展平自定义树；`compress: true` 生产**必**开。
 
 ---
 
-## 二、扩展范式
+## 第二段：扩展范式
 
-### 模式 6 · `expect()` 统一 token/子 parser 入口
+### 模式 6 - 环境抽象（Environment / FileManager）
 
-**问题场景**：递归下降 parser 写起来"调子 parser 函数 / 匹配终结符正则"两套写法割裂。
+**问题场景**：less.js 跑在 Node 能读文件，浏览器不能读，框架嵌入（webpack）要从内存取。
 
-**解决方案**：`parser.js#expect(arg, msg)` 接受函数（子 parser，递归调用）或正则/字符串（终结符匹配）；`(arg instanceof Function) ? arg.call(parsers) : parserInput.$re(arg)` 一行统一入口；这是 PEG 解析器典型接口——`expect(function)` 走非终结符，`expect(re)` 走终结符；`parsers` 是 Parser 实例自身（call 后保留 this）。
-
-**关键参数**：
-- `expect(function)` 非终结符
-- `expect(re)` 终结符
-- `parserInput.$re`
-- PEG 风格
-- parsers.this 传递
-
-**最佳实践**：递归下降 parser 用 `expect()` 统一函数/正则；**比写两套入口简单 2x**；适用任何"PEG / 递归下降 parser"。
-
-### 模式 7 · `Anonymous` 节点 fast-path
-
-**问题场景**：`1px solid #000` 这种纯字面量在解析时走完 dimension/color 完整 token 化是浪费；CSS 语法错（拼写错属性名）通常由浏览器兜底。
-
-**解决方案**：Parser 检测"值不含变量/操作/动态引用"时整段当 `Anonymous` 字符串节点直接吞下，不解析内部 token；eval 阶段 `Anonymous` 节点 `eval()` 返回自身（identity）；代价：CSS 语法错误延迟到 eval/运行时才发现；收益：50% parse 时间节省。
+**解决方案**：`Environment` 抽象运行时环境（paths / mime / encoding）；`FileManager` 抽象文件 IO（`getFile / writeFile`）；3 内置实现（`NodeFileManager` / `BrowserFileManager` / `MemoryFileManager`）；`addImport` 注入虚拟文件。框架集成（less-loader）走 MemoryFileManager 走 webpack module。
 
 **关键参数**：
-- 无变量/操作/dynamic 判定
-- `Anonymous` 节点
-- eval identity
-- 50% 性能提升
-- 错误延迟发现
+- `Environment` 抽象
+- `FileManager` IO
+- 3 内置实现
+- `addImport` 注入
+- `paths` 路径配置
 
-**最佳实践**：parser 要"快 path"用"无操作字面量当字符串"判定；**性能换错误延迟**；适用任何"DSL parser + 大量字面量"。
+**最佳实践**：写插件走 `Environment` + 自定义 `FileManager`；测试时用 `MemoryFileManager` 模拟；`globalVars` / `modifyVars` 注入全局变量无需修改源文件；less-loader 走 `paths: [resolve('src/less')]`。
 
-### 模式 8 · 5 种 Plugin 接口（Visitor/Function/Importer/PreProcessor/PostProcessor）
+### 模式 7 - ImportVisitor + @import 递归
 
-**问题场景**：DSL 工具需要 plugin 机制：自定义函数（darken）、自定义 import（去重）、自定义预处理（autoprefixer）……接口不统一 plugin 难写。
+**问题场景**：`@import "common.less";` 嵌套引用要递归解析 + 合并 + 路径处理。
 
-**解决方案**：`lib/less-plugin/` 体系定义 5 接口：① `install(less, pluginManager, functions)` 加自定义函数 ② `visitor` 数组加自定义 Visitor ③ `importers` 数组加自定义文件加载 ④ `preProcessor` 字符串预处理 ⑤ `postProcessor` CSS 字符串后处理；`PluginManager` 集中管理；`createFromEnvironment` 接受 `pluginManager` 选项。
-
-**关键参数**：
-- 5 类扩展点
-- `PluginManager` 集中
-- `install` 函数注册
-- `visitor` 数组
-- `importers` / pre / post
-
-**最佳实践**：库要做"plugin 机制"按功能切 5 接口；**让用户 5 行写一个 plugin**；适用任何"工具库 + 生态扩展"。
-
-### 模式 9 · 2 轮 Visitor 注册解决 plugin 时序
-
-**问题场景**：plugin 体系里"plugin B 想在 plugin A 的 visitor 之后跑"——但 A 注册时 B 还没注册，引用不到；plugin 想在 eval 前/后插队。
-
-**解决方案**：`transform-tree.js` 第 44-99 行 `for (let i = 0; i < 2; i++)`：第一轮把所有 visitor 注册到 `visitors` 列表 + `preEvalVisitors` 列表；第二轮发现"如果前一次已经跑过就不重复跑"；`isPreEvalVisitor` 跑在 eval 之前、`isPreVisitor` 用 `unshift` 排到队首、其他用 `push` 排到队尾；plugin 可在运行期动态添加 visitor。
+**解决方案**：`ImportVisitor` 在 Process 阶段遍历 AST 找 `Import` 节点；按路径策略（`@import (less) / (inline) / (reference) / (once) / (multiple)`）走对应处理；递归深度 + 循环引用检测。`inline` 把目标 less 当字符串内联；`reference` 不输出只引 Mixin。
 
 **关键参数**：
-- 2 轮 for 循环
-- `isPreEvalVisitor` 时序
-- `isPreVisitor` 队首
-- 动态 visitor 列表
-- `first()/get()` 迭代器
+- `@import (less)` 解析
+- `@import (inline)` 内联
+- `@import (reference)` 引用
+- `@import (once)` 单次
+- `@import (multiple)` 多次
 
-**最佳实践**：plugin 体系要"plugin 注册时序无关"用 2 轮注册；**解决 plugin A/B 互相依赖**；适用任何"plugin 框架 + 时序控制"。
+**最佳实践**：大型项目 `@import (reference) "theme.less"` 引用而不输出；`@import (inline) "data.less"` 内联数据；循环引用用 `tree.importManager.push` 检测；`@import "lib/"` 目录遍历（`index.less`）。
 
-### 模式 10 · callback / Promise 双模式 API
+### 模式 8 - 嵌套展平算法
 
-**问题场景**：Node 风格 API 早期用 callback，async/await 时代用 Promise。两种风格切换写两套包装累。
+**问题场景**：`.a { .b { color: red; } }` 要展平为 `.a .b { color: red; }`，但 `&` 父引用要拼合。
 
-**解决方案**：`lib/less/render.js` 42 行极简：`render(input, options, callback)`；`if (typeof options === 'function')` 判定 callback 模式；不传 callback 时 `return new Promise(...)` 内调 `render.call(self, input, options, cb)`；用户既可 `less.render(src, cb)` 也可 `await less.render(src)`；`parse` 内部 try/catch 把 `LessError` 传到 `callback(err)` 或 `reject(err)`。
+**解决方案**：`tree.join()` 算法递归遍历 Ruleset；`joinSelector` 把父子选择器数组 `["a", "b"]` 拼成 `"a b"`；`joinPath` 处理 `&` 父引用（`a { &.b }` → `a.b`）；同名 Ruleset 合并 `merge()`。最终输出纯 CSS 选择器树。
 
 **关键参数**：
-- 42 行极简
-- `typeof options === 'function'` 判定
-- callback / Promise 二选一
-- `bind(api)` this 上下文
-- `LessError` 错误统一
+- `tree.join()`
+- `joinSelector`
+- `joinPath` & 拼接
+- `merge()` 合并
+- 递归展平
 
-**最佳实践**：Node 库 API 要"老 callback + 新 async/await"双模式；**比写两套 wrapper 简单 5x**；适用任何"Node 库 + 双风格 API"。
+**最佳实践**：嵌套 3 层内**不要**超过（4 层难维护）；`&.active` 是 `&` + `.active` 拼合**不是** `& .active`；同名 Ruleset 合并走 `+:` 语法；调试展平结果用 `--source-map`。
+
+### 模式 9 - 严格数学 + `--strict-math`
+
+**问题场景**：`@w: 100px; height: @w / 2;` 编译成 `height: 100px / 2;` 浏览器不认识。
+
+**解决方案**：`--strict-math on` 强制数学运算求值（`50px`）；默认 off 保留 calc 表达式；`--math=always` 始终 calc；`--math=parens-division` 括号内除法 calc 括号外不 calc。三档可调。
+
+**关键参数**：
+- `--strict-math on/off`
+- `--math=always`
+- `--math=parens-division`
+- calc() 兼容
+- 单位推导
+
+**最佳实践**：新项目**总是** `--strict-math on` 避免浏览器不识别；`@w / 2` 在 strict 下变 `50px`；老项目渐进切严格数学；`calc(@a + @b)` 主动 calc 浏览器算。
+
+### 模式 10 - sourcemap + 调试
+
+**问题场景**：less 编译出错要定位回原 `.less` 文件具体行，传统报错只给编译后行号。
+
+**解决方案**：`--source-map` 输出 `.map` 文件含源映射；浏览器 DevTools 在 Source 看到原 `.less` 行号直接断点；`sourceMapURL=` 注释挂 `.map`；`--source-map-rootpath` 配根路径；`less.render` API 返 `{ css, map, imports }` 三件套。
+
+**关键参数**：
+- `--source-map` 开关
+- `.map` 文件
+- `sourceMapURL` 注释
+- `source-map-inline` 内联
+- `map: { outputSourceFiles: true }`
+
+**最佳实践**：生产**必**开 sourcemap 调试；`sourceMapURL=data:application/json;base64,...` 内联省一个 HTTP；webpack `less-loader` 配 `sourceMap: true`；CI 上传 sourcemap 到 Sentry 拿真实行号。
 
 ---
 
-## 三、进阶范式
+## 第三段：进阶范式
 
-### 模式 11 · `lessc` 手写 argv 解析（679 行）
+### 模式 11 - Plugin 体系（Visitor + PreProcessor）
 
-**问题场景**：CLI 参数解析简单工具（minimist / yargs） 早期不流行；自己写可控；现在回头看是技术债。
+**问题场景**：业务想扩展 less.js 能力（自定义函数、修改 AST、注入 import）。
 
-**解决方案**：`bin/lessc` 第 1-10 行是 shebang + 引入 Node 入口；后 669 行是手写 argv 解析：`-` 前缀判断、`--flag` 长选项、`-x=value` 短选项带值、参数消费顺序、`--no-color` 否定语法、help 文本生成；`process.argv` 切片 + state machine；优点：完全可控、零依赖；缺点：679 行复杂度。
-
-**关键参数**：
-- 679 行手写
-- 零依赖
-- `-` / `--` 双格式
-- `--no-X` 否定
-- help 文本内置
-
-**最佳实践**：CLI 工具要"早期 + 零依赖"手写 argv；**现代用 yargs 5 行代替**；适用任何"早期 CLI + 单 binary"。
-
-### 模式 12 · `render.js` `this` 上下文假设（10 年技术债）
-
-**问题场景**：`less/index.js` 末尾 `initial.parse = initial.parse.bind(api); initial.render = initial.render.bind(api);`——承认 "Some of the functions assume a `this` context of the API object, which causes it to fail when wrapped for ES6 imports. An assumed `this` should be removed in the future."
-
-**解决方案**：历史问题用 `bind()` 兜底；ES6 import 拿到的是独立 `parse` 函数，缺 this 上下文；ESM 时代应该全部用显式参数传 API；`render.js` 内部 `if (!callback) return new Promise(...).bind(self, ...)` 显式自管理；这是 less.js 在仓库公开承认的"未来应该改"。
+**解决方案**：`less.Plugin("myPlugin", less => { ... })` 形式注册插件；插件可注入 `functions` / `visitors` / `preProcessor`；`install(less, pluginManager)` 钩子；`preProcessor` 在 Parse 前修改源码；`visitors` 在 Process 阶段加自定义 AST 遍历。
 
 **关键参数**：
-- 10 年技术债
-- `bind(api)` 兜底
-- ES6 import 不兼容
-- 显式 this 应被替换
-- 公开承认待重构
+- `less.Plugin(name, fn)` 注册
+- `functions` 函数扩展
+- `visitors` 树遍历
+- `preProcessor` 预处理
+- `pluginManager`
 
-**最佳实践**：库设计阶段就避免隐式 `this` 上下文；**新项目从 day-1 显式参数**；适用任何"OOP 库 + 模块化"。
+**最佳实践**：写 less 插件走 `less.Plugin` 而**不是** monkey-patch 内部；`preProcessor` 可注入全局样式；`visitors` 改 AST 走 `tree.api` 工具；测试用 `less.render(src, { plugins: [myPlugin] })`。
 
-### 模式 13 · parser 注释即架构文档
+### 模式 12 - 函数注册（`tree.functions`）
 
-**问题场景**：传统 ADR 写在 docs/，写完 3 个月就过期；新人读 parser.js 不知道"为什么这样写"。
+**问题场景**：less 内置函数不够用，要加业务函数（`formatDate()` / `t()` 多语言）。
 
-**解决方案**：`parser.js` 顶部 13-44 行注释直接写"4x 加速""50% 加速"性能数据 + 原因（"Matching and slicing on a huge input is often cause of slowdowns"）；注释里直白"放弃 lexer 阶段，因为浏览器场景下不划算"；10 年后回头看这些数字就是项目史，比单独 ARCHITECTURE.md 不会腐烂。
-
-**关键参数**：
-- 顶部 13-44 行
-- 4x / 50% 性能数据
-- WHY 而非 WHAT
-- 10 年不腐烂
-- 比 ADR 实用
-
-**最佳实践**：库要做"长期维护"在源码顶部写 WHY + 性能数据；**比单独 ADR 文件可靠 5x**；适用任何"10 年+ 开源项目"。
-
-### 模式 14 · circular import 警告（datetime/duration 案例）
-
-**问题场景**：`datetime.js` 顶部 `import Duration from "./duration.js"` + `duration.js` 顶部 `import DateTime from "./datetime.js"`——Node 解析时一方拿到未初始化 `undefined`；能跑通是因为两者只用对方 static factory 推迟到运行时 + ES module live binding 兜底。
-
-**解决方案**：能跑靠 ES module live binding（import 是 binding 而非值）；**反模式警告**：新人改一行就崩；重构要先把循环依赖解掉（用第三个文件集中 mutual deps）；静态分析工具（madge / circular-dependency-scanner）可检测。
+**解决方案**：`tree.functions` 是函数表；`less.functions.function.add('myFunc', (arg) => new tree.Anonymous('...'))` 注册；函数返回值是 `tree.Node`（`Anonymous` 字符串 / `Color` 颜色 / `Dimension` 数值 / `URL` 路径）；`less.js` 函数文档列所有可用 API。
 
 **关键参数**：
-- circular import 警告
-- live binding 兜底
-- 推迟到运行时
-- static factory 隔离
-- 反模式案例
+- `tree.functions`
+- `function.add(name, fn)`
+- `tree.Node` 返回值
+- `Anonymous/Color/Dimension`
+- `lib/less/tree/functions.js`
 
-**最佳实践**：库设计阶段就避免循环 import；**如不可避免，调用都走 static factory 推迟**；适用任何"双向依赖的 module 设计"。
+**最佳实践**：自定义函数用 `tree.Anonymous` 返回字符串；颜色用 `new tree.Color(r,g,b)`；`@var: #fff; lighten(@var, 10%)` 注册 lighten 函数；`tree.operate` 算运算。
 
-### 模式 15 · `Ruleset._lookups` lazy 缓存（简单但正确）
+### 模式 13 - 同步/异步渲染
 
-**问题场景**：`@variable` 变量在 ruleset 内查询，递归往上找父级；每次查询 O(深度)；ruleset 实际只查几次变量。
+**问题场景**：less 早期是 callback，ES6+ 用 Promise；同步/异步 API 选哪个。
 
-**解决方案**：`lib/less/tree/ruleset.js` 构造函数 `this._lookups = {}; this._variables = null; this._properties = null;` 第一次访问时构建缓存，后续 O(1) 字典查找；这是"启动慢一点、运行时快很多"的 memoization 简单范本；`Ruleset` 共 1067 行但核心是 4 个 lazy 缓存字段。
+**解决方案**：`less.render(css, options, callback)` callback 风格；`less.render(css, options).then(({css, map, imports}) => ...)` Promise 风格；`less.parse(css, options, callback)` 单独解析；`less.refresh(reload, options, callback)` 浏览器热重载。两种风格并存。
 
 **关键参数**：
-- `_lookups` 字典
-- lazy 首次构建
-- 后续 O(1)
-- 简单 memoization
-- Ruleset 1067 行
+- `less.render` 编译
+- `less.parse` 解析
+- `less.refresh` 热重载
+- callback + Promise 双 API
+- `modifyVars` 变量改
 
-**最佳实践**：库要做"重复查询"用 lazy 缓存字段；**第一次慢、后续 O(1)**；适用任何"深度查找 + 多次查询"。
+**最佳实践**：Node API 走 Promise `.then` 链；浏览器开发者模式用 `less.refresh(true)` 监听文件变更；`less.modifyVars({primary: '#000'})` 主题切换实时；`less.watch()` 监听。
+
+### 模式 14 - 主题切换 + 实时编译
+
+**问题场景**：SaaS 产品要"白天/夜间模式"动态切换主题，CSS 预编译后怎么动态改？
+
+**解决方案**：`less.modifyVars({ '@primary': '#000' })` 浏览器 API 改变量全量重编译；CSS Custom Properties 双轨（`:root { --primary: #4285f4; } .dark { --primary: #fff; }`）纯 CSS 切主题；编译后产多套 CSS 主题文件按需 `<link rel="stylesheet">` 切。
+
+**关键参数**：
+- `less.modifyVars` 重编译
+- CSS Variables 双轨
+- 多套 CSS 主题
+- 主题切换器
+- 持久化
+
+**最佳实践**：现代项目**用** CSS Custom Properties 切主题**不要** less.modifyVars（性能差）；老项目 less.modifyVars 兼容；主题存 localStorage 持久化；`prefers-color-scheme` 媒体查询自动暗色。
+
+### 模式 15 - autoprefixer 后处理集成
+
+**问题场景**：less 编译后 CSS 要补齐浏览器前缀（`-webkit-` / `-moz-` / `-ms-`）。
+
+**解决方案**：less 4.x 内置 `Prefixes` 阶段做简化 autoprefixer；`--autoprefix` 配置 `last 2 versions` 等 browserslist 字符串；外部集成用 `postcss-less` 走 `postcss([require('autoprefixer')]).process(lessOutput)`；less-loader 链式 `less` + `postcss` 双编译器。
+
+**关键参数**：
+- `--autoprefix`
+- browserslist 字符串
+- `postcss-less`
+- `less` + `postcss` 链
+- 前缀补齐
+
+**最佳实践**：现代项目 autoprefixer 走 PostCSS 而**不是** less 内置（更全更新）；`browserslistrc` 统一目标浏览器；`last 2 versions, > 1%` 默认；CI 校验 autoprefixer 后体积膨胀 < 10%。
 
 ---
 
-## 四、实战范式
+## 第四段：实战范式
 
-### 模式 16 · smoke test 10 行验证 Less 环境
+### 模式 16 - smoke test 5 行验证
 
-**问题场景**：新环境装好 less 后要快速验证编译 + sourcemap + @import 3 件套。
+**问题场景**：less 装好验证能否跑通基础语法。
 
-**解决方案**：10 行 smoke test：```bash
-echo '@base: #f00; .a { color: @base; }' > /tmp/t.less
-node packages/less/bin/lessc /tmp/t.less
-# 期望输出: .a { color: #ff0000; }
-# sourcemap:
-node packages/less/bin/lessc --source-map /tmp/t.less /tmp/out.css
-# 验证 .map 文件生成
-``` 期望：编译成功 + 颜色替换 + sourcemap 文件可读。
+**解决方案**：5 行 smoke test：```js const less = require('less'); less.render(` @primary: #4285f4; .btn { background: @primary; padding: 10px * 2; &:hover { background: darken(@primary, 10%); } } `, {}).then(out => console.log(out.css)); ``` 期望输出：`.btn { background: #4285f4; padding: 20px; } .btn:hover { background: ... }`。
 
 **关键参数**：
-- 10 行核心验证
-- 变量替换
-- @import 解析
-- sourcemap 生成
-- 1 分钟可跑完
+- 5 行核心验证
+- 变量 + 嵌套 + 运算
+- darken 函数
+- Promise 风格
+- 10s 可跑完
 
-**最佳实践**：新环境验证 DSL 工具用 10 行 smoke test；**比 dev server 5 分钟快 30x**；适用任何"Less 引入 + 升级回归"。
+**最佳实践**：新装 less 环境用 5-10 行 smoke test 验证"变量 + Mixin + 嵌套 + 函数"四件套；预期输出与实际对比；CI 跑 `lessc smoke.less` 验证 CLI。
 
-### 模式 17 · 测试资产即文档（Golden File）
+### 模式 17 - less-loader + webpack 集成
 
-**问题场景**：DSL 编译器测试难写——单元测试覆盖不到"输出 CSS 字符串对了"。
+**问题场景**：Webpack 项目要 less loader 处理 `.less` 资源。
 
-**解决方案**：`test-data/tests-unit/` 下每个文件夹一个特性（mixins/extend/import/...），每个 .less 配一个 .css 当 golden file；测试编译 .less 对比 .css；改 Parser 后 golden file diff 一眼看出"哪里回归"；比注释不会腐烂——注释可能错，golden file 错就测试 fail。
-
-**关键参数**：
-- 每个 .less + .css
-- golden file diff
-- 改 Parser 即时反馈
-- 比注释可靠
-- test-data 仓库
-
-**最佳实践**：DSL 编译器测试用 golden file 配对；**比单元测试覆盖更全面**；适用任何"编译器 / 转换器"。
-
-### 模式 18 · 插件 5 行 demo 模板
-
-**问题场景**：想给 less 加一个 `darken-strong` 函数 plugin，不知道从哪入手。
-
-**解决方案**：5 行 plugin 模板：```js
-// my-plugin.js
-module.exports = {
-  install(less, pluginManager, functions) {
-    functions.add('darken-strong', (color) => darken(color, 30));
-  }
-};
-// 调用: less.render(src, { pluginManager: new less.PluginManager([myPlugin]) })
-``` 期望：`darken-strong(#fff)` 输出 `#b3b3b3`。
+**解决方案**：`less-loader` 9.x 走 `less.render` 同步 API；`webpack.config.js` 配 `module.rules: [{ test: /\.less$/, use: ['style-loader', 'css-loader', 'less-loader'] }]`；`lessOptions` 传 `globalVars / modifyVars / math / paths`；`additionalData` 注入全局 `@import`。
 
 **关键参数**：
-- 5 行极简
-- `install` 函数
-- `functions.add` 注册
-- PluginManager 注入
-- 立即生效
+- `less-loader` 9.x
+- `lessOptions` 配置
+- `globalVars` 全局变量
+- `modifyVars` 改变量
+- `additionalData` 注入
 
-**最佳实践**：DSL 工具 plugin 体系设计要"5 行写一个 plugin"；**降低扩展门槛 10x**；适用任何"工具 + 生态"。
+**最佳实践**：`lessOptions: { lessOptions: { math: 'always' } }` 嵌套配置（v9 改了）；`additionalData: '@import "src/styles/variables.less";'` 注入全局变量**不要**每文件 import；`sourceMap: true` webpack dev 调试。
 
-### 模式 19 · vs Sass / PostCSS / Stylus 选型
+### 模式 18 - Vite + less 集成
 
-**问题场景**：4 个候选（less / sass / postcss / stylus），按需选型。
+**问题场景**：Vite 项目要原生支持 `.less` 文件无需 loader。
 
-**解决方案**：less 17k star + CSS 超集 + 浏览器原生 + 体积 250KB → 学习成本最低、Bootstrap 4 之前事实标准；sass 30k+ star + Dart 编译 + 功能最全 + 社区最大 → 新项目默认；stylus 11k star + 极简语法 → 灵活但学习曲线不一致；postcss 28k+ star + 插件架构 → 极致可组合 + 需自选插件；less 是"最低学习成本"，sass 是"功能完备"，postcss 是"灵活可组合"。
-
-**关键参数**：
-- less 17k CSS 超集
-- sass 30k Dart 编译
-- postcss 28k 插件
-- stylus 11k 灵活
-- 各有定位
-
-**最佳实践**：CSS 预处理器选型按"学习成本 + 功能 + 体积"3 维度打矩阵；**新项目默认 sass**、**老项目留 less**、**极致灵活选 postcss**；适用任何"CSS 工具选型"。
-
-### 模式 20 · 7 天复刻 mini-less
-
-**问题场景**：学习用，想搭一个简化版 Less 理解 DSL 编译器核心。
-
-**解决方案**：7 天分 5 步：① Day 1 AST 节点类（Ruleset / Declaration / Value）② Day 2 Parser 变量 + Mixin 基础 ③ Day 3 ToCSSVisitor 输出 CSS 字符串 ④ Day 4 @import 跨文件 + 环境抽象 ⑤ Day 5 Plugin 体系 5 接口 + 2 轮 Visitor 注册 + 单元测试。每天 200-500 行，Day 1 能跑空 Parser，Day 5 能跑"变量 + Mixin + @import"完整子集。
+**解决方案**：Vite 内置 less 支持（`vite` 自身用 less）；`npm install less` 装编译器即可；`vite.config.js` 不需要 `css.preprocessorOptions.less` 默认配置；`@import "@/styles/variables.less"` 路径别名；`@import "vars.less"` 隐式后缀。
 
 **关键参数**：
-- Day 1-2 骨架 + AST
-- Day 3 渲染输出
-- Day 4 @import
-- Day 5 插件 + 测试
+- Vite 内置支持
+- `npm install less`
+- `css.preprocessorOptions.less`
+- 路径别名 `@`
+- HMR 热更新
+
+**最佳实践**：Vite 5+ `css.preprocessorOptions.less: { additionalData: '@import "@/vars.less";' }` 注入全局；**不要**装 sass 那样装 sass-loader；`@import (reference)` 减少输出；HMR 改 less 即时刷新。
+
+### 模式 19 - vs Sass / PostCSS / Stylus 选型
+
+**问题场景**：4 个候选 CSS 预处理器（Sass / Less / Stylus / PostCSS）。
+
+**解决方案**：Sass（SCSS）最大生态 + 强大函数 + Vue/Bootstrap 默认；Less 学习曲线低 + 浏览器可运行 + 旧项目多；Stylus 极简 + Node 生态；PostCSS 是工具集合（autoprefixer/postcss-preset-env）不直接是预处理器。新项目 Sass，老项目 Less。
+
+**关键参数**：
+- Sass/SCSS 最大生态
+- Less 易学
+- Stylus 极简
+- PostCSS 工具集
+- Bootstrap 4- 用 Less
+
+**最佳实践**：新项目**用** Sass（生态 + 工具链最全）；Less 适合老 Bootstrap 4- 维护项目；PostCSS 适合配 autoprefixer 走原生 CSS 渐进；Stylus 适合小项目极简风格。
+
+### 模式 20 - 7 天复刻 mini-less
+
+**问题场景**：学习用，想搭一个简化版 less.js 理解核心。
+
+**解决方案**：7 天分 5 步：① Day 1-2 词法 + AST（10 节点类型） ② Day 3 变量 + 运算 + 函数 ③ Day 4 Mixin + 嵌套 ④ Day 5 `@import` 递归 + sourcemap 输出。
+
+**关键参数**：
+- Day 1-2 词法 AST
+- Day 3 变量
+- Day 4 Mixin
+- Day 5 Import
 - 7 天最小可用
 
-**最佳实践**：复刻 Less 先求"最小可跑内核"再迭代，7 天只够做 80% 场景的简化版；**完整 typeIndex 缓存 + 5 Pass Visitor + 5 接口 plugin 需 1 个月+**；适用任何"DSL 编译器学习"。
-
----
-
-## 附：仓库元信息
-
-- **路径**: `G:\实战案例\GitHub顶尖项目\less.js\`
-- **大小**: ~30MB
-- **总文件**: 907（src 50+ + test 200+ + docs 100+）
-- **核心文件**: `lib/less/parser/parser.js`（2693 行）、`lib/less/tree/ruleset.js`（1067 行）、`lib/less/visitors/visitor.js`（166 行）、`lib/less/transform-tree.js`（103 行）、`lib/less/render.js`（42 行）、`lib/less/functions/function-registry.js`（36 行）
-- **主分支**: master
-- **当前 commit**: gitHead 1df9072ee9
-- **作者**: Alexis Sellier（cloudhead）+ Matthew Dean 等核心维护者
-- **许可**: Apache-2.0
-- **被采用**: Bootstrap 4 之前事实标准、几十万网站
-
-## 一句话总结
-
-less.js 用 JavaScript 把"DSL 编译器应有的形状"做出来：单遍 Parser + 5 Pass Visitor + 环境抽象 + Plugin 5 接口 + 顶部注释即架构文档，是学编译原理/前端工程化的优秀样本。
+**最佳实践**：复刻 less 先求"最小可跑内核"再迭代；7 天只够做 60% 场景的简化版；**完整变量 + Mixin + 嵌套 + 函数 + import + sourcemap 需要 3 个月+**；适用任何"预处理器学习"。

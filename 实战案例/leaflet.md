@@ -1,383 +1,323 @@
-# leaflet · ABL 模式速查（Amazon Builders' Library Style）
+# leaflet - 开源移动优先 Web 地图库
 
-> Leaflet 是 Volodymyr Agafonkin（@mourner）于 2010 年创建的开源交互式地图 JavaScript 库，40KB gzipped JS + 3.2KB gzipped CSS。当前 2.0.0-alpha.1，14 年长盛不衰的事实标准。本文按"问题场景 → 解决方案 → 关键参数 → 最佳实践"格式整理 20 个核心模式。
+**GitHub**: Leaflet/Leaflet
+**Star**: 42k+
+**语言**: JavaScript (ES5/ES6)
+**主题**: 地图 / 瓦片 / GIS / 可视化
+**适用场景**: 移动 Web 地图 / LBS 应用 / 数据可视化 / 离线地图 / GIS 二次开发
 
 ---
 
 ## 第一段：基础范式
 
-### 模式 1 - `L.Class` 混入继承（轻量 OOP 而非 ES6 class）
+### 模式 1 - Class + Mixin 多继承混入
 
-**问题场景**：2010 年 ES5 时代没有 class 关键字，库里又需要"继承 + 混入（mixin） + 实例方法"语法糖。Leaflet 自实现 `L.Class`。
+**问题场景**：地图对象要同时具备"可拖拽 + 可缩放 + 弹出层"等多个能力，传统单继承链难以组合。
 
-**解决方案**：`Class.extend(props)` 创子类构造函数，`Object.create(parentProto)` 设原型链，`__super__` 挂父引用，`statics` 静态方法，`includes` 数组 mixin，`addInitHook` 延迟初始化钩子。
-
-**关键参数**：
-- `initialize` 构造函数
-- `__super__` 父类原型
-- `statics` 静态方法
-- `includes` mixin 数组
-- `_initHooks` 构造后钩子
-- `addInitHook` 钩子注册
-
-**最佳实践**：子类 `initialize` **必须**调 `L.Layer.prototype.initialize.call(this, options)`；mixin 用 `includes: [L.Evented, L.Handler]` 避免 5 层继承；`L.Class.extend({})` 是**唯一**继承入口，**不要**用 `Object.assign`；任何"mixin 优先 OOP"项目可借鉴此范式。
-
-### 模式 2 - `L.Evented` 事件总线（对象间松耦合通信）
-
-**问题场景**：地图、图层、控件要通信（拖动结束、瓦片加载完成、缩放变更），强耦合回调导致 API 难扩展。
-
-**解决方案**：`on(type, fn, ctx)` 注册（链式），`off(type, fn)` 注销防泄漏，`fire(type, data)` 同步触发，`once(type, fn)` 单次，`listens(type)` 探测，`event.target` 触发者引用，`event.propagatedFrom` 嵌套父事件。
+**解决方案**：`L.Class` 是 Leaflet 自研的 class 框架，支持 `include / extend / mergeOptions` 三种混入。`L.Marker` 通过 `L.Mixin.Events` 拿到 `on/off/fire`，通过 `L.Mixin.Events` 拿交互。多 mixin 自由组合，避免菱形继承。
 
 **关键参数**：
-- `on(type, fn, ctx)` 注册
-- `off(type, fn)` 注销
+- `L.Class.extend()` 定义类
+- `include(Mixin)` 实例方法
+- `extend(Mixin)` 静态方法
+- `mergeOptions()` 默认选项
+- `initialize()` 构造钩子
+
+**最佳实践**：所有 Leaflet 类都从 `L.Class.extend()` 起步；mixin 放 `src/layer/mixin/` 目录；钩子走 `fire('event', data)` 自定义事件；子类构造函数**总是**调 `L.Util.setOptions(this, options)`。
+
+### 模式 2 - L.Evented 事件总线
+
+**问题场景**：地图对象几十种事件（click/moveend/zoomstart）需要在多个模块间分发监听。
+
+**解决方案**：`L.Evented` mixin 提供 `on/off/once/off/fireEvent` 完整事件 API；`map.on('click', handler)` 监听；`map.fire('movestart')` 触发；事件支持命名空间 `map.on('layeradd:popup', ...)` 精准订阅；事件可携带 `L.LeafEvent` 对象含原始 DOM 事件。
+
+**关键参数**：
+- `on(types, handler)` 订阅
+- `off(types, handler)` 取消
+- `once(types, handler)` 单次
 - `fire(type, data)` 触发
-- `once(type, fn)` 单次
-- `listens(type)` 探测
-- `event.target` 触发者
-- `event.propagatedFrom` 父事件
+- `L.LeafEvent` 包装
 
-**最佳实践**：自定义 Layer **必须** `L.Evented.include(MyClass)` 才有 `on/fire`；`off(type, fn)` 必填——Map 销毁前 `map.off()` 防内存泄漏；事件名用 `:` 分层 `layer:add` / `tile:load` / `zoom:change`；高频事件（`mousemove`）用 `requestAnimationFrame` 节流；任何"发布订阅"项目可借鉴此范式。
+**最佳实践**：地图操作前 `map.on('moveend', updateMarkers)` 同步更新 marker；用 `off()` 解绑避免内存泄漏；事件命名空间 `layeradd:popup` 便于批量 off；不要直接改内部状态用 `fire` 走事件让其他模块响应。
 
-### 模式 3 - CRS + Projection + Transformation 三层分离（投影/缩放/平移独立）
+### 模式 3 - Map 中介者模式
 
-**问题场景**：地图在 Web 墨卡托（EPSG:3857）、WGS84（EPSG:4326）、SimpleCRS 间切换；不同缩放级别瓦片布局不同。
+**问题场景**：Map / Layer / Control 几十个组件要互相协调，单向依赖会导致耦合爆炸。
 
-**解决方案**：`CRS` 坐标参考系抽象基类，`Projection` 球面→平面（经纬度→米），`Transformation` 平面→像素（米→屏幕坐标），`latLng(point, zoom)` 三步合一业务调用，`scale(zoom)` 256×2^zoom 瓦片大小，`wrapLat` / `wrapLng` 边界包裹防溢出。
+**解决方案**：`L.Map` 是中介者（mediator）：layer 添加删除通过 `map.addLayer/l.removeLayer` 走 map 通知所有 control 同步；pane 切换、坐标转换、事件分发都走 map 中心化。组件之间不直接通信。
 
 **关键参数**：
-- `CRS` 坐标参考系
-- `Projection` 球面→平面
-- `Transformation` 平面→像素
-- `latLng(point, zoom)` 三步合一
-- `scale(zoom)` 256×2^zoom
-- `wrapLat` / `wrapLng` 边界
+- Map 中心节点
+- `addLayer/removeLayer`
+- 事件广播
+- `getBounds/getCenter`
+- `fitBounds/setView`
 
-**最佳实践**：默认 `EPSG:3857` 99% 业务够用；改 CRS `map.options.crs = L.CRS.EPSG4326`；自定义投影用 `Proj4Leaflet` 绑定 proj4js；中国业务用 `GCJ-02` 火星坐标 `gcoord` 库转换；任何"多层投影"项目可借鉴此范式。
+**最佳实践**：自定义组件通过 `L.Map` 暴露的 API 接入**不**绕过；用 `map.eachLayer` 遍历；中心坐标用 `map.getCenter()` 不缓存；自定义 control 监听 `map.on('zoomend', ...)` 同步。
 
-### 模式 4 - `L.Point` 不可变值对象（坐标系统一）
+### 模式 4 - L.CRS 投影抽象
 
-**问题场景**：地图里坐标有"layer point / container point / map point" 3 种，混用必出 bug。Leaflet 用不可变 Point 类。
+**问题场景**：不同地图服务用不同投影（Web Mercator / 地理坐标 / 百度 BD09），底层计算差异巨大。
 
-**解决方案**：`Point(x, y, round)` 构造（round 取整），`.add/.subtract` 算术返**新** Point 不可变，`.scaleBy(k, origin)` 缩放围绕 origin，`L.point(x, y)` 工厂接受数组/对象/两数字多种输入，round 像素对齐防亚像素模糊。
-
-**关键参数**：
-- `Point(x, y, round)` 构造
-- `.add/.subtract` 算术返新
-- `_add/_subtract` 私有变更
-- `.scaleBy(k, origin)` 缩放
-- `L.point(x, y)` 工厂
-- `round` 像素对齐
-
-**最佳实践**：`point.add(other)` 返回**新** Point 原 point 不变——React 风格；内部循环用 `_add` 改自己避免大循环 GC 压力；坐标输入模糊：数组 `[10,20]` / 对象 `{x,y}` / 两数字 都行；像素对齐 `new Point(x, y, true)` 防模糊；LatLng 与 Point 是独立类**不要**混用 `point.x` 当经度。
-
-### 模式 5 - `L.LatLng` 球面坐标（经纬度校验 + 转换）
-
-**问题场景**：经纬度数值范围（lat ±90、lng ±180）需要校验；与 `Point` 互转是高频操作。
-
-**解决方案**：`LatLng(lat, lng, alt)` 构造（`isNaN` 抛错），防重复 new 陷阱，`equals(other, margin)` 浮点比较默认 1e-9，`distanceTo(other)` Haversine 球面距离米，`toBounds(sizeInMeters)` 边界 box，`wrap()` ±180 包裹防溢出，`L.latLng(...)` 工厂接受多种输入。
+**解决方案**：`L.CRS` 抽象基类 + 4 内置实现（`L.CRS.EPSG3857` Web 墨卡托 / `L.CRS.EPSG4326` 地理坐标 / `L.CRS.Earth` 简单球面 / `L.CRS.Simple` 平面）；`latLngToPoint / pointToLatLng / scale / transformation` 4 核心方法。TileLayer 创建时绑定 CRS 决定瓦片计算。
 
 **关键参数**：
-- `LatLng(lat, lng, alt)` 构造
-- `.equals(other, margin)` 浮点比较
-- `.distanceTo(other)` Haversine 米
-- `.toBounds(sizeInMeters)` 边界 box
-- `.wrap()` ±180 包裹
-- `L.latLng(...)` 工厂
+- 4 内置 CRS
+- `latLngToPoint` 投影
+- `pointToLatLng` 反投影
+- `scale(zoom)` 缩放因子
+- `transformation` 仿射变换
 
-**最佳实践**：始终用 `L.latLng(40, -75)` 工厂**不**直接 `new LatLng` 避免重复 new 陷阱；`.equals` 用浮点 margin 比较 `===` 永远 false；高频点击坐标存 `LatLng` 不存 `{lat, lng}` 节省内存；`distanceTo` 是球面距离（米）——平面距离用 `toBounds` + box；任何"球面坐标"项目可借鉴此范式。
+**最佳实践**：默认 Web 墨卡托足够；中国业务接百度/高德需自定义 CRS（`L.CRS.Baidu`）；`L.CRS.Simple` 适合游戏/室内图；切 CRS 时同步换 TileLayer。
+
+### 模式 5 - MapPanes 7 层 z-index
+
+**问题场景**：地图有底图、矢量、overlay、tooltip、popup 多个图层，要保证 popup 在最上、tooltip 在 marker 上、底图在最下。
+
+**解决方案**：`L.Map` 内部维护 7 个 pane（`mapPane / tilePane / overlayPane / shadowPane / markerPane / tooltipPane / popupPane`），每个 pane 是独立 `HTMLElement` 配 z-index；自定义 pane `map.createPane('custom')` 插入指定层级。CSS `z-index` 控叠放。
+
+**关键参数**：
+- 7 内置 pane
+- `createPane(name)` 自定义
+- `getPane(name)` 取出
+- z-index 100-700
+- DOM 层级 = 视觉层级
+
+**最佳实践**：业务自定义层**用** `createPane` 不直接挂 DOM；pane 名字带前缀 `customTraffic` 防冲突；pane 性能优化 `transform: translate3d` 走 GPU；popup 永远在最高层。
 
 ---
 
 ## 第二段：扩展范式
 
-### 模式 6 - `L.Map` 容器类（地图状态/交互/动画的中央调度）
+### 模式 6 - GridLayer 瓦片网格
 
-**问题场景**：地图要管理"中心点、缩放、图层列表、交互 handler、动画队列"——单一对象。
+**问题场景**：地图要按视口加载瓦片（256x256 PNG），拖动时实时计算可见瓦片 + 加载未缓存瓦片。
 
-**解决方案**：`L.Map` 继承 `L.Evented`：`options.crs` 默认 `EPSG:3857`，`center` 默认 `[0,0]`，`zoom` 默认 `0`，`minZoom` / `maxZoom` 限制，`zoomControl` 显示 + / -，`fadeAnimation` 淡入，`zoomAnimation` 平滑缩放，`worldCopyJump` 跨日期；`setView(center, zoom)` 唯一改视图方法。
-
-**关键参数**：
-- `crs` 坐标参考系默认 EPSG:3857
-- `center` 中心点默认 [0,0]
-- `zoom` 缩放级别默认 0
-- `minZoom` / `maxZoom` 限制
-- `zoomControl` 显示 +/-
-- `fadeAnimation` 淡入默认 true
-- `zoomAnimation` 平滑缩放
-- `worldCopyJump` 跨日期默认 false
-
-**最佳实践**：初始化用 `L.map('divId', options)` id 字符串或 HTMLElement 都行；`setView(center, zoom)` 是**唯一**改视图的方法；`map.invalidateSize()` 在容器 resize 后调瓦片重排；关闭动画 `.options.fadeAnimation = false` 低端机优化；销毁 `map.remove()` 清理所有 handler + listeners。
-
-### 模式 7 - `L.Layer` 基类 + 生命周期（图层统一接口）
-
-**问题场景**：Tile/Marker/Vector/Popup 等等图层类型都要"加到 Map/从 Map 移除/重绘"——抽象出 Layer 基类。
-
-**解决方案**：`L.Layer` 继承 `L.Evented`：`initialize(options)` 调 `L.setOptions`，`onAdd(map)` 加入地图钩子子类重写，`onRemove(map)` 移除钩子，`addTo(map)` 公开 API 链式，`remove()` / `removeFrom(map)` 反注册，`getPane(name)` DOM 容器，`bindPopup(content)` 弹窗，`pane: 'shadowPane'` 控制 DOM 层级。
+**解决方案**：`L.GridLayer` 是瓦片基础类；`getTileUrl(coords)` 子类覆写；`_tiles` 内部 Map 缓存 DOM 元素；`redraw()` 强制刷新；`L.TileLayer` 继承 GridLayer 实现 `getTileUrl` 走 OSM/Mapbox URL 模板。viewport 计算用 `map.getBounds()` + 瓦片坐标。
 
 **关键参数**：
-- `onAdd(map)` 加入地图
-- `onRemove(map)` 移除
-- `addTo(map)` 注册链式
-- `remove()` / `removeFrom(map)` 反注册
-- `getPane(name)` DOM 容器
-- `bindPopup(content)` 弹窗
-- `pane` DOM 层级
+- `tileSize` 256 瓦片
+- `minZoom/maxZoom`
+- `getTileUrl(coords)` URL
+- `_tiles` 内部缓存
+- `redraw()` 刷新
 
-**最佳实践**：自定义 Layer**总是** `L.Layer.extend({onAdd, onRemove})`；`onAdd` 返回 `this` 链式 `addTo(map).bindPopup()`；DOM 操作**仅**在 `onAdd` 里，`onRemove` 必须清理；多个 layer 用 `L.layerGroup([...]).addTo(map)` 批量管理；任何"统一图层接口"项目可借鉴此范式。
+**最佳实践**：自定义瓦片源继承 `L.GridLayer` 而**不是** `L.TileLayer`（更灵活）；`tileSize: 512` 走 Retina 高清屏；`updateWhenZooming: false` 防快速缩放时频繁加载；`keepBuffer: 2` 留 2 圈缓存。
 
-### 模式 8 - `L.GridLayer` 瓦片调度（可视区瓦片按需加载）
+### 模式 7 - L.Layer 抽象基类
 
-**问题场景**：地图视图变化要"加载哪些瓦片"、"哪些要卸载"。手算瓦片坐标难。
+**问题场景**：marker、polyline、polygon、tile、image 几十种地图对象类型要有统一接口。
 
-**解决方案**：`_initContainer` 建 3 个 pane（tileContainer / tilePane / gridLayer）+ `_zoom` / `_loaded` / `_tiles` 状态；`_pruneTiles` 移除不可见瓦片（`retain` 标记跳过）；`_update(center, zoom)` 调 `_pxBoundsToTileRange` + 双层循环 `_addTile` 新瓦片 + `_pruneTiles` 回收。
+**解决方案**：`L.Layer` 是所有可视对象基类，定义 `addTo/remove/on/off/getBounds/setStyle` 通用 API；子类（Marker/Polyline/Polygon/TileLayer/ImageOverlay）实现 `onAdd(map)/onRemove(map)` 钩子做 DOM 挂载/卸载；`map.hasLayer(layer)` 检测存在。
 
 **关键参数**：
-- `tileSize` 瓦片像素 256/512
-- `opacity` 透明度
-- `updateWhenZooming` 缩放时更新默认 true
-- `updateInterval` 节流 ms 默认 200
-- `zIndex` 层级
-- `bounds` 限制范围
-- `noWrap` 禁跨日期
+- `addTo(map)` 挂载
+- `remove()` 卸载
+- `onAdd / onRemove` 钩子
+- `getBounds` 边界
+- `setStyle` 样式
 
-**最佳实践**：自定义瓦片源继承 `L.GridLayer` 重写 `getTileUrl(coords)`；`tileSize: 512` retina 显示 OSM 主流；`updateWhenZooming: false` + `keepBuffer: 2` 减少缩放闪烁；瓦片源 `attribution: '© OpenStreetMap'` 法律要求；`bounds: L.latLngBounds([...])` 限制非全屏地图省流量。
+**最佳实践**：所有可视对象继承 `L.Layer`；`onAdd` 负责 DOM 创建 + 事件绑定 + map 注册；`onRemove` 反向释放防泄漏；自定义 layer 必须实现 `onAdd / onRemove` 不留空。
 
-### 模式 9 - `L.TileLayer.WMS` + GetCapabilities（WMS 服务适配）
+### 模式 8 - Renderer 双实现 SVG/Canvas
 
-**问题场景**：业务用 WMS（Web Map Service）服务端点（如 GeoServer）出图。TileLayer 需支持 `GetCapabilities` 自动发现。
+**问题场景**：渲染 1 万个点 / 线，传统 SVG 节点太多 DOM 爆炸；Canvas 难交互（点击拾取）。
 
-**解决方案**：`TileLayerWMS` 继承 `TileLayer`：`defaultWmsParams = {service, request: 'GetMap', layers, format, transparent, version}`；`onAdd` 探测 CRS（`EPSG:4326` 或 `EPSG:3857`）+ 计算 bbox + 调父类；`getTileUrl(coords)` 用 `_crs.project` 把瓦片角点转投影坐标 + 拼接 bbox query string。
+**解决方案**：`L.SVG` 和 `L.Canvas` 两种 Renderer 都继承 `L.Renderer`；`L.Path`（Polyline/Polygon/Circle）渲染时通过 `map.options.renderer` 决定走哪个；SVG 适合 < 1000 元素 + 强交互；Canvas 适合 > 1000 元素 + 高性能。`renderer: L.canvas()` 创建时指定。
 
 **关键参数**：
-- `service: 'WMS'` 服务类型必填
-- `version: '1.1.1'` WMS 版本
-- `layers: 'states'` 图层名逗号分隔
-- `format: 'image/png'` 瓦片格式透明要 png
-- `transparent: true` 透明背景
-- `crs` 投影默认地图
-- `GetCapabilities` 自动发现
+- `L.SVG` 矢量 DOM
+- `L.Canvas` 像素绘制
+- `renderer` 工厂
+- `redraw()` 重绘
+- 拾取算法
 
-**最佳实践**：`L.tileLayer.wms(url, {layers: 'states'})` 工厂一行启动；`transparent: true` + `format: 'image/png'` 是基础配置；`TileLayer.WMS` 不缓存——服务端出图成本高；矢量瓦片优先：能用 `L.TileLayer.MVT`（Mapbox Vector Tile）就不用 WMS；大范围 WMS 配 `bounds` 限制减少白图。
+**最佳实践**：1000 元素以下默认 SVG，之上切 `L.canvas({ padding: 0.5 })`；Canvas 不能用 CSS 选择器改样式，得 `setStyle({ color: 'red' })`；混合使用 `map.options.preferCanvas = true`。
 
-### 模式 10 - `L.GeoJSON` 矢量数据加载（GeoJSON 数据可视化）
+### 模式 9 - TileLayer.WMS 标准化协议
 
-**问题场景**：业务有 GeoJSON 数据（边界/点/线），要在地图画。手动 `forEach feature → 画 Path` 重复。
+**问题场景**：业务要接 WMS（Web Map Service）标准服务（地形、气象、海图）数据。
 
-**解决方案**：`L.GeoJSON` 继承 `L.FeatureGroup`：`addData(geojson)` 递归处理 features；`geometryToLayer` switch 6 种 geometry type：Point → Marker / LineString → Polyline / Polygon → Polygon / MultiPolygon；`pointToLayer` 自定义点 → Layer，`style` 线/面样式，`onEachFeature` 每 feature 回调 `bindPopup`，`filter` 动态过滤。
+**解决方案**：`L.TileLayer.WMS extends TileLayer` 配 `wmsOptions: { layers: 'topo', format: 'image/png', transparent: true }`；自动构造 GetCapabilities 请求 + GetMap URL；`on('loading', e => showSpinner())` 监听加载状态。OGC 标准协议。
 
 **关键参数**：
-- `pointToLayer` 点 → Layer 默认 Marker
-- `style` 线/面样式
-- `onEachFeature` 每 feature 回调
-- `filter` 过滤器 fn
-- `coordsToLatLng` 坐标 → LatLng
-- `attribution` 来源必填
+- `wmsOptions.layers`
+- `format: image/png`
+- `transparent: true`
+- `version: 1.1.1/1.3.0`
+- `crs` 投影
 
-**最佳实践**：`L.geoJSON(data, {style, onEachFeature})` 一行加载；`onEachFeature(feature, layer) { layer.bindPopup(feature.properties.name); }`；`pointToLayer: (feature, latlng) => L.circleMarker(latlng, {radius: feature.properties.size})`；大数据（>10k features）用 `Leaflet.markercluster` 插件——基础实现不虚拟化；任何"GeoJSON 渲染"项目可借鉴此范式。
+**最佳实践**：WMS 服务地址走 HTTPS；多图层用逗号分隔 `layers: 'topo,roads'`；`infoFormat: 'application/json'` 接 WMS GetFeatureInfo；超时配 `maxGetUrlLength: 1900` 防 URL 截断。
+
+### 模式 10 - InteractiveLayer + 拾取
+
+**问题场景**：地图上 1 万个 marker，要点击时精准定位是哪个。
+
+**解决方案**：`L.Layer` 默认不可交互（仅显示）；`L.Path` 走 SVG 时 DOM 事件天然拾取；`L.Marker` 用 `divIcon` 自定义 HTML 拾取；`L.Canvas` 需自己写 hit detection（`renderer._hitTest`）。`interactive: true` 控制是否响应事件。
+
+**关键参数**：
+- `interactive` 标志
+- `bubblingMouseEvents`
+- `getElement()` 拾取入口
+- Canvas `hitTest`
+- 事件冒泡控制
+
+**最佳实践**：业务自定义 layer 总设 `interactive: true`；多个 layer 嵌套用 `L.LayerGroup` 防事件穿透；Canvas 高密度场景用 `Leaflet.PixiOverlay` 走 WebGL 提升拾取。
 
 ---
 
 ## 第三段：进阶范式
 
-### 模式 11 - SVG vs Canvas 双渲染器（矢量图形性能/质量权衡）
+### 模式 11 - Handler 拖拽 / 缩放手势
 
-**问题场景**：地图矢量图形（折线、多边形）多时（>1000 个）SVG 慢，Canvas 难交互。Leaflet 提供 SVG + Canvas 双路径。
+**问题场景**：地图要支持鼠标拖拽、滚轮缩放、双击放大、键盘方向键、触摸双指捏合，5 种交互要正交组合。
 
-**解决方案**：`L.SVG` 渲染器 `_initContainer` 建 svg/g 节点挂 overlayPane，`_updatePoly` 算 attrs（stroke / stroke-width / fill / fill-opacity / pointer-events）+ setAttribute path d；`L.Canvas` 渲染器 `_redraw` 调 `clearRect` + 遍历 `_layers[id]._redraw(ctx)` 一次性重画。
-
-**关键参数**：
-- `renderer: L.svg()` 显式指定默认
-- `renderer: L.canvas()` Canvas 路径
-- `Pane` DOM 容器
-- `interactive` 可点击
-- `weight` 线宽像素
-- `dashArray` 虚线
-
-**最佳实践**：< 500 矢量用 SVG 可单独点击/拖拽；> 500 矢量用 Canvas 10-100x 性能优势；`L.canvas({padding: 0.5})` 让 layer 超出可视区不裁剪；想混合 `var poly = L.polygon(coords, {renderer: L.canvas()})`；自定义 Renderer `L.Canvas.extend({...})`。
-
-### 模式 12 - 瓦片 retina 子域名（高 DPI 屏 + CDN 并发）
-
-**问题场景**：retina 屏（2x）瓦片要 2x 分辨率；OSM CDN 多子域名（a/b/c.tile.openstreetmap.org）并发更快。
-
-**解决方案**：`TileLayer.initialize` 检测 retina + 子域名展开（`'abc'` → 拆为 3 字符数组）；`getTileUrl` template 替换 `{r}`（`@2x` 或空）、`{s}`（子域名）、`{x}/{y/z}`，TMS 模式下翻转 Y 轴（`invertedY = max.y - coords.y`）。
+**解决方案**：`L.Handler` 抽象基类 5 个子类（`Drag / BoxZoom / DoubleClickZoom / ScrollWheelZoom / TouchZoom`）；`map.dragging.enable()/disable()` 开关；Handler 走 `enable/disable/_onMouseDown/_onMouseMove/_onMouseUp` 钩子；多 Handler 可同时启用。
 
 **关键参数**：
-- `subdomains: 'abc'` CDN 子域名并发 3
-- `subdomains: 'abcd'` OSM 全 4
-- `detectRetina: true` 自动 2x
-- `zoomReverse: false` TMS Y 翻转
-- `crossOrigin: true` CORS canvas 必备
-- `errorTileUrl` 失败回退
-- `maxNativeZoom` 原图最大
+- `L.Handler` 基类
+- 5 内置 Handler
+- `enable/disable`
+- `_onMouseDown/Up`
+- 自定义 Handler
 
-**最佳实践**：OSM 瓦片**必须**子域名并发 `{s}.tile.openstreetmap.org`；`detectRetina: true` 自动用 `@2x` 后缀（瓦片商提供时）；`crossOrigin: true` Canvas 渲染避免 CORS 污染；`errorTileUrl: '/404.png'` 瓦片 404 不留空白；自托管 `maxNativeZoom: 18` + `maxZoom: 20` 超分放大。
+**最佳实践**：移动端用 `touchZoom: true` 启双指缩放；禁用部分交互 `map.boxZoom.disable()` 业务场景；自定义 Handler 继承 `L.Handler` + 实现 4 钩子；不要直接绑 `mousedown` 走 Handler 抽象。
 
-### 模式 13 - `L.PosAnimation` 60fps 动画（平移/缩放流畅）
+### 模式 12 - L.Control 4 内置 + 自定义
 
-**问题场景**：地图缩放/平移要 60fps，但浏览器布局/绘制成本高。Leaflet 用 `requestAnimationFrame`。
+**问题场景**：地图右上角要有 zoom +/- 按钮、左下角 attribution、右上角图层切换器。
 
-**解决方案**：`run(element, newPos, duration, easeLinearity)` 起动画；`_animate(time)` 算 `elapsed = (time - startTime) / 1000`，`< duration` 调 `_step(easeOut(t))` + rAF 继续；`_step(t)` 用 `newPos.subtract(startPos).multiplyBy(t)._add(startPos)` 插值 + `_round` 像素对齐 + `L.DomUtil.setPosition` 走 GPU transform。
+**解决方案**：`L.Control` 是 UI 组件基类；4 内置（`Zoom / Attribution / Scale / Layers`）；自定义 Control `L.Control.MyControl = L.Control.extend({ onAdd: map => container, onRemove: container })`；`map.addControl(new L.Control.Zoom({ position: 'topright' }))` 4 位置（topleft/topright/bottomleft/bottomright）。
 
 **关键参数**：
-- `duration` 动画时长秒
-- `easeLinearity` 缓动 0.25=急停
-- `requestAnimFrame` 帧驱动 polyfill
-- `_round` 像素对齐
-- `setPosition` transform GPU
-- `cancelAnimFrame` 停止
+- 4 内置 Control
+- `position: 4 边角`
+- `onAdd/onRemove`
+- `addControl/removeControl`
+- 容器 DOM
 
-**最佳实践**：自定义动画继承 `L.PosAnimation` + 重写 `_step`；`duration: 0` 立即跳——业务可触发"无动画模式"；动画**总是**像素对齐——亚像素看起来抖；`L.DomUtil.setPosition` 用 `transform` 比 `top/left` 走 GPU；平移过程中 `wheel` 事件取消动画 `L.DomEvent.stopPropagation`。
+**最佳实践**：自定义 Control 放 `L.Control.MyTool = L.Control.extend`；onAdd 返回容器 DOM；onRemove 清理事件；位置冲突自动栈式排列。
 
-### 模式 14 - `L.DomEvent` + PointerEvents（跨设备交互）
+### 模式 13 - 14 年兼容 + PointerEvent 升级
 
-**问题场景**：地图要在 PC（鼠标）+ 移动（触摸）统一交互。PointerEvents 统一。
+**问题场景**：14 年前发布要兼容 IE9+ 老浏览器 + 现代 PointerEvent API。
 
-**解决方案**：`DomEvent.addListener(obj, type, fn, context)` 自动 polyfill：`L.Browser.pointer && type.indexOf('touch') === 0` 触屏事件转 pointer；`addDoubleTapListener` 500ms 内两次 `pointerdown` 触发双击（`now - last <= delay` 守卫）。
-
-**关键参数**：
-- `addListener(obj, type, fn)` 绑定
-- `removeListener` 解绑
-- `stopPropagation` 防冒泡
-- `preventDefault` 防默认
-- `getMousePosition` 鼠标 → LatLng
-- `disableClickPropagation` 容器内禁传播
-- `addDoubleTapListener` 双击 500ms
-
-**最佳实践**：自定义控件用 `L.DomEvent.disableClickPropagation(div)` 防地图响应；`L.DomEvent.stop(e)` 一行调 `stopPropagation + preventDefault`；触屏事件 Leaflet 自动转 PointerEvents——2.0 起默认开；移动双击缩放 `L.DomEvent.addDoubleTapListener(map, () => map.zoomIn())`；调试 `e.touches` 在 PointerEvents 下为空——用 `e.pointerType`。
-
-### 模式 15 - `L.Util` 工具库（无依赖通用方法）
-
-**问题场景**：Leaflet 体积敏感（40KB），不能引 lodash。`Util` 自实现必要工具。
-
-**解决方案**：`extend(dest, ...src)` 浅合并多 src；`stamp(obj)` 自增 ID 挂 `_leaflet_id`；`template(str, data)` `{key}` 替换单层；`requestAnimFrame(fn, ctx)` rAF polyfill（旧 IE 退 `setTimeout(fn, 1000/60)`）；`bind(fn, ctx)` 绑定；`falseFn` 默认空函数；`lastId` stamp 计数器。
+**解决方案**：核心走原生 `mousedown/mousemove/mouseup` 老 API；现代浏览器走 `pointerdown/pointermove/pointerup` 统一指针；`L.DomEvent` 抽象层 `addListener` 自动选最优 API；CSS `touch-action: none` 阻止浏览器默认手势。
 
 **关键参数**：
-- `extend(dest, src)` 浅合并
-- `stamp(obj)` 全局唯一 ID
-- `template(str, data)` `{key}` 替换
-- `requestAnimFrame(fn, ctx)` rAF polyfill
-- `bind(fn, ctx)` bind
-- `lastId` stamp 计数器
-- `falseFn` 默认空函数
+- `L.DomEvent` 抽象
+- `mousedown` 老 API
+- `pointerdown` 新 API
+- `touch-action` CSS
+- 事件坐标归一化
 
-**最佳实践**：第三方开发用 `L.Util` 而不是引 lodash——**少 30KB**；`stamp(obj)` 给自定义对象挂唯一 ID——图层去重、缓存键；`template` 仅支持 `{key}` 单层——复杂需求用 function 替代；`requestAnimFrame` polyfill 旧浏览器（IE9/10）；任何"零依赖工具"项目可借鉴此范式。
+**最佳实践**：自定义交互走 `L.DomEvent.addListener(el, type, handler)` 跨浏览器；移动端加 `touch-action: none` 防页面滚动；高 DPI 屏用 `getBoundingClientRect` 算真实坐标。
+
+### 模式 14 - L.marker + L.divIcon 自定义图标
+
+**问题场景**：业务 marker 要根据 type 显示不同颜色 / 图标 / 大小，OSM 默认 marker 单一蓝色。
+
+**解决方案**：`L.divIcon({ html: '<div class="my-marker">A</div>', className: '', iconSize: [40, 40], iconAnchor: [20, 40] })` 返回 `L.Icon`；`L.marker([lat, lng], { icon: myIcon })` 使用；`L.icon` 是默认 `imageIcon` 走 `iconUrl`；CSS 动画 + 状态类自定义样式。
+
+**关键参数**：
+- `L.divIcon` HTML
+- `L.Icon` 图片
+- `iconSize/Anchor`
+- `popupAnchor`
+- `className`
+
+**最佳实践**：10+ 类 marker 用 `L.divIcon` + CSS 类切换而**不是** 10 个 PNG；`iconAnchor: [w/2, h]` 底部居中；marker cluster 用 `Leaflet.markercluster` 插件。
+
+### 模式 15 - L.Popup + 弹层
+
+**问题场景**：点击 marker 弹出信息卡，支持关闭、定位、自定义 HTML。
+
+**解决方案**：`L.popup({ maxWidth: 300, autoPan: true, offset: [0, -30] })` 创建；`popup.setLatLng([lat, lng]).setContent('<h3>Title</h3>').openOn(map)` 链式；`marker.bindPopup(popup)` 绑定；事件 `popupopen/popupclose`。
+
+**关键参数**：
+- `setContent` HTML
+- `openOn/closePopup`
+- `bindPopup` 绑定
+- `autoPan` 自动移位
+- `maxWidth/offset`
+
+**最佳实践**：popup HTML 通过 XSS 转义防注入；长内容懒加载 `popupopen` 时再 fetch；多个 popup `openPopup` 关上一个；自定义 popup 类 `L.Popup.extend`。
 
 ---
 
 ## 第四段：实战范式
 
-### 模式 16 - 800+ 第三方插件生态（框架本身不解决一切）
+### 模式 16 - Vitest + Playwright E2E 测试
 
-**问题场景**：地图库无法内置"绘图工具 / 路径规划 / 标注 / 热力图"等业务功能。插件机制让社区扩展。
+**问题场景**：地图交互（拖拽/缩放/点击）跑在浏览器，传统 jsdom 无法模拟 Canvas/SVG 事件。
 
-**解决方案**：插件入口规范挂 `L.Plugin`：`L.MyPlugin = {install(L) { L.MyPlugin = new (L.Class.extend(...))(); }}`；`L.MyPlugin.install(L)` 安装钩子；插件分类 `L.control.*` 控件 / `L.Handler.*` 交互 / `L.Renderer.*` 渲染 / `L.GridLayer.*` 瓦片 / `L.Layer.*` 图层。
-
-**关键参数**：
-- `L.MyPlugin.install(L)` 安装钩子
-- `L.control.*` 控件插件
-- `L.Handler.*` 交互插件
-- `L.Renderer.*` 渲染插件
-- `L.GridLayer.*` 瓦片插件
-- `L.Layer.*` 图层插件
-
-**最佳实践**：写自己的插件**总是**挂在 `L` 命名空间——`L.MyCompany.MyPlugin`；复杂插件走 L.Class + L.Layer.extend 模式复用生命周期；官方列表 https://leafletjs.com/plugins.html 找现成的；体积敏感项目用 `leaflet.markercluster-src.js` 手动 import；任何"插件扩展"项目可借鉴此范式。
-
-### 模式 17 - `L.Browser` 特性探测（跨浏览器兼容）
-
-**问题场景**：触屏、retina、CSS3 transform 支持度差异大。`Browser` 对象集中探测。
-
-**解决方案**：UA 探测 `webkit` / `ie` / `mobile` / `android`；PointerEvents 探测 `window.PointerEvent` / `navigator.msPointerEnabled`；`touch = (pointer || 'ontouchstart' in window) && /android|webos|iphone|ipad/i.test(ua)`；`retina = (devicePixelRatio || 1) > 1`；passive event listeners 探测（`Object.defineProperty({passive: {get() { supportsPassive = true }}}` 试绑）。
+**解决方案**：`vitest` 跑单测 + `playwright` 跑 E2E；`@vitest/browser` 直接在浏览器跑；mock 用 `vitest-canvas-mock` 拦截 Canvas API；地图初始化用 `document.createElement('div')` 给固定 size 600x400；断言用 `expect(map.getCenter().lat).toBeCloseTo(51.5, 5)`。
 
 **关键参数**：
-- `L.Browser.ie` IE 浏览器
-- `L.Browser.webkit` Chrome / Safari
-- `L.Browser.touch` 触屏设备
-- `L.Browser.retina` 高 DPI
-- `L.Browser.pointer` PointerEvents
-- `L.Browser.mobile` 移动设备
-- `L.Browser.passiveEvents` passive listener
+- `vitest` 单元
+- `playwright` E2E
+- `@vitest/browser` 浏览器内跑
+- `vitest-canvas-mock`
+- 固定 size 容器
 
-**最佳实践**：写跨设备代码用 `if (L.Browser.touch)` 而**不**是 `ontouchstart`；retina 检测后**不**直接换瓦片——让 `TileLayer` 自动处理；2.0 起 Leaflet **放弃** IE 11 兼容——现代浏览器优先；Passive event listeners 在 `L.DomEvent` 默认开——滚动性能；调试 `console.log(L.Browser)` 一次性看所有特性。
+**最佳实践**：地图测试用真实浏览器（playwright）不用 jsdom；DOM 容器给固定 size；canvas 操作用 mock；E2E 截图回归 `playwright screenshot`；多 zoom level 矩阵化测试。
 
-### 模式 18 - Vitest + Playwright 视觉回归（地图渲染像素级一致）
+### 模式 17 - smoke test 5 行验证环境
 
-**问题场景**：地图像素级渲染对 SVG/Canvas 数学变换敏感。改一个浮点数可能让瓦片错位。
+**问题场景**：新装 Leaflet 后快速验证地图是否就位。
 
-**解决方案**：单元测试用 `vitest` + `jsdom` 环境（`environment: 'jsdom'`）；真实 Map 测试 `L.map(div).setView([40, -75], 13)`；`expect(map.getCenter().lat).toBeCloseTo(40, 5)` 浮点 1e-5 精度；视觉回归用 `playwright` 截图 `expect(screenshot).toMatchSnapshot()`；`map.remove()` 在 `afterEach` 必调防泄漏。
+**解决方案**：5 行 smoke test：```html <div id="map" style="height:400px"></div> <script> const map = L.map('map').setView([51.505, -0.09], 13); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: 'OSM' }).addTo(map); L.marker([51.5, -0.09]).addTo(map).bindPopup('Hello'); </script> ``` 期望：显示伦敦地图 + 一个 marker + 点击 popup。
 
 **关键参数**：
-- `vitest` 单元测试 jest 兼容
-- `jsdom` DOM 模拟
-- `playwright` E2E 浏览器测试
-- `L.map(div)` 真实 Map jsdom 下能跑
-- `toBeCloseTo` 浮点比较
-- `map.remove()` 清理
+- 5 行核心验证
+- `setView` 中心
+- `tileLayer` OSM
+- `marker + bindPopup`
+- 30s 可跑完
 
-**最佳实践**：单元测试用 `jsdom`（vitest 默认）比 Playwright 快 10x；视觉回归用 Playwright 截图 `expect(screenshot).toMatchSnapshot()`；`map.remove()` 在 `afterEach` 必调——Map 监听 window resize 会泄漏；测试中心点用 `toBeCloseTo(40, 5)` 浮点 1e-5 精度；CI 跑 `vitest run --coverage` 覆盖率 > 80% 是合理的。
+**最佳实践**：新环境验证地图库用 5-10 行 smoke test 验证"瓦片 + 标记 + 弹层"三件套；OSM attribution 必加；HTTPS 引用瓦片防 mixed content；CDN 路径用 unpkg / jsdelivr。
 
-### 模式 19 - Leaflet vs Mapbox/MapLibre/OpenLayers（选型决策）
+### 模式 18 - OSM Attribution 强制要求
 
-**问题场景**：业务选型要在 4 个地图库间选。各自定位不同。
+**问题场景**：用 OSM 瓦片必须挂 attribution，否则违反 OSM 政策。
 
-**解决方案**：选型决策树——极简栅格瓦片 + 标注 → Leaflet (40KB)；高性能矢量瓦片（千万级 POI）→ Mapbox GL JS / MapLibre GL；GIS 专业（投影/拓扑/分析）→ OpenLayers；完全可控 + 开源 + WebGL → MapLibre GL（Mapbox 开源 fork）。
-
-**关键参数**：
-
-| 库 | 渲染 | 体积 | 矢量瓦片 | 选型场景 |
-|----|------|------|----------|----------|
-| Leaflet | SVG/Canvas | 40KB | 插件 | 简单栅格地图 |
-| Mapbox GL | WebGL | 800KB | 原生 | 商业 WebGL 地图 |
-| MapLibre GL | WebGL | 500KB | 原生 | 开源 WebGL 替代 |
-| OpenLayers | Canvas/WebGL | 200KB | 原生 | GIS 专业 |
-
-**最佳实践**：< 1000 个矢量对象用 Leaflet 简单稳；> 10000 个 POI 用 MapLibre GL WebGL 加速；GIS 业务用 OpenLayers 投影支持最全；Leaflet + `Leaflet.VectorGrid` 插件折中——MVT 矢量瓦片；中国业务优先用 `Mapbox 中国` 或自托管 MapLibre——海外服务不达。
-
-### 模式 20 - CHANGELOG + 4 阶段发布（14 年兼容性）
-
-**问题场景**：Leaflet 跨 14 年仍被生产用，1.x → 2.0 是 ESM + PointerEvents 大改。`RELEASE.md` 规范流程。
-
-**解决方案**：4 阶段发布——alpha (内部 features merged 频繁更新 1-2 月) → beta (公开 API 冻结 1-2 月) → rc (发布候选仅修 bug 1-4 周) → stable (长期支持 12-18 月修复 + 安全)；2.0 破坏性变更——100% ESM + PointerEvents 替代 touchstart/touchmove + L.Icon 改 L.Icon.Default 工厂 + L.GridLayer 重写瓦片管理 + 弃用 IE 11。
+**解决方案**：`L.tileLayer(url, { attribution: '&copy; <a href="https://osm.org">OSM</a>' })` 必传；OSM Tile Usage Policy 要求商业应用联系 `tile@openstreetmap.org`；高流量业务切自家瓦片服务（Mapbox / Maptiler / 自建）防 OSM 限流。
 
 **关键参数**：
-- alpha 内部 1-2 月
-- beta 公开 API 冻结 1-2 月
-- rc 发布候选 1-4 周
-- stable 长期支持
-- LTS 12-18 月修复+安全
-- CHANGELOG.md 2595 行
+- `attribution` 强制
+- OSM Tile Usage Policy
+- 商业联系邮箱
+- 高流量切私有瓦片
+- `&copy;` HTML 实体
 
-**最佳实践**：升级 Leaflet 前看 `CHANGELOG.md`——2.0 破坏性变更多；锁定版本 `leaflet@1.9.4` 比 `^1.9` 稳——npm 锁文件；大版本升级：alpha 试用 → beta 业务测试 → rc 灰度 → stable 切；插件兼容性查 [leaflet plugins](https://leafletjs.com/plugins.html) 版本支持；2.0 起必须用 ESM `<script type="module">`——`<script>` 不能直接用。
+**最佳实践**：attribution 永远保留（OSM 法律要求）；商业大流量**不要**直连 OSM 改用商业瓦片（Mapbox/Maptiler）；attribution 链到 OSM contributor 页面；缓存瓦片减负担。
 
----
+### 模式 19 - vs Mapbox GL JS / OpenLayers 选型
 
-## 附：仓库元信息
+**问题场景**：4 个候选库（Leaflet 42k / Mapbox GL 11k / OpenLayers 11k / Google Maps API 商业），按需选型。
 
-| 维度 | 数据 |
-| --- | --- |
-| 总文件数 | 1005（仓库根 7 个 + src/ 50+ .js + spec/ 40+ 测试 + debug/ 80+ HTML + docs/ 700+ markdown） |
-| 主语言 | JavaScript ES2022（100% ESM，`type: "module"`） |
-| 涉及语言 | JavaScript + CSS + HTML + Ruby (Jekyll docs) + YAML (CI) |
-| 核心 SLOC | ~50000 行（src/ 50+ .js 文件） |
-| Star | 41k+ |
-| License | BSD-2-Clause |
-| 体积 | 40KB gzipped JS + 3.2KB gzipped CSS |
-| CI | GitHub Actions：Vitest + Playwright |
-| 创始人 | Volodymyr Agafonkin（@mourner） |
-| 维护者 | ~10 人核心 + 200+ 贡献者 |
-| 协议 | BSD-2-Clause 协议完全免费，靠捐款 + 插件生态 + 培训商业服务 |
-| 兼容性 | 现代浏览器（2.0 起放弃 IE 11） |
-| 性能 | 60fps 平移/缩放，retina 子域名瓦片并发，rAF 动画 |
+**解决方案**：Leaflet 轻量 42KB + 成熟稳定 + 移动优先 + 插件生态 700+；Mapbox GL JS WebGL 矢量瓦片 + 3D 建筑 + 性能高 5x；OpenLayers OGC 标准 + GIS 专业 + 学术首选；Google Maps API 易用但商业收费 + 锁定。Leaflet 适合 90% 业务，Mapbox 适合大流量矢量，OpenLayers 适合 GIS 专业。
 
-## 一句话总结
+**关键参数**：
+- Leaflet 42k 通用
+- Mapbox GL WebGL 矢量
+- OpenLayers GIS 专业
+- Google Maps 商业
+- 插件生态
 
-Leaflet 用 `L.Class` + `L.Evented` 200 行造出 14 年长盛不衰的事实标准；`GridLayer` 瓦片调度 + `SVG/Canvas` 双渲染器 + `PosAnimation` 60fps 动画是底层三件套；选型 1000 矢量内用 Leaflet，万级用 MapLibre，GIS 用 OpenLayers。
+**最佳实践**：90% 业务选 Leaflet 性价比最高；矢量瓦片/3D 选 Mapbox GL；GIS 学术/标准选 OpenLayers；不要直接调 Google Maps API 用 Leaflet 插件 `Leaflet.GoogleMutant`；3D 室内图选 `Leaflet-Indoor`。
 
-## 参考
+### 模式 20 - 7 天复刻 mini-leaflet
 
-- Leaflet 官网：https://leafletjs.com/
-- 仓库：https://github.com/Leaflet/Leaflet
-- 文档：https://leafletjs.com/reference.html
-- 当前版本：2.0.0-alpha.1（2025-08-16）
-- 创始人：Volodymyr Agafonkin（@mourner）
-- License：BSD-2-Clause
+**问题场景**：学习用，想搭一个简化版 Leaflet 理解核心。
+
+**解决方案**：7 天分 5 步：① Day 1-2 L.Class + L.Layer + L.Evented 核心 30 个 API ② Day 3 L.Map 中介者 + L.CRS 投影 ③ Day 4 L.GridLayer 瓦片 + L.TileLayer ④ Day 5 L.Marker + L.Popup + L.Control 5 个组件。
+
+**关键参数**：
+- Day 1-2 核心
+- Day 3 中介
+- Day 4 瓦片
+- Day 5 组件
+- 7 天最小可用
+
+**最佳实践**：复刻 Leaflet 先求"最小可跑内核"再迭代；7 天只够做 80% 场景的简化版；**完整 L.Map + L.Layer + 4 CRS + 瓦片 + 5 内置组件需要 3 个月+**；适用任何"地图库学习"。

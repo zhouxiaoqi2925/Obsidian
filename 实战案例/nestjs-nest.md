@@ -1,217 +1,339 @@
-# nestjs-nest - TypeScript 全栈 IoC 装饰器框架
+# NestJS - TypeScript 全栈 IoC 装饰器框架
 
-**GitHub**: https://github.com/nestjs/nest
+**GitHub**: nestjs/nest
 **Star**: 70k+
 **语言**: TypeScript
-**主题**: Node.js 框架 / IoC / 装饰器 / 微服务
+**主题**: nodejs、framework、typescript、microservice
 **适用场景**: 中后台 API、GraphQL、微服务、WebSocket、长连接推送
 
-## 第一段：基础范式
+---
 
-### 模式 1: 装饰器 + 反射元数据驱动
-**问题场景**：传统 Node.js 路由/中间件靠手动 `app.get('/user', handler)` 注册，应用一复杂就成面条代码。
-**解决方案**：NestJS 用 @Controller、@Get、@Injectable 装饰器把"路由+依赖"声明在类上。底层 reflect-metadata 把"什么类、什么方法、依赖谁"写进 Reflect.metadata，运行时由 Scanner 扫描所有模块，注入器根据元数据自动装配。
+## 一、基础范式
+
+### 模式 1 · 装饰器 + 控制器（@Controller / @Get / @Post）
+
+**问题场景**：Express 路由散落，难维护，TypeScript 体验差。
+
+**解决方案**：NestJS 用装饰器组织路由：`@Controller('users') class UsersController { @Get(':id') getOne(@Param('id') id) {} }`，类即路由，方法即 handler，参数自动注入。
+
 **关键参数**：
-- @Module() / @Controller() / @Injectable()：三大声明装饰器
-- reflect-metadata：polyfill，全局 Reflect.metadata
-- @Inject(TOKEN)：自定义 Provider 标识
-- @SetMetadata('roles', ['admin'])：自定义元数据
-**最佳实践**：每个 class 一律 `@Injectable()`，避免动态 new，便于测试和 AOP。
+- `@Controller('prefix')`
+- `@Get` / `@Post` / `@Put` / `@Delete`
+- `@Param` / `@Body` / `@Query` / `@Headers`
+- TypeScript first
+- 0 路由配置
 
-### 模式 2: IoC 容器与依赖注入
-**问题场景**：服务 A 依赖 B，B 又依赖 C，手动 new 链冗长且难测。
-**解决方案**：Nest 的 injector 用"令牌 → 实例"映射管理所有 Provider。scope 默认 SINGLETON，REQUEST scope 每次请求新建。`getInstanceByToken` 递归构建依赖树。Provider 可以是 class、value、factory 三种。
+**最佳实践**：所有新项目用 NestJS 装饰器风格，告别 Express 路由散落。
+
+### 模式 2 · 依赖注入（DI 容器 + Provider）
+
+**问题场景**：Express 手写 new Service() 难测试，难替换。
+
+**解决方案**：NestJS 内置 IoC 容器，`@Injectable() class UsersService {}` 声明 provider；`constructor(private readonly service: UsersService) {}` 自动注入；测试用 `Test.createTestingModule` 替换。
+
 **关键参数**：
-- Provider 四种：useClass / useValue / useFactory / useExisting
-- 作用域：DEFAULT / REQUEST / TRANSIENT
-- Optional：@Optional() 允许无依赖
-- 自装配：`providers: [Service]` 自动实例化
-**最佳实践**：依赖永远走接口（abstract class），不上层不 new 业务类。
+- `@Injectable()`
+- 构造函数注入
+- `Test.createTestingModule`
+- `overrideProvider`
+- 0 new
 
-### 模式 3: 模块 Module 边界与懒加载
-**问题场景**：项目大了后所有类堆在一个 module 里，启动慢、循环依赖多。
-**解决方案**：@Module() 声明 imports / controllers / providers / exports。Module 是"逻辑包"，可单独启动也可被 import。LazyModuleLoader 在第一次访问时按需加载，节省启动时间。
+**最佳实践**：所有 NestJS 项目用构造函数注入，告别手写 new。
+
+### 模式 3 · 模块（@Module）
+
+**问题场景**：单文件太大，需要模块化（用户 / 订单 / 商品）。
+
+**解决方案**：`@Module({ imports, controllers, providers, exports })` 装饰器声明模块；`imports: [TypeOrmModule.forFeature([User])]` 引入依赖模块；`exports: [UsersService]` 暴露给其他模块。
+
 **关键参数**：
-- imports / exports：模块依赖图
-- providers 私有 / exports 公开
-- @Global()：全模块共享单例
-- LazyModuleLoader#load：按需加载
-**最佳实践**：按业务域切分模块（UserModule / OrderModule），避免单 module 200+ provider。
+- `@Module`
+- `imports` / `exports`
+- `controllers` / `providers`
+- `forFeature` / `forRoot`
+- 模块边界
 
-### 模式 4: 请求管道 Pipeline
-**问题场景**：每个 controller 要重复写鉴权、参数校验、异常处理、响应转换。
-**解决方案**：Nest 设计 5 段式请求管道：Middleware → Guard → Interceptor (pre) → Pipe → Handler → Interceptor (post) → ExceptionFilter。每一段都是可插拔的 DI 单元。
+**最佳实践**：所有中大型 NestJS 项目用模块边界，DI 显式声明。
+
+### 模式 4 · 中间件（Middleware / Interceptor / Guard / Pipe / Filter）
+
+**问题场景**：横切关注点（日志 / 鉴权 / 验证 / 异常）难复用。
+
+**解决方案**：NestJS 5 大横切：① Middleware（请求前，Express 风格）② Guard（路由守卫，鉴权）③ Interceptor（AOP，包装 handler）④ Pipe（参数转换 / 验证）⑤ ExceptionFilter（异常兜底）；`@UseGuards(AuthGuard)` 装饰器使用。
+
 **关键参数**：
-- Middleware：req/res 直接改写
-- Guard：canActivate 返回 boolean
-- Interceptor：AOP 包裹（rxjs）
-- Pipe：参数转换（class-validator）
-- ExceptionFilter：异常到 HTTP 响应
-**最佳实践**：权限用 Guard，格式用 Pipe，日志/计时用 Interceptor，5xx 兜底用 Filter。
+- `@UseGuards`
+- `@UseInterceptors`
+- `@UsePipes`
+- 5 大横切
+- 装饰器组合
 
-### 模式 5: 平台抽象 HTTP/WebSocket/Microservice
-**问题场景**：Express / Fastify / Socket.io / Kafka / gRPC 各自一套 API，业务逻辑要复用。
-**解决方案**：Nest 设计 INestApplication + 多个 platform adapter（platform-express、platform-fastify、platform-socket.io、platform-microservices）。业务代码只调 HttpAdapter，统一编译成对应实现。
+**最佳实践**：所有横切用 5 大件，告别在 handler 内 `if (!user) throw`。
+
+### 模式 5 · 异常处理（HttpException + ExceptionFilter）
+
+**问题场景**：异常响应格式不统一，4xx / 5xx 难追踪。
+
+**解决方案**：`throw new NotFoundException('User not found')` 抛 HTTP 异常；`@Catch(HttpException) class GlobalFilter implements ExceptionFilter` 全局兜底，统一响应格式。
+
 **关键参数**：
-- NestFactory.create(AppModule, express | fastify)
-- 通用：app.use(cookieParser())
-- MicroserviceOptions：transport: TCP / REDIS / NATS / KAFKA / GRPC
-- Hybrid app：同时支持 HTTP + WebSocket
-**最佳实践**：高吞吐服务用 fastify adapter，QPS 可从 1.5 万提到 4 万。
+- `NotFoundException`
+- `BadRequestException`
+- `@Catch`
+- `ExceptionFilter`
+- 全局 vs 局部
 
-## 第二段：扩展范式
+**最佳实践**：所有项目用内置 Exception + 全局 Filter，统一响应格式。
 
-### 模式 6: Express / Fastify 双 adapter
-**问题场景**：Express 生态成熟但性能一般；Fastify 性能强但生态小。
-**解决方案**：Nest 把路由、req/res 抽象成 HttpServer / AbstractHttpAdapter。Express 和 Fastify 各自实现：platform-express 的 ExpressAdapter 把 req/res 包成 http.IncomingMessage / ServerResponse；platform-fastify 的 FastifyAdapter 用 reply.send / request 桥接。
+---
+
+## 二、扩展范式
+
+### 模式 6 · TypeORM / Prisma 数据库集成
+
+**问题场景**：手写 SQL 字符串拼接不安全。
+
+**解决方案**：`TypeOrmModule.forRoot({ type: 'postgres', entities, synchronize: true })` 配置；`@Entity() @PrimaryGeneratedColumn() @Column() class User {}` 定义实体；`@InjectRepository(User) private repo: Repository<User>` 注入。
+
 **关键参数**：
-- NestExpressApplication：extend express 实例
-- NestFastifyApplication：extend fastify 实例
-- 性能差：Fastify 比 Express 吞吐高 2-3 倍
-- 迁移成本：装饰器层无感
-**最佳实践**：新项目默认 Fastify；老项目用 Express + 无痛升级。
+- `TypeOrmModule.forRoot`
+- `@Entity` / `@Column`
+- `Repository<T>`
+- 迁移 vs synchronize
+- 0 SQL
 
-### 模式 7: 微服务传输层 Transport
-**问题场景**：单体 Nest 应用拆微服务后，进程间通信（TCP/HTTP/Redis/NATS/Kafka/gRPC）难以统一。
-**解决方案**：@nestjs/microservices 抽象 ClientProxy / Server，开发者写 @MessagePattern('sum') handler，框架按 transport 把请求路由到指定 handler。内置 transport：TCP、REDIS、NATS、KAFKA、GRPC、RMQ。
+**最佳实践**：所有 Node + DB 项目用 TypeORM / Prisma 集成。
+
+### 模式 7 · GraphQL（code-first / schema-first）
+
+**问题场景**：需要 GraphQL API。
+
+**解决方案**：`@Resolver(() => User) class UserResolver { @Query(() => User) getUser(@Args('id') id: string) {} }` code-first；`GraphQLModule.forRoot({ autoSchemaFile: 'schema.gql' })` 自动生成 schema。
+
 **关键参数**：
-- transport: Transport.TCP / REDIS / NATS / KAFKA / GRPC
-- @MessagePattern / @EventPattern
-- 客户端：ClientProxy.send('cmd', payload)
-- 序列化：JSON / Avro / Protobuf
-**最佳实践**：跨服务调用先发 'event' 再 send 'cmd'，避免硬耦合。
+- `@Resolver` / `@Query` / `@Mutation`
+- `code-first`
+- `autoSchemaFile`
+- `ObjectType` / `@Field`
+- 0 schema 维护
 
-### 模式 8: GraphQL 代码优先与模式优先
-**问题场景**：RESTful 接口在复杂业务里不够用，GraphQL 客户端需要灵活查询。
-**解决方案**：@nestjs/graphql 支持 code-first（@ObjectType() + @Resolver()）和 schema-first（写 .graphql）。Apollo Server 4 是默认引擎，TypeGraphQL 风格与装饰器深度集成。
+**最佳实践**：所有 GraphQL 项目用 NestJS code-first，开发效率 10x。
+
+### 模式 8 · 微服务（Redis / Kafka / RabbitMQ / NATS）
+
+**问题场景**：需要分布式微服务通信。
+
+**解决方案**：`@MessagePattern('user_created') @EventPattern('user_event')` 装饰器定义 handler；`ClientsModule.register([{ name: 'USER_SERVICE', transport: Transport.REDIS }])` 配置；TCP / Redis / NATS / Kafka / RabbitMQ / gRPC 6 种 transport。
+
 **关键参数**：
-- @ObjectType() / @Field()
-- @Resolver(() => User)
-- @Query / @Mutation / @Subscription
-- DataLoader 防 N+1
-**最佳实践**：code-first 适合 TS 强类型团队；schema-first 适合前端主导。
+- `@MessagePattern`
+- `ClientsModule.register`
+- 6 种 transport
+- 请求 - 响应
+- 事件驱动
 
-### 模式 9: WebSocket Gateway
-**问题场景**：聊天、直播、推送等长连接业务，用 polling 太浪费。
-**解决方案**：@WebSocketGateway 装饰器声明 Gateway，@SubscribeMessage('event') 声明订阅，@WebSocketServer 注入 server 实例。基于 socket.io 或 ws，框架统一事件分发。
+**最佳实践**：所有微服务项目用 NestJS，平台无关 6 种 transport。
+
+### 模式 9 · WebSocket（@WebSocketGateway）
+
+**问题场景**：需要 WebSocket 长连接（聊天 / 通知）。
+
+**解决方案**：`@WebSocketGateway() class ChatGateway implements OnGatewayConnection { @WebSocketServer() server: Server; @SubscribeMessage('msg') handleMessage() {} }` 装饰器风格 WebSocket；Socket.io / WS 原生支持。
+
 **关键参数**：
-- transport: socket.io / ws
-- namespace：路径隔离
-- WsException：自定义异常
-- Gateway + Microservice 组合
-**最佳实践**：用 namespace 做多房间隔离，广播用 server.to(room).emit。
+- `@WebSocketGateway`
+- `@SubscribeMessage`
+- Socket.io
+- `OnGatewayConnection`
+- 命名空间
 
-### 模式 10: 配置与生命周期
-**问题场景**：配置散落代码里、启动/关闭钩子难统一。
-**解决方案**：@nestjs/config 加载 .env 与远程配置（Consul、Vault）。onModuleInit / onApplicationBootstrap / onModuleDestroy / beforeApplicationShutdown / onApplicationShutdown 5 个生命周期钩子。
+**最佳实践**：所有 WebSocket 项目用 NestJS Gateway，告别手写 ws。
+
+### 模式 10 · 配置管理（@nestjs/config）
+
+**问题场景**：环境变量散落，硬编码密码。
+
+**解决方案**：`ConfigModule.forRoot({ isGlobal: true, load: [config] })` 全局配置；`@nestjs/config` + Joi / class-validator 验证；`ConfigService.get('DB_HOST')` 注入使用。
+
 **关键参数**：
-- ConfigModule.forRoot({ isGlobal: true })
-- Joi / class-validator schema 校验
-- 钩子顺序：init → bootstrap → shutdown
-- 优雅停机：响应 SIGTERM
-**最佳实践**：DB 连接、Redis、队列消费者都在 onModuleInit 建，在 destroy 优雅关。
+- `ConfigModule.forRoot`
+- `.env` 文件
+- Joi 验证
+- 命名空间
+- 全局 vs 模块
 
-## 第三段：进阶范式
+**最佳实践**：所有项目用 @nestjs/config + .env + 验证，告别硬编码。
 
-### 模式 11: 拦截器与 AOP
-**问题场景**：每个 handler 重复写"日志→计时→缓存→响应映射"。
-**解决方案**：Interceptor 用 rxjs 的 tap / map / catchError 包装整个请求流。NestInterceptor.nest.intercept(ctx, next) 返回 Observable。常用：LoggingInterceptor、CacheInterceptor、TimeoutInterceptor、TransformInterceptor。
+---
+
+## 三、进阶范式
+
+### 模式 11 · 依赖注入高级（自定义 Provider / Scope）
+
+**问题场景**：需要非类 provider（值 / 工厂 / 别名）或请求作用域。
+
+**解决方案**：`{ provide: 'CONFIG', useValue: { apiKey: 'xxx' } }` 值；`useFactory: (config) => ({ ... })` 工厂；`useClass: MockService` 别名；`scope: Scope.REQUEST` 请求作用域。
+
 **关键参数**：
-- @UseInterceptors(Class)
-- 全局：app.useGlobalInterceptors(new Class())
-- 响应映射：map(data => ({ data, status: 'ok' }))
-- 缓存：tap 命中即短路
-**最佳实践**：跨切关注（监控/审计）用 Interceptor，权限用 Guard，参数用 Pipe，5xx 用 Filter。
+- `useValue` / `useFactory` / `useClass`
+- `Scope.DEFAULT` / `REQUEST` / `TRANSIENT`
+- token 字符串
+- 生命周期
+- 灵活
 
-### 模式 12: 守卫与权限模型
-**问题场景**：RBAC、ABAC 权限控制要落到接口上，复杂多角色。
-**解决方案**：CanActivate.guard.canActivate(ctx) 返回 boolean | Promise | Observable。AuthGuard 是基础，RolesGuard 配合 @Roles('admin') Reflector 自定义元数据。@nestjs/passport 集成 JWT、OAuth2、API Key。
+**最佳实践**：所有需要 Mock / 配置 / 动态 provider 用自定义 Provider。
+
+### 模式 12 · 自定义装饰器（@User / @Roles）
+
+**问题场景**：需要在 handler 中取当前用户（来自 JWT），参数装饰器要写多次。
+
+**解决方案**：`createParamDecorator((data, ctx) => ctx.switchToHttp().getRequest().user) export const CurrentUser = ...`；`@CurrentUser() user: User` 一行取用户。
+
 **关键参数**：
-- @UseGuards(AuthGuard, RolesGuard)
-- @SetMetadata('roles', ['admin'])
-- Reflector.get('roles', ctx.getHandler())
-- 自定义 PassportStrategy
-**最佳实践**：Guard 只做"通过/不通过"，失败抛 ForbiddenException，不要直接 res.send。
+- `createParamDecorator`
+- `ExecutionContext`
+- `switchToHttp()` / `switchToRpc()` / `switchToWs()`
+- 复用
+- 0 重复
 
-### 模式 13: 管道与 class-validator
-**问题场景**：DTO 校验重复、@Min @Max 注解散在代码里。
-**解决方案**：class-validator + class-transformer 组合，DTO 类加 @IsString @IsInt @Min 装饰器，全局 ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }) 拦截所有 handler 参数。
+**最佳实践**：所有常用参数（用户 / 角色 / IP）用自定义装饰器。
+
+### 模式 13 · 拦截器（AOP 编程）
+
+**问题场景**：需要在 handler 前后加逻辑（计时 / 缓存 / 转换）。
+
+**解决方案**：`@Injectable() class TimingInterceptor implements NestInterceptor { intercept(ctx, next) { const start = Date.now(); return next.handle().pipe(tap(() => console.log(Date.now() - start))) } }` 装饰器 + RxJS。
+
 **关键参数**：
-- @IsEmail() / @IsOptional() / @Min(0) / @Max(100)
-- whitelist: true 剥离未知字段
-- forbidNonWhitelisted: 拒绝未知字段
-- transform: true 自动 plainToClass
-**最佳实践**：入参 DTO 永远走 ValidationPipe，DB 实体不进 controller。
+- `NestInterceptor`
+- `intercept(ctx, next)`
+- `next.handle()` Observable
+- `map` / `tap` / `catchError`
+- AOP
 
-### 模式 14: 测试与 Mock
-**问题场景**：依赖多难写单测，e2e 慢且脆。
-**解决方案**：@nestjs/testing 提供 Test.createTestingModule，覆盖 Provider 即可单测。e2e 用 supertest 跑真实 HTTP。Mocking 用 jest.spyOn / 替换 useValue。
+**最佳实践**：所有横切（计时 / 缓存 / 日志）用 Interceptor + RxJS。
+
+### 模式 14 · 测试（@nestjs/testing）
+
+**问题场景**：依赖注入的代码难测试。
+
+**解决方案**：`Test.createTestingModule({ providers: [UsersService, { provide: getRepositoryToken(User), useValue: mockRepo }] }).compile()` 创建测试模块；mock 替换 provider。
+
 **关键参数**：
-- Test.createTestingModule({ providers: [{ provide: X, useValue: mock }] })
-- overrideProvider / overrideGuard / overrideInterceptor
-- e2e：supertest(app.getHttpServer())
-- Jest 的 jest.fn() / mockResolvedValue
-**最佳实践**：覆盖率盯 branch > 80%，e2e 只跑关键路径（登录 / 支付 / 下单）。
+- `Test.createTestingModule`
+- `overrideProvider`
+- `getRepositoryToken`
+- `compile()` / `get()`
+- 完整 IoC 测试
 
-### 模式 15: Monorepo 与 lerna/nx
-**问题场景**：微服务拆成多个 npm 包后，发布、依赖、构建全乱。
-**解决方案**：Nest 官方 nestjs/nest 用 lerna 维护 14+ 包。社区更推 Nx + nest 插件（@nx/nest）做 monorepo。lerna 5+ 改用 workspace protocol，Nx 提供 task graph 和 cache。
+**最佳实践**：所有 NestJS 项目用 @nestjs/testing + 真实 DI 测试。
+
+### 模式 15 · CQRS（@nestjs/cqrs）
+
+**问题场景**：复杂业务用 Service 太啰嗦，难审计。
+
+**解决方案**：`@nestjs/cqrs` 模块分离命令（Command）和查询（Query）：`class CreateUserCommand {} class CreateUserHandler implements ICommandHandler<CreateUserCommand> {}`；EventSourcing 事件溯源。
+
 **关键参数**：
-- packages/ 子目录即子包
-- tsconfig.base.json 共享
-- Nx：`nx run-many --target=build`
-- cache：本地 + CI 远程 cache
-**最佳实践**：大团队用 Nx，按业务切 library（libs/users / libs/orders）。
+- `Command` / `Query` / `Event`
+- `ICommandHandler`
+- `CommandBus` / `QueryBus`
+- `EventBus`
+- CQRS + EventSourcing
 
-## 第四段：实战范式
+**最佳实践**：所有复杂业务用 CQRS + EventSourcing，审计 + 测试 10x。
 
-### 模式 16: 启动一个真实 REST 服务
-**问题场景**：从 0 搭一个生产级 Nest 服务要 30 分钟？
-**解决方案**：nest new app-name → nest g resource users → 装 @nestjs/config class-validator class-transformer → main.ts 启用 ValidationPipe、Prefix、Swagger。整套不超过 5 分钟。
+---
+
+## 四、实战范式
+
+### 模式 16 · 7 件套启动模板
+
+**问题场景**：从零搭 NestJS 项目。
+
+**解决方案**：7 件套：① `nest new app` CLI 初始化 ② `AppModule` 根模块 ③ `ConfigModule` + `.env` ④ `TypeOrmModule` 数据库 ⑤ `UsersModule` 业务模块 ⑥ `AuthModule` + JWT ⑦ `GlobalExceptionFilter` 兜底。
+
 **关键参数**：
-- nest new / nest generate
-- @nestjs/swagger 自动 OpenAPI
-- helmet 启用安全头
-- throttler 限流
-**最佳实践**：首次启动必装 helmet、throttler、cors 三件套。
+- `nest new`
+- AppModule
+- ConfigModule
+- TypeOrmModule
+- UsersModule
+- AuthModule
+- ExceptionFilter
 
-### 模式 17: 数据库集成（TypeORM / Prisma / MikroORM）
-**问题场景**：ORM 选型影响整体架构。
-**解决方案**：官方支持 TypeORM（@nestjs/typeorm，装饰器风格）、Prisma（独立 schema.prisma，类型更强）、MikroORM（ID 映射，性能优）。TypeORM 适合快速起步，Prisma 适合类型严格。
-**关键参数**：
-- TypeOrmModule.forRoot({ type: 'postgres', entities: [...] })
-- Repository 注入：@InjectRepository(User)
-- Prisma：PrismaClient 注入，schema.prisma 单独管理
-- Migration / synchronize
-**最佳实践**：生产 disable synchronize，用 migration 文件管理 schema。
+**最佳实践**：所有新项目用 7 件套 + NestJS CLI，10 分钟跑起来。
 
-### 模式 18: 部署与 Docker
-**问题场景**：怎么把 Nest 部署到 Docker / K8s？
-**解决方案**：多阶段 Dockerfile：builder 阶段跑 `npm run build`，runtime 阶段用 distroless / node:20-alpine 跑 `node dist/main.js`。K8s 配 readiness / liveness 探针走 /health。
-**关键参数**：
-- 多阶段：node:20-alpine → builder → runtime
-- ENV PORT=3000
-- CMD ["node", "dist/main.js"]
-- liveness: /health
-- 优雅停机：SIGTERM 信号
-**最佳实践**：CPU/内存 limit 给 70% 实际峰值，留 30% 给 burst。
+### 模式 17 · 部署到 Docker + PM2 / K8s
 
-### 模式 19: 监控与可观测性
-**问题场景**：上线后如何快速定位慢请求、内存泄漏、错误率？
-**解决方案**：集成 OpenTelemetry（@opentelemetry/sdk-node），把 trace 注入到 Logger、Interceptor、HTTP。Prometheus 抓 /metrics，Jaeger / Tempo 看 trace，Grafana 画图。
-**关键参数**：
-- @opentelemetry/api tracer
-- @willsoto/nestjs-prometheus
-- LoggerInterceptor 自动记录 status + latency
-- Pino 日志库（结构化）
-**最佳实践**：trace_id 注入 response header，方便用户复现。
+**问题场景**：NestJS 怎么部署。
 
-### 模式 20: AI / 直播平台中的 Nest 应用
-**问题场景**：AI 直播平台要支持实时音视频（WebRTC/SRT）、弹幕推送、商品挂车，怎么整合？
-**解决方案**：Nest 部署三个服务：api-server（HTTP/GraphQL）、realtime-server（WebSocket Gateway + Redis Adapter 横向扩展）、ai-server（Python 微服务通过 gRPC 互调）。统一走 @nestjs/microservices。
+**解决方案**：`node dist/main.js` 直接跑；`pm2 start dist/main.js -i max` 集群模式；Dockerfile 多阶段构建 `node:20-alpine`；K8s 配 `livenessProbe: /health`；`@nestjs/terminus` 健康检查。
+
 **关键参数**：
-- realtime-server：socket.io + redis adapter
-- AI 推理：Python gRPC，Nest 调 .proto
-- 商品挂车：REST + GraphQL 双协议
-- 弹幕：BFF 聚合 + WebSocket 推流
-**最佳实践**：高实时部分用 Fastify adapter + Redis pub/sub，吞吐比 Express + 内存广播高 5 倍。
+- `node dist/main.js`
+- PM2 集群
+- Docker 多阶段
+- K8s liveness
+- 0 配置
+
+**最佳实践**：所有 NestJS 生产用 Docker + PM2 / K8s 部署。
+
+### 模式 18 · 性能优化 5 招
+
+**问题场景**：NestJS 性能问题。
+
+**解决方案**：5 招优化：① 启用 Fastify adapter（比 Express 快 2x）② `synchronize: false` 关闭自动同步 ③ Redis 缓存装饰器 `@CacheInterceptor` ④ Cluster 模式 ⑤ `@nestjs/terminus` 健康检查。
+
+**关键参数**：
+- Fastify
+- `synchronize: false`
+- 缓存
+- Cluster
+- 健康检查
+
+**最佳实践**：5 招组合，NestJS 吞吐 10x。
+
+### 模式 19 · 与 Express / Koa / Fastify / Spring 对比
+
+**问题场景**：Node 框架选型。
+
+**解决方案**：NestJS 定位「装饰器 + DI + 多平台」适合中大型；Express 定位「极简中间件」适合小型；Koa 定位「洋葱模型 async」适合中型；Fastify 定位「极致性能」适合高性能；Spring 定位「Java 同模式」适合 Java 转 Node。
+
+**关键参数**：
+- 学习曲线：Express < Koa < Fastify < NestJS
+- 性能：Fastify > NestJS(Fastify) > NestJS(Express) > Koa > Express
+- 生态：Express > NestJS > Koa > Fastify
+- TS 体验：NestJS > Fastify > Koa > Express
+
+**最佳实践**：中大型选 NestJS，小型选 Express，高性能选 Fastify。
+
+### 模式 20 · 7 天复刻最小可跑内核
+
+**问题场景**：想 fork NestJS 做内部框架。
+
+**解决方案**：7 天分 5 步：① Reflect metadata 实现装饰器 ② IoC 容器（注册 + 解析）③ 路由扫描 + 装饰器映射 ④ Middleware / Guard / Interceptor ⑤ ExceptionFilter。
+
+**关键参数**：
+- Day 1-2: Reflect
+- Day 3: IoC
+- Day 4: 路由
+- Day 5: 横切
+- Day 6-7: Exception
+
+**最佳实践**：7 天复刻「极简 NestJS」，完整 NestJS 复刻需要 6 个月+。
+
+---
+
+## 附：仓库元信息
+
+- **路径**: `G:\实战案例\GitHub顶尖项目\nestjs\nest\`
+- **大小**: ~30 MB
+- **总文件数**: 数百 TS 文件
+- **关键 commit**: v10.x
+- **作者**: Kamil Mysliwiec + 社区
+- **许可**: MIT
+
+## 一句话总结
+
+NestJS 用「装饰器 + IoC DI + 模块化 + 5 大横切 + 6 种 transport」把 Node 后端开发做到 Spring 级别的工程化，是 TypeScript 全栈框架的事实标准。

@@ -222,3 +222,32 @@ To github.com:zhouxiaoqi2925/Obsidian.git
  Obsidian Vault Auto Backup 
  周二 2026/06/02 23:12:10 
 ==================================== 
+fatal: could not write multi-pack-index: Permission denied
+error: failed to perform geometric repack
+error: task 'geometric-repack' failed
+[main 6890c1e7] auto: backup 周二 2-26-06 231212
+ 48 files changed, 12576 insertions(+), 16554 deletions(-)
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/C-\346\225\260\346\215\256\344\270\216AI/langchain.md"
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/C-\346\225\260\346\215\256\344\270\216AI/numpy.md"
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/C-\346\225\260\346\215\256\344\270\216AI/pandas.md"
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/C-\346\225\260\346\215\256\344\270\216AI/pytorch.md"
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/C-\346\225\260\346\215\256\344\270\216AI/transformers.md"
+[INFO] Commit created: auto: backup 周二 2-26-06 231212 
+To github.com:zhouxiaoqi2925/Obsidian.git
+   af5b5ae9..6890c1e7  main -> main
+[SUCCESS] Pushed to origin/main. 
+[INFO] Done: 23:12:53.36 
+==================================== 
+ 
+==================================== 
+ Obsidian Vault Auto Backup 
+ 周二 2026/06/02 23:22:54 
+==================================== 
+[ERROR] git add failed 
+[INFO] Done: 23:22:54.80 
+==================================== 
+ 
+==================================== 
+ Obsidian Vault Auto Backup 
+ 周二 2026/06/02 23:30:01 
+==================================== 

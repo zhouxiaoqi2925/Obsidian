@@ -1,344 +1,323 @@
-# lighthouse - Web 质量审计的事实标准
+# lighthouse - 自动化 Web 质量审计
 
 **GitHub**: GoogleChrome/lighthouse
-**Star**: 28.5k+
-**语言**: JavaScript (ESM) + JSDoc
-**主题**: web-audit、performance、puppeteer、CDP、scoring
-**适用场景**: Web 性能审计、CI 集成、SEO/A11y/性能回归测试、Web Vitals
+**Star**: 30k+
+**语言**: JavaScript (Node.js)
+**主题**: web-vitals / performance / accessibility / seo / auditing
+**适用场景**: Web 性能审计 / CI 质量门禁 / Core Web Vitals 监控 / SEO 检测 / 无障碍检查
 
 ---
 
-## 一、基础范式
+## 第一段：基础范式
 
-### 模式 1 · Gather / Audit 两阶段严格分离
+### 模式 1 - Gather/Audit 两阶段
 
-**问题场景**：传统性能工具"边采边评"——采集和评分耦合；CI 想"复用历史数据回归"做不到；不同 audit 想"看同一份数据"做不到；离线分析做不到。
+**问题场景**：单次浏览器跑几十种检查（性能/可访问性/SEO），如果每个检查都启一次浏览器太慢。
 
-**解决方案**：`core/runner.js` 把流程切两阶段：Phase 1 `navigationGather()` 只读不写，30+ Gatherer 跑完产出 `artifacts`；Phase 2 `Runner._runAudits()` 只算不联网，100+ Audit 跑 `artifacts` → 评分；架构天然支持 `lighthouse -G=./artifacts` 单采 + `lighthouse -A=./artifacts` 单审；"Cannot change settings between gathering and auditing" 是工程纪律——保证"同份 artifacts = 同份报告"。
+**解决方案**：Lighthouse 分两阶段：① Gather（采集）驱动浏览器访问页面 + 收集 artifacts（NetworkRequests / Trace / Metrics / Accessibility）② Audit（审计）离线分析 artifacts 打分（FCP / LCP / CLS / TBT）。一采集多审计，速度快 10x。
 
 **关键参数**：
-- Phase 1 gather
-- Phase 2 audit
+- Gatherer 采集器
+- Audit 审计器
 - artifacts 中间产物
-- `-G` / `-A` 分阶段
-- settings 严格相等
+- LighthouseRunResult
+- driver.evaluate
 
-**最佳实践**：性能/审计工具要"复用数据 + 离线分析"用两阶段分离；**比边采边评灵活 10x**；适用任何"性能分析 + 回归测试"。
+**最佳实践**：自定义 gatherer 写 `class MyGatherer extends Gatherer` + `startInstrumentation / gather / stopInstrumentation` 三钩子；自定义 audit 走 `class MyAudit extends Audit` + `audit(artifacts)`；artifacts 通过 gatherer 收集统一消费。
 
-### 模式 2 · Puppeteer-Core + 自家 Driver 包装
+### 模式 2 - Puppeteer-Core Driver 浏览器
 
-**问题场景**：直接用 puppeteer 全家桶，CDP session 散落各处；多 target（OOPiF / ServiceWorker）管理混乱；超时错误 stack 难定位。
+**问题场景**：Lighthouse 要驱动 Chrome 拿 trace + network + metrics，但 Chrome DevTools Protocol（CDP）调用复杂。
 
-**解决方案**：`core/gather/driver.js` 105 行只接管 `page.target().createCDPSession()`；所有 CDP 命令过 `TargetManager` 的 `rootSession / childSession` 统一管；10 个子 driver（navigation/network/storage/...）各管一域；`throwingSession` 默认值让"未连接就调用"在第一现场抛错；`targetManager.enable()` 在 `networkMonitor.enable()` 之前——避免漏 ServiceWorker 网络事件。
-
-**关键参数**：
-- puppeteer-core 瘦依赖
-- TargetManager 接管
-- 10 个子 driver
-- throwingSession 默认
-- enable 顺序
-
-**最佳实践**：CDP 工具要"统一 session + 多 target"用 Driver 包装层；**比直接用 puppeteer 优雅 5x**；适用任何"浏览器自动化 + 多 target"。
-
-### 模式 3 · ComputedArtifact 依赖键 hash 缓存
-
-**问题场景**：100+ audit 都要算"主线程任务树"——每次重算 200ms；普通 `Map` 用引用相等，trace 数组每次 gather 引用都不同 cache miss。
-
-**解决方案**：`core/computed/computed-artifact.js` `makeComputedArtifact(compute_, keys)` 用 `ArbitraryEqualityMap`（key 走 lodash `isEqual` 深相等）按依赖键缓存；`keys: ['trace', 'devtoolsLog', ...]` 必须是有限枚举——`keys: K & ([keyof FirstParamType] extends [K[number]] ? unknown : never)` 让"keys 必须覆盖"变编译错误；多个 audit 共享同一份昂贵派生数据。
+**解决方案**：用 `puppeteer-core` 库（不带 Chromium 浏览器）启动 Chrome + 通过 CDP 协议通信；`lighthouse(url, { port: 9222, output: 'json' })` 内部启动 Chrome / connect / Gather / Audit / return；`chrome-launcher` 启 Chrome `--remote-debugging-port` 监听。
 
 **关键参数**：
-- `ArbitraryEqualityMap`
-- `makeComputedArtifact`
-- `keys` 有限枚举
-- 深相等 key
-- 多 audit 共享
+- `puppeteer-core` 控浏览器
+- `chrome-launcher` 启 Chrome
+- CDP 协议
+- `--remote-debugging-port`
+- `port` 9222
 
-**最佳实践**：库要做"派生数据 + 多 consumer"用依赖键缓存；**比 `let cached = null` 强 10x**；适用任何"ETL / 编译 / 查询计划"。
+**最佳实践**：Lighthouse CI 用 `chrome-launcher` 启 Chrome；自定义 driver 写 `ChromeProtocolSession` 包装；DevTools Protocol 协议升级 v1.3；`disableStorageReset: true` 保持登录态。
 
-### 模式 4 · 5 阶段状态机 + sensitive 防污染
+### 模式 3 - ComputedArtifact 缓存
 
-**问题场景**：性能测试要"既观测又不污染"——gather 阶段自己的 `performance.now()` 监听器、Long Tasks 监听器本身耗 0.5ms；不分区会污染指标。
+**问题场景**：100 个 audit 都要算"页面所有 link 列表"，每个 audit 重算一次浪费。
 
-**解决方案**：`core/gather/runner-helpers.js#phaseToPriorPhase` 5 阶段线性 DAG：① `startInstrumentation` 页面跳转前埋点 ② `startSensitiveInstrumentation` 紧贴跳转前，**绝对不能**让 lighthouse 自身工作污染 ③ `stopSensitiveInstrumentation` 紧贴 load 后仍敏感 ④ `stopInstrumentation` 安全区可重活（如 fullPageScreenshot 拼图）⑤ `getArtifact` 收尾。Gatherer 自己声明"哪段时间不能工作"，gather 框架按 phase 调度。
-
-**关键参数**：
-- 5 phase 线性 DAG
-- startInstrumentation
-- startSensitiveInstrumentation
-- stopSensitiveInstrumentation
-- stopInstrumentation
-
-**最佳实践**：性能测试框架要"操作者自觉不污染观测"用 sensitive 阶段切分；**适用任何"分析工具 + 自污染"**。
-
-### 模式 5 · arithmeticMean 加权 + log-normal 评分
-
-**问题场景**：类别评分要"1 项 0 分不能让整体死"；用 geometricMean 会拉更狠（√0 = 0）；用纯 sum 又太宽松。
-
-**解决方案**：`core/scoring.js` 92 行 `arithmeticMean(items)` 算术加权：filter weight > 0，reduce `(weight, sum + score*weight)`，clampTo2Decimals；NOT_APPLICABLE/INFORMATIVE/MANUAL 三类 `weight=0` 强制不参与算分但仍显示；p10/median 双控制点 log-normal 把 0-∞ 物理指标映射到 0-1 分数；这是"激励型评分"非"否决型评分"的产品决策。
+**解决方案**：`ComputedArtifact` 缓存机制：artifacts 收集完后跑 `computedArtifacts` 阶段计算"派生数据"（`URLs / ImageElements / MetaElements / LinkElements`）；`artifacts.requestCriticalRequests()` 走 `ComputedArtifact.defineProperty` 一次性算 + 缓存。
 
 **关键参数**：
-- arithmeticMean 加权
-- NOT_APPLICABLE weight=0
-- log-normal p10/median
-- 激励而非否决
-- 算术而非几何
+- `ComputedArtifact`
+- `defineProperty` 派生
+- `requestCriticalRequests`
+- `ImageElements`
+- 一次性算
 
-**最佳实践**：评分系统要"鼓励修最严重项"用算术 + weight=0 排除；**比纯加和/几何平均好 5x**；适用任何"多维度评分 + 缺数据项"。
+**最佳实践**：自定义 gatherer 收集原始数据；自定义 audit 走 `artifacts` 读 computed；computed 缓存走 module-level Map；调试时用 `lighthouse --view` 看 trace。
+
+### 模式 4 - Lighthouse Runner 任务调度
+
+**问题场景**：CI 跑 100 个 URL 审计，怎么调度并发 + 超时 + 错误恢复。
+
+**解决方案**：`lighthouse-runner` 是 CLI 工具 + `lighthouse/batch-runner` 是 Node API；`batchRunner(urls, options, concurrency=5)` 并发跑；`lighthouse(url, opts, config)` 单次跑；`lighthouse-ci` 集 GitHub Actions 自动化。
+
+**关键参数**：
+- `lighthouse(url, opts, config)`
+- `batchRunner(urls, ...)`
+- concurrency 并发
+- timeout 超时
+- `lighthouse-ci` CI 集成
+
+**最佳实践**：CI 用 `lhci collect --url=...` 跑 + `lhci upload` 存 + `lhci assert` 门禁；并发 5 + 每 URL 60s 超时；错误 URL 重试 3 次；`chrome-flags="--headless"` 无头。
+
+### 模式 5 - 5 维度评分（Performance/A11y/SEO/BP/PWA）
+
+**问题场景**：用户要"页面质量分数"，单一指标难表达。
+
+**解决方案**：5 维度评分：① Performance 性能（FCP/LCP/CLS/TBT/Speed Index）② Accessibility 无障碍（aria/对比度/标签）③ Best Practices 最佳实践（HTTPS/控制台错误/图片宽高）④ SEO（meta/可爬/移动友好）⑤ PWA（Service Worker/manifest）。每维度 0-100 分。
+
+**关键参数**：
+- 5 维度
+- 0-100 分
+- weighted average
+- pass/warn/fail
+- opportunities 优化建议
+
+**最佳实践**：CI 门禁 Performance > 90 / A11y > 95；分数 < 阈值阻断 PR；`lighthouse --only-categories=performance` 跑单维度快 5x；分数趋势图存数据仓库。
 
 ---
 
-## 二、扩展范式
+## 第二段：扩展范式
 
-### 模式 6 · 30+ BaseGatherer 模板方法 5 钩子
+### 模式 6 - Lighthouse Config 配置
 
-**问题场景**：30+ 收集器（TraceGatherer / NetworkGatherer / MetaGatherer）共享 5 个生命周期钩子，写 5 个空函数复制粘贴累。
+**问题场景**：业务要定制审计维度（只审计性能 + 特定规则集）。
 
-**解决方案**：`core/gather/base-gatherer.js` 定义 5 个空方法 `startInstrumentation / startSensitiveInstrumentation / stopSensitiveInstrumentation / stopInstrumentation / getArtifact`；子类按需 override；`collectPhaseArtifacts` 状态机按 phase 顺序调对应钩子；`BaseGatherer.symbol = 'gatherer'` 标记身份；统一错误用 `createDependencyError(dependency, error)` + `err.expected = true` 抑制 Sentry 重复上报。
-
-**关键参数**：
-- 5 钩子模板
-- 子类按需 override
-- symbol 标记
-- expected 错误抑制
-- 错误包装
-
-**最佳实践**：库要做"多实例 + 共享生命周期"用模板方法 5 钩子；**比传 callback 简单 5x**；适用任何"采集器 / 处理器 / 插件"。
-
-### 模式 7 · ESM + JSDoc 自动生成 .d.ts
-
-**问题场景**：TypeScript 写大项目累；纯 JS 又丢类型；维护 .d.ts 单独文件是隐藏成本。
-
-**解决方案**：`"type": "module"` + 所有源文件是 `.js` 带 JSDoc 类型（`/** @type {LH.RawIcu<LH.Result>} */`）；`tsc --build tsconfig-all.json` 编译所有 .d.ts；保留 JS 生态灵活性（CDN / tree-shaking 友好）的同时不丢类型；CI 必须跑 `yarn type-check`；type-system 帮助："keys 必须覆盖" 变编译错误。
+**解决方案**：`lighthouse.config.js` 配 `extends: 'lighthouse:default'` 继承默认；`settings: { onlyCategories: ['performance'] }` 限定维度；`audits: ['unused-css-rules']` 包含额外；`skipAudits: ['uses-http2']` 跳过；`groups: { ... }` 自定义分组。
 
 **关键参数**：
-- `"type": "module"`
-- JSDoc 类型
-- `tsc --build`
-- 灵活 + 类型兼得
-- 编译期校验
+- `extends` 继承
+- `onlyCategories`
+- `audits` / `skipAudits`
+- `groups` 分组
+- `passes` 阶段
 
-**最佳实践**：库要做"JS 灵活 + TS 类型"用 JSDoc + `tsc --build`；**比纯 TS 灵活 3x**；适用任何"JS 库 + 类型用户"。
+**最佳实践**：内部用 config 锁定审计集（CI 一致性）；`extends: 'lighthouse:default'` + `skipAudits` 微调；`lighthouse --config-path=custom.js url` 自定义；`desktop-config.js` vs `mobile-config.js` 切换设备。
 
-### 模式 8 · 3 种 throttling-method 策略切换
+### 模式 7 - Lighthouse Plugin 插件
 
-**问题场景**：性能测试要"既真实又快"——真断网（devtools throttling）慢且不可重复；纯算（simulate）快但要重建网络图；不节流（provided）准但要外部环境。
+**问题场景**：业务要"审计内部框架特定问题"（React 性能、Vue 路由等）。
 
-**解决方案**：3 策略切换：① `simulate`（默认）用 Lantern 自家网络图模拟器从 devtools log 重建节流，比真断网快 10x 且可重复 ② `devtools` 真实断网，慢但权威 ③ `provided` 不节流，要求外部网络已限速；用户按场景选 `throttling-method=simulate`（CI 加速）/ `devtools`（真实排名）；桌面配置默认 simulate。
-
-**关键参数**：
-- 3 策略可切换
-- Lantern 模拟
-- devtools 真实
-- provided 外置
-- 10x 加速
-
-**最佳实践**：性能测试要"速度 vs 真实性"做策略可切换；**默认 simulate + CI 切真实**；适用任何"模拟 vs 真实 + 用户选"。
-
-### 模式 9 · RawIcu → 替换的 i18n 模型
-
-**问题场景**：44 语言 i18n 报告如果运行时带 ICU 库，HTML 体积大；用户改 locale 要重跑 lighthouse。
-
-**解决方案**：`runner.js` 构造 `LH.RawIcu<LH.Result>` 阶段用 ICU MessageFormat 占位符（"Lighthouse version {version}"）；`format.replaceIcuMessages(i18nLhr, settings.locale)` 一次性替换所有占位符为具体 locale 字符串；HTML 体积小（多 audit 复用相同 i18n 字符串时去重）；`icuMessagePaths` 字段记录被替换的路径——audit trail。
+**解决方案**：`lighthouse-plugin-myplugin` 子包；`lighthouse --plugins=lighthouse-plugin-react` 加载；插件含 `package.json` + `index.js`（注册 gatherers / audits / categories）；`lighthouse-plugin-field-performance` 是官方示例；`lighthouse-plugin-publisher-ads` Google Ads 专用。
 
 **关键参数**：
-- RawIcu 占位符
-- 一次性替换
-- HTML 体积小
-- 44 语言
-- icuMessagePaths audit
+- 插件子包
+- `index.js` 注册
+- `audits / categories`
+- `--plugins=` 加载
+- `lighthouse-plugin-*` 命名
 
-**最佳实践**：i18n 要"小体积 + 离线报告"用 RawIcu + 替换；**比运行时 ICU 库省 90% 体积**；适用任何"多语言 + 静态产物"。
+**最佳实践**：内部审计写 `lighthouse-plugin-internal` 子包；插件配 `category: { id: 'lighthouse-internal', title: '内部审计' }`；`lighthouse --plugins` 加载多个；发布 npm 公开或内部 private。
 
-### 模式 10 · `throwingSession` 模式（undefined → throw）
+### 模式 8 - 移动 vs 桌面 模拟
 
-**问题场景**：Driver 生命周期长，调用方多；未 connect 就调用 → `Cannot read property 'sendCommand' of undefined` 错误 stack 跑到无关位置。
+**问题场景**：移动/桌面用户得分差异大（移动算力低），CI 跑哪个？
 
-**解决方案**：`driver.js` 顶部定义 `throwingSession` 默认值，所有方法都是 `throwNotConnectedFn = () => { throw new Error('Session not connected') }`；`get executionContext()` 未初始化也 throw；让"未连接就调用"在第一现场抛错 + 明确领域错误；调用方一调就发现"忘了 connect"，不用追 stack。
-
-**关键参数**：
-- throwingSession 默认
-- 所有方法 throw
-- 第一现场抛错
-- 领域错误
-- stack 短
-
-**最佳实践**：库要做"长生命周期 + 多调用方"用 throwing default；**比 undefined 省 5x 调试时间**；适用任何"需要 init 序列的对象"。
-
----
-
-## 三、进阶范式
-
-### 模式 11 · `_runAudits` 串行而非 Promise.all
-
-**问题场景**：100+ audit 想用 `Promise.all` 并发跑——但 `computedCache` 是共享单例，并发会让 cache 写穿成 1+1；内存峰值难控。
-
-**解决方案**：`runner.js` `for (const auditDefn of audits) { const auditResult = await Runner._runAudit(...); }` 顺序执行；理由：① 共享 cache 串行才能命中 ② 每个 audit 向 Sentry 上报，串行能精确定位第一个失败点 ③ 内存峰值更可控——大型 audit（如 `ScriptTreemapData`）一次性吃 200MB 串行能错峰。代价：100+ audit 跑出秒级延迟。
+**解决方案**：`lighthouse(url, { formFactor: 'mobile' })` 显式；`lighthouse(url, { formFactor: 'desktop', screenEmulation: { mobile: false, width: 1350, height: 940, deviceScaleFactor: 1, disabled: false } })` 桌面模拟；`throttling-method: 'simulate'` vs `devtools` 切换节流；`preset: 'desktop' | 'mobile'` 预设。
 
 **关键参数**：
-- 串行 for-of await
-- computedCache 共享
-- Sentry 精确上报
-- 内存错峰
-- 100+ audit 30s
+- `formFactor`
+- `screenEmulation`
+- `throttling-method`
+- `preset: desktop/mobile`
+- 移动 4G 节流
 
-**最佳实践**：库要做"共享 cache + 多任务"用串行；**比 Promise.all 简单 5x**（cache 不用加锁）；适用任何"共享缓存 + 多消费者"。
+**最佳实践**：CI **必**跑移动（Core Web Vitals 默认移动）；桌面 1 个 + 移动 3 个抽样 URL；`screenEmulation.disabled: false` 真实模拟视口；`throttling.cpuSlowdownMultiplier: 4` 模拟低端机。
 
-### 模式 12 · 1451 文件 + JSDoc 而非 TS
+### 模式 9 - Trace + 性能分析
 
-**问题场景**：大项目 1451 文件全用 TypeScript 写累；维护 .d.ts 单独文件成本高；类型系统是好事但写 TS 慢。
+**问题场景**：Performance 分数低，要定位是 LCP 长 / TBT 高 / CLS 飘。
 
-**解决方案**：Lighthouse 1451 文件 4 万行核心代码，**全用 JavaScript 写**，JSDoc 注释提供类型，`tsc --build` 编译期校验；`yarn type-check` 在 CI 跑；`yarn build-types` 自动从 JSDoc 生成 .d.ts；55% 类型覆盖率（其他用 `any`）；保留 JS 灵活性（runkit / CDN / tree-shaking）的同时不丢类型。
-
-**关键参数**：
-- 1451 文件
-- 4 万行 JS
-- JSDoc 类型
-- tsc --build
-- 55% 类型覆盖
-
-**最佳实践**：大项目要做"灵活 + 类型"用 JSDoc + tsc；**比纯 TS 灵活 3x**；适用任何"百万行级 JS 项目 + 类型用户"。
-
-### 模式 13 · Sample LHR Golden 测试防"幽灵差异"
-
-**问题场景**：CI 改了评分逻辑跑出非预期数字，但测试看不出来——回归悄无声息。
-
-**解决方案**：`core/test/results/sample_v2.json` 是 git LFS 跟踪的"上次 commit 时的官方示例"；`yarn diff:sample-json` 在 CI assert "新跑出的 sample.json 与 gold diff 在容忍范围内（仅 timing）"；这是防"误改打分逻辑"的金标准；LHR 全字段做 diff 但 timing 字段白名单。
+**解决方案**：trace 文件含 `Trace` events（`largestContentfulPaintCandidate` / `layoutShift` / `longtask`）；`./lighthouse --view` 打开 trace + 网络瀑布图 + 屏幕截图 + 详细时序；`artifacts.traces` 含完整 Chrome trace；外部工具用 `chrome://tracing` 打开。
 
 **关键参数**：
-- sample_v2.json golden
-- git LFS 跟踪
-- diff:sample-json
-- timing 字段白名单
-- CI 必跑
+- `artifacts.traces`
+- largestContentfulPaint
+- layoutShift events
+- longtask
+- 屏幕截图
 
-**最佳实践**：审计/评分系统测试用 sample + golden diff；**比单元测试防"全局回归"**；适用任何"打分系统 + 复杂度爆炸"。
+**最佳实践**：分数低时**先**看 trace 定位；`lighthouse --view` 看完整报告；trace JSON 大（10MB+）存 S3；用 `speedline` 算 Speed Index；长任务 > 50ms 拆解。
 
-### 模式 14 · 5 种 gather 模式覆盖全场景
+### 模式 10 - lighthouse-ci + 持续监控
 
-**问题场景**：用户要"完整页面加载"或"任意时长监测"或"单点快照"——单一 navigation 模式满足不了。
+**问题场景**：上线后性能回归怎么监控？CI 怎么阻断 PR 引入低分？
 
-**解决方案**：5 gather 模式：① navigation（页面加载完整流程）② timespan（任意时长区间，监测 SPA 路由切换）③ snapshot（单点 DOM 快照，A/B 测试）④ legacy navigation 2-pass（兼容老调用）⑤ user flow（多步 user journey 串联）。`core/gather/{navigation,timespan,snapshot}-runner.js` 各管一模式；`user-flow.js` 编排多步。
-
-**关键参数**：
-- navigation 完整
-- timespan 任意时长
-- snapshot 单点
-- legacy 2-pass
-- user flow 多步
-
-**最佳实践**：审计工具要"多场景覆盖"用 gather 模式可切换；**比单一模式灵活 10x**；适用任何"分析工具 + 多种使用场景"。
-
-### 模式 15 · Puppeteer-Core + chrome-launcher 不内置浏览器
-
-**问题场景**：内置 Chromium 300MB+ 包大；Chromium 版本号打架（用户装 Chrome 90，库要 95）；企业用户想用 enterprise Chrome。
-
-**解决方案**：`chrome-launcher` 启动"白板 Chrome" 9222 端口；`puppeteer-core`（不是 puppeteer）只接 CDP，不打包浏览器；用户可挂自己公司 enterprise Chrome；避免版本号冲突 + 包小 + 灵活；CI 用官方 `chrome-debug` action；缺点：CI 必须先装 Chrome。
-
-**关键参数**：
-- chrome-launcher 启动器
-- puppeteer-core 瘦依赖
-- 不内置 Chromium
-- 企业 Chrome 可挂
-- 9222 端口协议
-
-**最佳实践**：CDP 工具要"轻 + 灵活"用 puppeteer-core + chrome-launcher；**比 puppeteer 包小 90%**；适用任何"浏览器自动化 + 用户自带 Chrome"。
-
----
-
-## 四、实战范式
-
-### 模式 16 · smoke test 5 行验证 Lighthouse
-
-**问题场景**：装好 lighthouse 后快速验证 Chrome 联通 + gather + audit 全链路。
-
-**解决方案**：5 行 smoke test：```bash
-npm i -g lighthouse
-lighthouse https://example.com --view --quiet
-lighthouse https://example.com -G=./artifacts && lighthouse -A=./artifacts --output=json
-``` 期望：HTML 报告打开看到 LCP/CLS/TBT 分数 + JSON 报告含 `categories.performance.score`。
-
-**关键参数**：
-- 5 行核心验证
-- Chrome 联通
-- HTML 报告打开
-- JSON 分数存在
-- 30s 内跑完
-
-**最佳实践**：新环境验证审计工具用 5 行 smoke test；**比文档翻半天快 10x**；适用任何"Lighthouse 引入 + 升级回归"。
-
-### 模式 17 · 性能基线 4 黄金指标
-
-**问题场景**：网站性能要量化——首屏多快、稳不稳、合规否、可访问否；监控 metric 太多抓不到重点。
-
-**解决方案**：4 黄金指标：① LCP（Largest Contentful Paint ≤ 2.5s 良）② CLS（Cumulative Layout Shift ≤ 0.1 良）③ INP（Interaction to Next Paint ≤ 200ms 良）④ TBT（Total Blocking Time ≤ 200ms 良）；Web Vitals 联盟 2020 年定；Lighthouse 默认 4 项 + Performance 类别算分；用 `core/lib/lantern/` 模拟节流跑这些指标。
-
-**关键参数**：
-- LCP / CLS / INP
-- TBT 实验室代理
-- Web Vitals 阈值
-- 4 黄金
-- 模拟节流
-
-**最佳实践**：Web 性能监控用 4 黄金 + Lighthouse CI；**比裸跑自定义 metric 完善 5x**；适用任何"Web 性能基线"。
-
-### 模式 18 · Lighthouse CI 5 步法
-
-**问题场景**：CI 要"每次 PR 都跑 Lighthouse + 分数不下降 + 历史趋势"——但 Lighthouse 单次 30s，全跑 100 个 URL 50 分钟。
-
-**解决方案**：Lighthouse CI 5 步：① `npm i -g @lhci/cli` ② `.lighthouserc.json` 配 URLs + assertions ③ `lhci autorun` 在 CI 跑 ④ 失败 PR 直接 fail（assertion 不达标）⑤ Lighthouse Server 存历史 + diff；`@lhci/cli` 默认并发 1（避免 Chrome 抢 9222）；assertion 用 `"categories:performance": ["error", {"minScore": 0.9}]`。
+**解决方案**：`@lhci/cli` 工具：① `lhci collect` 跑 + ② `lhci upload` 存到 server + ③ `lhci assert` 阻断 CI；`lighthouserc.js` 配 `assert: { assertions: [{ 'categories:performance': ['error', { minScore: 0.9 }] }] }`；`lhci server` 部署到公司内网 dashboard。
 
 **关键参数**：
 - `@lhci/cli`
-- `.lighthouserc.json`
-- autorun
-- assertion error
-- 并发 1
+- `collect/upload/assert`
+- `lighthouserc.js`
+- `minScore: 0.9`
+- `lhci server` dashboard
 
-**最佳实践**：CI 要"性能门禁"用 Lighthouse CI；**比手动跑省 90% 时间**；适用任何"Web 项目 + 性能门禁"。
-
-### 模式 19 · vs WebPageTest / PageSpeed Insights / Sitespeed 选型
-
-**问题场景**：4 个候选（lighthouse / WPT / PSI / sitespeed），按需选型。
-
-**解决方案**：lighthouse 28k star + CLI/扩展/MCP 5 客户端 + 默认 simulate 30s + 5 类指标 → 综合首选；WebPageTest 真实地理位置测试 → 大型网站跨区域审计；PageSpeed Insights 是 Google 包装版 PSI 用 lighthouse + CrUX 真实数据 → SEO/SRE；Sitespeed.io 用 lighthouse + browsertime 串 → 多 URL 自动化批量；lighthouse 是开发首选，WPT 是 SRE 首选。
-
-**关键参数**：
-- lighthouse 28k 综合
-- WPT 真实地域
-- PSI Google 包装
-- Sitespeed 批量
-- 各有定位
-
-**最佳实践**：性能审计选型按"客户端 + 真实度 + 批量"3 维度打矩阵；**lighthouse 综合首选**、**WPT SRE 跨区**、**Sitespeed 批量**；适用任何"Web 性能工具选型"。
-
-### 模式 20 · 7 天复刻 mini-lighthouse
-
-**问题场景**：学习用，想搭一个简化版 Lighthouse 理解核心（CDP + 评分）。
-
-**解决方案**：7 天分 5 步：① Day 1-2 Puppeteer-Core + CDP 入门（Page.navigate / Network.enable / Tracing.start）② Day 3 Gather 阶段 10 个核心 artifact + BaseGatherer 5 钩子 ③ Day 4 Computed 缓存 + MainThreadTasks 派生 ④ Day 5 Audit 阶段 5 个核心 metric + log-normal 评分 + LHR JSON 输出 ⑤ Day 6-7 报告 HTML 渲染 + sample golden 测试。每天 200-500 行，Day 5 能跑出 LCP 分数，Day 7 能 diff sample。
-
-**关键参数**：
-- Day 1-2 CDP 基础
-- Day 3 Gather 5 钩子
-- Day 4 Computed 缓存
-- Day 5 Audit + 评分
-- Day 6-7 报告 + 测试
-
-**最佳实践**：复刻 Lighthouse 先求"最小可跑内核"再迭代，7 天只够做 80% 场景的简化版；**完整 gather/audit 解耦 + 30+ gatherer + 100+ audit 需 5 团队年**；适用任何"Lighthouse 学习 + 内部简化"。
+**最佳实践**：GitHub Actions 配 `treosh/lighthouse-ci-action@v10`；`assert.assertions` 设硬阈值；`assertions` 比 `minScore` 更细（按 audit 维度）；`collect.numberOfRuns: 3` 取平均；`upload.target: 'lhci'` 存 server。
 
 ---
 
-## 附：仓库元信息
+## 第三段：进阶范式
 
-- **路径**: `G:\实战案例\GitHub顶尖项目\lighthouse\`
-- **大小**: ~1451 文件（含 docs/test/fixtures）
-- **核心文件**: `core/runner.js`（541 行）、`core/gather/navigation-runner.js`（314 行）、`core/gather/runner-helpers.js`（185 行）、`core/scoring.js`（92 行）、`core/computed/computed-artifact.js`（84 行）、`core/gather/driver.js`（105 行）
-- **主分支**: master
-- **当前 commit**: v13.3.0
-- **作者**: Google Chrome 团队 + 30+ 长期贡献者
-- **许可**: Apache-2.0
-- **被采用**: Chrome DevTools 内置、PageSpeed Insights、Web Vitals 联盟、百万网站 CI 集成
+### 模式 11 - log-normal 评分（对数正态分布）
 
-## 一句话总结
+**问题场景**：FCP 1.5s 和 3.0s 体验差 10 倍，但分数差异要"非线性"映射。
 
-Lighthouse 用 JavaScript 把"两阶段流水线 + 30+ 收集器 + 100+ 审计 + 依赖键缓存 + log-normal 评分"做到极致，秘诀是「解耦带来可复用，可复用带来可持续」——这是大型开源工具活下去的根本。
+**解决方案**：Lighthouse 5+ 改用 log-normal 分布：FCP 值取对数后用正态分布累计函数映射 0-100；中位数 P50=50 分；P10/P90 是关键阈值；每个 metric 独立 `logNormalScore` 公式。性能指标更贴合用户感知。
+
+**关键参数**：
+- log-normal 分布
+- P50 中位数
+- P10 / P90 阈值
+- 累积分布
+- metric 独立
+
+**最佳实践**：理解 `metric.Score` 计算公式 = `logNormalCDF(value, median, p10ToP90Ratio)`；FCP P50=1.6s P10=0.8s；LCP P50=2.5s P10=1.2s；CLS P50=0.1 P10=0.01；TBT P50=200ms P10=100ms。
+
+### 模式 12 - 评分加权（Category Weights）
+
+**问题场景**：5 维度等权不合理（性能应该更重要）。
+
+**解决方案**：`categories.performance.weight: 6 / accessibility: 1 / best-practices: 1 / seo: 1 / pwa: 0` 权重；总分 = `Σ(metric.score * weight) / Σ(weight)`；自定义权重覆盖默认；`groupWeight` 改组内 metric 权重。
+
+**关键参数**：
+- `weight` 权重
+- `Σ(score * weight) / Σ(weight)`
+- `groupWeight`
+- 自定义覆盖
+- 总分 0-100
+
+**最佳实践**：电商业务 Performance 权重提到 8；A11y 业务 Accessibility 权重 8；`PWA: 0` 不用 PWA 关掉；自定义 category 配 `weight: 2` 加分；权重之和**不必**等于 1（归一化在计算时除以权重总和）。
+
+### 模式 13 - Web Vitals 三件套
+
+**问题场景**：Google 2020+ 主推 Core Web Vitals（LCP/FID/CLS），FID 后被 INP 替代。
+
+**解决方案**：Core Web Vitals 3 件套：① LCP（Largest Contentful Paint）最大内容绘制 < 2.5s ② INP（Interaction to Next Paint）交互到下帧 < 200ms（替代 FID）③ CLS（Cumulative Layout Shift）累积布局偏移 < 0.1。Lighthouse 9+ 内置所有 Web Vitals 审计。
+
+**关键参数**：
+- LCP < 2.5s
+- INP < 200ms
+- CLS < 0.1
+- Web Vitals
+- 75th percentile
+
+**最佳实践**：监控 75 百分位数（P75）**不要**平均值；INP 替代 FID（Lighthouse 10+）；Web Vitals 上报到 GA4 / Sentry；LCP 元素配 `<link rel="preload">`；CLS 配 `width/height` 防图片位移。
+
+### 模式 14 - audit `details` + 优化建议
+
+**问题场景**：分数低用户不知道怎么优化。
+
+**解决方案**：每个 audit 有 `details: { type: 'list', items: [...] }` 列具体问题项；`opportunity` 类型显示预估节省（ms / KB）；`LighthouseOpportunity` 含 `numericValue / numericUnit / displayValue`；`Savings: 1.2s` 显示在报告。
+
+**关键参数**：
+- `details.type`
+- `opportunity` 优化
+- `numericValue` 数值
+- `displayValue` 显示
+- `scoreDisplayMode`
+
+**最佳实践**：自定义 audit **必**填 `details` 给可执行建议；`scoreDisplayMode: 'metricSavings'` 显示节省；`opportunity` 配 `displayValue` 用户友好；`displayValue: 'Potential savings of 1,200 ms'`。
+
+### 模式 15 - 完整 artifacts 协议
+
+**问题场景**：自定义 gatherer 收集什么数据？自定义 audit 怎么消费？
+
+**解决方案**：`artifacts` 类型：`NetworkRequests / Scripts / Trace / DevtoolsLog / Accessibility / MetaElements / ImageElements / LinkElements / Anchors / TagsBlockingFirstPaint / IframeElements / DoCumentElement / Manifest`；自定义 `class MyArtifact extends Gatherer` 输出到 artifacts；自定义 audit 读 `artifacts.myArtifact`。
+
+**关键参数**：
+- artifacts 协议
+- `Gatherer` 钩子
+- `startInstrumentation`
+- `gather`
+- `stopInstrumentation`
+
+**最佳实践**：自定义 audit 走 `artifacts` 而**不是** `driver`（已被审计阶段不在线）；`@getArtifact` 缓存；artifacts 类型在 `types/artifacts.d.ts` 声明；用 `Array.prototype.filter` 简化审计逻辑。
+
+---
+
+## 第四段：实战范式
+
+### 模式 16 - smoke test 10 行验证
+
+**问题场景**：装好 lighthouse 验证能否跑通基础审计。
+
+**解决方案**：10 行 smoke test：```js const lighthouse = require('lighthouse').default; (async () => { const result = await lighthouse('https://example.com', { port: 9222, output: 'json', logLevel: 'error' }); console.log('Performance:', result.lhr.categories.performance.score * 100); console.log('LCP:', result.lhr.audits['largest-contentful-paint'].displayValue); })(); ``` 期望：example.com Performance 95+ / LCP 0.6s 左右。
+
+**关键参数**：
+- 10 行核心验证
+- `lighthouse(url, opts)` API
+- score 0-1 乘 100
+- `displayValue` 友好显示
+- 30s 可跑完
+
+**最佳实践**：新装 lighthouse 用 10 行 smoke test 验证"启动 Chrome + 跑 audit + 读 score"三件套；`logLevel: 'error'` 静默；测试本地 `http://localhost:3000`；CI 跑 example.com 校准。
+
+### 模式 17 - GitHub Actions 集成
+
+**问题场景**：PR 触发 Lighthouse 跑 + 阻断低分 + 上传报告。
+
+**解决方案**：`.github/workflows/lhci.yml` 配 `treosh/lighthouse-ci-action@v10`；`url: ['https://staging.example.com/']` 审计 URL；`assert: true` 触发断言；`uploadArtifacts: true` 上传报告；`temporaryPublicStorage: true` 临时公开链接。
+
+**关键参数**：
+- `treosh/lighthouse-ci-action`
+- `assert: true`
+- `uploadArtifacts`
+- `temporaryPublicStorage`
+- `urls: [...]`
+
+**最佳实践**：用 staging URL **不要**生产（避免 SEO 命中）；`assert.assertMatrix: 'lighthouse:default'` 跑默认；`budget.json` 配硬性指标；`if: github.event_name == 'pull_request'` 限定 PR；报告评论到 PR。
+
+### 模式 18 - 监控 + 趋势分析
+
+**问题场景**：性能随时间漂移（依赖升级、流量变化），单次分数不够。
+
+**解决方案**：`lhci server` 部署 dashboard + 定时任务每日跑 + 时间序列存到 Prom/Grafana；`lighthouse --output=csv` 导 CSV 入库；`lighthouse-batch` 并发 100 URL；`@unlighthouse/cli` 整站扫描。
+
+**关键参数**：
+- `lhci server`
+- 时间序列
+- `output=csv`
+- `lighthouse-batch`
+- `@unlighthouse/cli`
+
+**最佳实践**：每日定时 cron 跑；分数趋势告警 7 天平均 < 阈值；CSV 入 BigQuery / ClickHouse；`@unlighthouse/cli` 整站扫描发现长尾问题；配合 Sentry 性能告警。
+
+### 模式 19 - vs WebPageTest / PageSpeed Insights 选型
+
+**问题场景**：3 个 Web 性能工具（Lighthouse / WebPageTest / PageSpeed Insights）。
+
+**解决方案**：Lighthouse 30k+ star + 自动化 + CI 集成 + 开源；WebPageTest 学术 + 真实地理位置 + 视频录制 + 高级配置；PageSpeed Insights Google 官方 + 综合 Lighthouse + CrUX 真实用户数据。Lighthouse 是 CI 自动化首选，PageSpeed Insights 是日常监测。
+
+**关键参数**：
+- Lighthouse 自动化
+- WebPageTest 学术
+- PageSpeed Insights CrUX
+- 真实用户数据
+- 视频录制
+
+**最佳实践**：CI 自动化**用** Lighthouse（API + 集成）；生产监控**用** PageSpeed Insights（CrUX 真实用户数据）；深度分析**用** WebPageTest（视频 + 多地点）；3 工具结合最全面。
+
+### 模式 20 - 7 天复刻 mini-lighthouse
+
+**问题场景**：学习用，想搭一个简化版 Lighthouse 理解核心。
+
+**解决方案**：7 天分 5 步：① Day 1-2 Puppeteer 启动 Chrome + 跑通 CDP ② Day 3 Gatherer 收集 NetworkRequests + Trace ③ Day 4 Audit 算 FCP/LCP/CLS 3 指标 ④ Day 5 评分 log-normal + 报告输出 ⑤ Day 6-7 加 a11y/seo/best-practices 维度。
+
+**关键参数**：
+- Day 1-2 Puppeteer
+- Day 3 Gatherer
+- Day 4 Audit
+- Day 5 评分
+- 7 天最小可用
+
+**最佳实践**：复刻 Lighthouse 先求"最小可跑内核"再迭代；7 天只够做 60% 场景的简化版；**完整 5 维度 + 100+ audits + log-normal + 报告需要 3 个月+**；适用任何"性能审计学习"。
