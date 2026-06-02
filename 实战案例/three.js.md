@@ -1,895 +1,331 @@
-# three.js
+# three.js - 跨浏览器 WebGL/WebGPU 3D 渲染引擎的场景图与可插拔渲染器典范
 
-> Three.js 是 Web 端 3D 编程的事实标准：场景图 + 几何/材质解耦 + 多渲染器抽象 + Nodes 可编程材质。本篇把 10 年沉淀的 3D 库设计哲学拆成 20 个 Pattern，涵盖 4 大主题：核心机制、架构设计、性能优化、工程实践。
+**GitHub**: mrdoob/three.js
+**Star**: ~102k
+**语言**: JavaScript（含 GLSL/WGSL shader）
+**主题**: 3D 渲染、场景图、WebGL/WebGPU、可视化
+**适用场景**: Web 3D 应用、数据可视化、AR/VR、Web 游戏
 
-## 核心机制
+## 第一段：基础范式
 
-### 模式 1：`Object3D extends EventDispatcher` 让树状事件自动冒泡
+### 模式 1：场景图（Scene Graph）树形数据结构
 
-**问题场景**：场景图是树状结构，节点增删要通知所有子节点的监听器（物理引擎同步、UI 反射、状态保存）。如果每个工具组件自己监听父子关系，会重复实现 + 难维护。
+**问题场景**：3D 应用有大量对象（模型/灯光/相机），它们之间有父子变换关系（子节点继承父节点的矩阵）。如果用扁平列表管理，矩阵更新与射线检测都要手动遍历关联。
 
-**解决方案**：
-
-```js
-// src/core/Object3D.js
-class Object3D extends EventDispatcher {
-    add(object) {
-        if (object.parent !== null) {
-            object.parent.remove(object);
-        }
-        object.parent = this;
-        this.children.push(object);
-        object.dispatchEvent({ type: 'added' });
-        // 冒泡到所有子节点
-        for (let i = 0; i < object.children.length; i++) {
-            object.children[i].dispatchEvent({ type: 'added' });
-        }
-    }
-}
-```
+**解决方案**：`Scene` 是根节点，`Object3D` 是基类，提供 `add()`/`remove()`/`parent`/`children` 树形结构。每个节点保存 `matrix`（局部）、`matrixWorld`（世界），父节点更新时自动级联子节点。`Mesh`/`Light`/`Camera`/`Group` 都继承自 `Object3D`。
 
 **关键参数**：
+- `Object3D` 基类定义 `.add()`/`.remove()`/`.traverse()`
+- `matrix` 局部矩阵（相对父节点）
+- `matrixWorld` 世界矩阵（相对场景根）
+- `updateMatrixWorld(force)` 强制更新并级联
+- `children` 数组维护父子关系
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `add` | 挂子节点 + 触发 added | 同步 + 事件 |
-| `remove` | 摘子节点 + 触发 removed | 同步 + 事件 |
-| 事件冒泡 | 子孙节点都收到 | 物理引擎/UI 都受益 |
+**最佳实践**：用 `Group` 聚合多个对象便于整体平移/旋转；调用 `updateMatrixWorld()` 后再做 raycaster；用 `Object3D.traverse()` 递归查找特定对象。
 
-**最佳实践**：
+### 模式 2：BufferGeometry 与顶点缓冲区契约
 
-- ✅ 任何"树状结构 + 父子事件"场景都让基类继承 EventDispatcher
-- ✅ 事件冒泡到所有子节点——单一 API 满足所有订阅者
-- ✅ 把"加入场景"事件设为首要事件——比"对象创建"事件更有用
-- ✅ 给事件加 `target` 字段——监听器知道是哪个父节点触发的
-- ❌ 避免在事件处理器里再次 add/remove——可能死循环
+**问题场景**：3D 模型的顶点数以万计，JS 对象方式存 `{x, y, z}` 内存与 GC 压力巨大，GPU 上传也低效。
 
-### 模式 2：四元数内部存储 + Euler 仅作视图
-
-**问题场景**：旋转有 4 种表示（Matrix3 / Euler / Quaternion / AxisAngle），需要互转。直接存 Euler 会有 gimbal lock；存 Matrix 不可读；存 AxisAngle 难插值。
-
-**解决方案**：
-
-```js
-// src/core/Object3D.js
-class Object3D {
-    constructor() {
-        this.quaternion = new Quaternion();  // 内部真实表示
-        this._rotation = new Euler();
-        this._rotation._onChange(() => {
-            this.quaternion.setFromEuler(this._rotation);
-        });
-    }
-    get rotation() { return this._rotation; }
-    set rotation(value) {
-        this._rotation = value;
-        this.quaternion.setFromEuler(value);
-    }
-}
-```
+**解决方案**：`BufferGeometry` 用 `Float32Array`/`Uint16Array` 等类型化数组存 `position`/`normal`/`uv`/`index` 等 attribute，调用 `setAttribute()` 注册到 GPU 顶点缓冲。`position.array` 直接传给 WebGL `bufferData`，无 JS 对象包装。
 
 **关键参数**：
+- `position` 顶点位置（Float32Array）
+- `normal` 法向量
+- `uv` 纹理坐标
+- `index` 索引（Uint16Array/Uint32Array）
+- `setAttribute(name, BufferAttribute)` 注册
 
-| 表示 | 优点 | 缺点 | 用途 |
-|------|------|------|------|
-| Quaternion | 避免 gimbal lock、平滑插值 | 难读 | 内部存储 |
-| Euler | 可读、直观 | gimbal lock | 视图层 |
-| Matrix3 | GPU 友好 | 不直观 | 着色器 uniform |
+**最佳实践**：顶点数据用 `Float32Array` 不要用普通数组；索引用 `Uint16Array` 减少 50% 内存；用 `BufferGeometryUtils.mergeGeometries()` 合并多个几何体；避免在动画循环中创建新 `BufferGeometry`。
 
-**最佳实践**：
+### 模式 3：渲染器（WebGL / WebGPU / SVG / CSS3D）可插拔架构
 
-- ✅ 内部用四元数，Euler 仅作 view——避免 gimbal lock + 平滑插值
-- ✅ 用 `Object.defineProperty` 或 setter 让 Euler 修改自动同步到四元数
-- ✅ Quaternion 提供 `slerp` 而非 `lerp`——球面插值保持单位长度
-- ✅ 把 `_onChange` 监听做成单向——避免 Euler → Quaternion → Euler 循环
-- ❌ 避免直接让用户访问四元数底层——会破坏 Euler 同步
+**问题场景**：不同硬件/平台支持的图形 API 不同（WebGL 1/2、新的 WebGPU、SSR 友好的 SVG/CSS3D），需要同一份场景代码在不同 API 上跑。
 
-### 模式 3：`slerp` 球面插值做动画关键帧过渡
-
-**问题场景**：`AnimationMixer` 在两个关键帧之间过渡时，旋转如果用线性插值会归一化失败，导致动画中途突然缩小/放大。
-
-**解决方案**：
-
-```js
-// src/math/Quaternion.js
-class Quaternion {
-    slerp(qb, t) {
-        const cosHalfTheta = this.w * qb.w + this.x * qb.x + ...;
-        if (cosHalfTheta < 0) {
-            qb = qb.clone().negate();
-            cosHalfTheta = -cosHalfTheta;
-        }
-        if (cosHalfTheta >= 1.0) return this;
-        const halfTheta = Math.acos(cosHalfTheta);
-        const sinHalfTheta = Math.sqrt(1.0 - cosHalfTheta * cosHalfTheta);
-        if (Math.abs(sinHalfTheta) < 0.001) {
-            return this.clone().lerp(qb, t);
-        }
-        const ratioA = Math.sin((1 - t) * halfTheta) / sinHalfTheta;
-        const ratioB = Math.sin(t * halfTheta) / sinHalfTheta;
-        return this.clone().multiplyScalar(ratioA).add(qb.clone().multiplyScalar(ratioB));
-    }
-}
-```
+**解决方案**：`WebGLRenderer`/`WebGPURenderer`/`SVGRenderer`/`CSS3DRenderer` 都实现统一 `Renderer` 接口，接收 `Scene` + `Camera`，调用 `.render(scene, camera)` 输出到 canvas 或 DOM。`extras/` 目录提供辅助能力。
 
 **关键参数**：
+- `new WebGLRenderer({ antialias: true, alpha: true })`
+- `.setSize(width, height)` 设置渲染区域
+- `.setPixelRatio(window.devicePixelRatio)` HiDPI
+- `.render(scene, camera)` 一次渲染
+- `.domElement` 返回 canvas DOM
 
-| 函数 | 输入 | 输出 |
-|------|------|------|
-| `slerp(qb, t)` | 目标四元数 + 进度 0~1 | 球面插值结果 |
-| `lerp(qb, t)` | 目标四元数 + 进度 | 线性（仅小角度差） |
-| `squad` | 三次样条 | 多个关键帧平滑 |
+**最佳实践**：默认用 WebGL2（兼容性最好），新项目实验 WebGPU；高 DPR 屏幕调 `setPixelRatio` 但限制上限 2 避免性能崩；用 `WebGLRenderer.debug.onShaderError` 调试 shader。
 
-**最佳实践**：
+### 模式 4：材质-光照-着色器（Material/Light/Shader）解耦
 
-- ✅ 旋转动画永远用 `slerp`——`lerp` 会破坏单位长度
-- ✅ 检测点积 < 0 时取反——保证走最短路径
-- ✅ 在 `cosHalfTheta` 接近 1 时退化为 `lerp`——避免除零
-- ✅ 用 `squad` 处理多关键帧——比 `slerp` 串接更平滑
-- ❌ 避免对四元数直接做 `+`/`*`——破坏单位性质
+**问题场景**：3D 外观有大量变种（漫反射、镜面、菲涅尔、PBR、卡通），如果每种变体都写独立 shader，代码会爆炸。
 
-### 模式 4：Mesh = `BufferGeometry` + `Material` 数据与渲染解耦
-
-**问题场景**：同一份几何（顶点数据）需要用不同着色器（基础、PBR、卡通）渲染。如果几何和材质绑定在一起，无法复用。
-
-**解决方案**：
-
-```js
-// src/objects/Mesh.js
-class Mesh extends Object3D {
-    constructor(geometry, material) {
-        super();
-        this.geometry = geometry;  // 数据
-        this.material = material;  // 渲染参数
-    }
-}
-
-const sphere = new SphereGeometry(1, 32, 32);
-const basicMat = new MeshBasicMaterial({ color: 0xff0000 });
-const pbrMat = new MeshStandardMaterial({ roughness: 0.5, metalness: 0.8 });
-const m1 = new Mesh(sphere, basicMat);
-const m2 = new Mesh(sphere.clone(), pbrMat);  // 同一几何不同材质
-```
+**解决方案**：`Material` 基类定义通用接口（颜色、贴图、uniform），派生 `MeshBasicMaterial`/`MeshStandardMaterial`/`MeshPhysicalMaterial`/`ShaderMaterial` 等几十种材质。`Light`（`AmbientLight`/`DirectionalLight`/`PointLight`）独立管理光源，shader 编译时根据 light 类型注入对应代码。
 
 **关键参数**：
+- `Material.color`/`Material.map` 基础属性
+- `MeshStandardMaterial` PBR 渲染
+- `MeshPhysicalMaterial` 透明/清漆/透射
+- `ShaderMaterial` 自定义 GLSL
+- `Light.intensity`/`Light.color`
 
-| 字段 | 说明 |
-|------|------|
-| `geometry` | `BufferGeometry` 顶点缓冲 |
-| `material` | `Material` 子类（Basic/Standard/Physical） |
-| 多材质 | `Mesh` 支持 `material` 数组 + `groups` 分段 |
+**最佳实践**：默认用 `MeshStandardMaterial`（PBR 行业标准）；需要透明/折射用 `MeshPhysicalMaterial`；自定义 shader 优先用 `onBeforeCompile` 钩子扩展 `MeshStandardMaterial` 而非从零写。
 
-**最佳实践**：
+### 模式 5：相机与投影（Perspective/Orthographic）
 
-- ✅ 几何是数据、材质是渲染参数——两者解耦
-- ✅ 同一几何对象不要共享给多个 Mesh——修改会传染
-- ✅ 用 `.clone()` 复制几何——避免意外修改
-- ✅ 复杂模型用 `groups[]` 支持多材质——例如汽车的车身/玻璃/轮胎
-- ❌ 避免把材质实例塞进几何——破坏解耦
+**问题场景**：3D 场景需要透视投影（近大远小、模拟人眼）做游戏/可视化，也需要正交投影（无透视）做 2.5D/UI 渲染。
 
-### 模式 5：`/*@__PURE__*/` 注释配合 Rollup 死代码消除
-
-**问题场景**：临时对象池（`_v1`、`_q1`、`_m1`）如果方法没被调用，本应不进 bundle，但 Rollup 默认不知道"这个变量是否纯"。
-
-**解决方案**：
-
-```js
-// src/core/Object3D.js
-const _v1 = /*@__PURE__*/ new Vector3();
-const _q1 = /*@__PURE__*/ new Quaternion();
-const _m1 = /*@__PURE__*/ new Matrix4();
-
-class Object3D {
-    add(object) {
-        if (object.parent !== null) {
-            _v1.copy(object.position).sub(this.position);  // 临时变量
-            object.position.add(_v1);
-        }
-    }
-}
-```
+**解决方案**：`Camera` 基类定义 `matrixWorldInverse`/`projectionMatrix` 两个核心矩阵。`PerspectiveCamera(fov, aspect, near, far)` 实现透视，`OrthographicCamera(left, right, top, bottom, near, far)` 实现正交。`updateProjectionMatrix()` 重建投影矩阵。
 
 **关键参数**：
+- `fov` 视野角度（度）
+- `aspect` 宽高比
+- `near`/`far` 裁剪面
+- `position`/`lookAt()` 设置位置与朝向
+- `updateProjectionMatrix()` 重建投影
 
-| 标记 | 作用 |
-|------|------|
-| `/*@__PURE__*/` | 告诉 Rollup "此调用无副作用" |
-| 无标记 | Rollup 默认保守，保留变量 |
+**最佳实践**：fov 45-60 度接近人眼；`near` 不要太小（0.1 即可）避免深度精度问题；窗口 resize 时同步 `camera.aspect` + `updateProjectionMatrix()`；用 `OrbitControls` 简化交互。
 
-**最佳实践**：
+## 第二段：扩展范式
 
-- ✅ 临时对象池全部加 `/*@__PURE__*/`——按需打包，节省体积
-- ✅ 工具函数（Vector3/Quaternion 静态方法）也加标记
-- ✅ 用 tree-shaking 友好的写法——`export function f()` 而非挂全局
-- ✅ 写 benchmark 验证——Three.js bundle 体积节省 30%+
-- ❌ 避免忘记标记——保留无用变量会膨胀 bundle
+### 模式 6：数学库（Vector3/Matrix4/Quaternion）独立可拆
 
-## 架构设计
+**问题场景**：3D 数学（向量、矩阵、四元数）运算密集，JS 内置 `Math` 库是标量版，循环写矩阵乘法性能差且易错。
 
-### 模式 6：场景图（Scene Graph）树状结构统一变换与剔除
-
-**问题场景**：3D 场景中节点有层级关系（车的轮子是车的子节点）。变换（移动、旋转、缩放）需要按层级传播；剔除（视锥裁剪）要按子树遍历；拾取（点击）要自顶向下测试。
-
-**解决方案**：
-
-```js
-// src/core/Object3D.js
-class Object3D {
-    updateMatrixWorld(force) {
-        if (this.matrixAutoUpdate) this.updateMatrix();
-        if (this.matrixWorldNeedsUpdate || force) {
-            if (this.parent === null) {
-                this.matrixWorld.copy(this.matrix);
-            } else {
-                this.matrixWorld.multiplyMatrices(this.parent.matrixWorld, this.matrix);
-            }
-            this.matrixWorldNeedsUpdate = false;
-            force = true;
-        }
-        const children = this.children;
-        for (let i = 0, l = children.length; i < l; i++) {
-            children[i].updateMatrixWorld(force);
-        }
-    }
-}
-```
+**解决方案**：`src/math/` 目录提供 `Vector2`/`Vector3`/`Vector4`/`Matrix3`/`Matrix4`/`Quaternion`/`Euler`/`Spherical` 等几十个数学类，每个类有 `.add()`/`.sub()`/`.normalize()`/`.applyMatrix4()` 等链式 API。所有类方法支持 `out` 参数避免 GC。
 
 **关键参数**：
+- 链式 API：`vec.add(v2).multiplyScalar(2).normalize()`
+- `out` 参数：`Matrix4.multiply(m1, m2, target)`
+- `Matrix4.compose(position, quaternion, scale)` 组合变换
+- `Quaternion.setFromAxisAngle()` 旋转向量
+- `Matrix4.lookAt()` 视图矩阵
 
-| 字段 | 说明 |
-|------|------|
-| `matrix` | 局部变换矩阵 |
-| `matrixWorld` | 全局变换矩阵 |
-| `matrixAutoUpdate` | 默认 true，每帧自动更新 |
-| 传播 | 父变换 × 自身变换 = 子世界变换 |
+**最佳实践**：性能敏感循环用 `out` 参数避免创建新对象；`quaternion` 旋转避免万向锁；用 `Vector3.lerpVectors()` 做插值；矩阵组合用 `Matrix4.compose()` 一次完成。
 
-**最佳实践**：
+### 模式 7：纹理与图像加载管线
 
-- ✅ 父子变换用矩阵乘法链——数学正确
-- ✅ 局部矩阵 + 世界矩阵分离——可单独修改局部而不影响全局
-- ✅ 静态场景可关闭 `matrixAutoUpdate`——减少计算
-- ✅ 用 `Object3D.traverse(callback)` 一次性访问整棵子树
-- ❌ 避免每帧都 `updateMatrixWorld(true)`——除非矩阵真的需要更新
+**问题场景**：3D 应用需要加载贴图（漫反射/法线/粗糙度/环境贴图），同步加载会卡 UI，重复加载浪费内存。
 
-### 模式 7：多渲染器抽象（WebGL / WebGPU / SVG / CSS3D）
-
-**问题场景**：Web 端 3D 渲染有 4 种后端：WebGL（主流）、WebGPU（未来）、SVG（数据可视化）、CSS3D（DOM 集成）。每个 API 差异巨大，但场景图应该通用。
-
-**解决方案**：
-
-```js
-// src/renderers/Renderer.js (基类)
-class Renderer {
-    render(scene, camera) { throw new Error('abstract'); }
-    setSize(w, h) { throw new Error('abstract'); }
-}
-
-// src/renderers/WebGLRenderer.js
-class WebGLRenderer extends Renderer {
-    render(scene, camera) {
-        this.info.reset();
-        this._renderLists.dispose();
-        this._currentRenderList = this._renderLists.get(scene, this.renderListStack);
-        this._render(scene, camera);
-    }
-}
-
-// 用户切换后端
-const renderer = navigator.gpu
-    ? new WebGPURenderer()
-    : new WebGLRenderer();
-renderer.render(scene, camera);
-```
+**解决方案**：`TextureLoader`/`CubeTextureLoader`/`RGBELoader`/`EXRLoader`/`KTX2Loader` 等多种 loader，异步 `load(url, onLoad)` 触发回调。`Texture` 类提供 `wrapS`/`wrapT`/`minFilter`/`magFilter`/`generateMipmaps` 等采样参数。
 
 **关键参数**：
+- `texture.wrapS = RepeatWrapping` 平铺
+- `texture.minFilter = LinearMipmapLinearFilter` 三线性
+- `texture.colorSpace = SRGBColorSpace` 色彩空间
+- `texture.anisotropy = 16` 各向异性
+- `KTX2`/`Basis` GPU 压缩格式
 
-| 渲染器 | 用途 |
-|--------|------|
-| WebGLRenderer | 主流 |
-| WebGPURenderer | 新一代 |
-| SVGRenderer | 数据可视化 |
-| CSS3DRenderer | DOM 集成 |
+**最佳实践**：用 `KTX2Loader` + GPU 压缩格式省 80% 显存；色彩空间标注 SRGBColorSpace；`generateMipmaps = true` 远距离抗锯齿；`flipY = false` 配合 KTX2 压缩纹理。
 
-**最佳实践**：
+### 模式 8：OrbitControls/TransformControls 等控制器
 
-- ✅ 抽象基类定义接口——不同后端实现同一接口
-- ✅ 场景图与渲染器解耦——同一份场景可在 4 种后端跑
-- ✅ 检测 `navigator.gpu` 决定用 WebGL 还是 WebGPU
-- ✅ SVG/CSS3D 用于特殊场景（PPT、数据图）——不是 3D 主力
-- ❌ 避免在场景图对象中持有 GPU 资源——渲染器层管理
+**问题场景**：用户交互需要鼠标拖拽旋转/缩放/平移相机，或拖拽移动/旋转/缩放 3D 对象——自己写事件监听+矩阵更新要几百行。
 
-### 模式 8：`BufferGeometry` + `BufferAttribute` 直接对接顶点缓冲
-
-**问题场景**：WebGL 调 `gl.drawElements()` 吃的是裸缓冲区（`Float32Array`）。如果中间再套一层"顶点对象"，会有额外的 GC 压力与拷贝。
-
-**解决方案**：
-
-```js
-// src/core/BufferGeometry.js
-class BufferGeometry {
-    constructor() {
-        this.attributes = {
-            position: new BufferAttribute(new Float32Array([...]), 3),
-            normal: new BufferAttribute(new Float32Array([...]), 3),
-            uv: new BufferAttribute(new Float32Array([...]), 2),
-        };
-        this.index = new BufferAttribute(new Uint16Array([...]), 1);
-    }
-    setAttribute(name, attribute) {
-        this.attributes[name] = attribute;
-        return this;
-    }
-}
-```
+**解决方案**：`examples/jsm/controls/` 提供 `OrbitControls`/`TrackballControls`/`FlyControls`/`FirstPersonControls`/`TransformControls` 等十几种控制器，监听 DOM 事件，计算增量，更新相机/对象 transform。`TransformControls` 还能显示 3D 操纵杆。
 
 **关键参数**：
+- `OrbitControls(camera, domElement)` 绑定
+- `.enableDamping = true` 阻尼
+- `.dampingFactor = 0.05`
+- `.minDistance`/`.maxDistance` 缩放范围
+- `TransformControls.showX/Y/Z` 启用轴
 
-| 字段 | 说明 |
-|------|------|
-| `attributes` | 顶点属性集合（position/normal/uv/color） |
-| `index` | 顶点索引（启用 indexed drawing） |
-| `groups` | 多材质分组 |
-| `drawRange` | 局部渲染（start, count） |
+**最佳实践**：OrbitControls 加 `enableDamping` 让旋转更顺滑；`minPolarAngle = 0` + `maxPolarAngle = Math.PI` 允许上下翻转；TransformControls 拖拽时禁用 OrbitControls 避免冲突。
 
-**最佳实践**：
+### 模式 9：GLTFLoader 与模型加载
 
-- ✅ 直接持有 `Float32Array`——避免包装对象
-- ✅ `itemSize` 标记每顶点分量数（3 = vec3）
-- ✅ 用 `setAttribute` API 链式调用——DSL 风格
-- ✅ indexed drawing 节省 GPU 内存——三角形共享顶点
-- ❌ 避免每帧修改顶点缓冲——上传 GPU 是慢操作
+**问题场景**：3D 模型由 Maya/Blender 等 DCC 工具导出，格式有 OBJ/FBX/GLTF/GLB 等，glTF 是 Web 端事实标准（含几何/材质/动画/蒙皮）。
 
-### 模式 9：Nodes 系统（TSL）用 JS 节点图描述着色器
-
-**问题场景**：传统材质用 GLSL/WGSL 写，跨 GPU API 要写两遍。Three.js 抽象出"节点图"，让 JavaScript 描述材质，再由 Nodes 编译器翻译成 GLSL/WGSL。
-
-**解决方案**：
-
-```js
-// src/nodes/Nodes.js
-import { color, positionLocal, mix } from 'three/nodes';
-
-const material = new NodeMaterial();
-material.colorNode = mix(
-    color(0x0000ff),
-    color(0xff0000),
-    positionLocal.x  // 位置 X 决定混合
-);
-
-// Nodes 编译器输出 WebGL/WebGPU 着色器
-const compiled = material.getCompilationNodes();
-```
+**解决方案**：`GLTFLoader` 解析 glTF/GLB 文件，加载几何/材质/动画/蒙皮，构造 `Scene` 子树。配合 `DRACOLoader`（几何压缩）、`KTX2Loader`（纹理压缩）、`MeshoptDecoder`（网格优化）实现生产级加载管线。
 
 **关键参数**：
+- `gltfLoader.load(url, onLoad)` 异步加载
+- `DRACOLoader.setDecoderPath()` 设置解码器
+- `MeshoptDecoder` 网格压缩
+- `gltf.scene`/`gltf.animations`/`gltf.cameras`
+- `AnimationMixer` 播放动画
 
-| 节点 | 作用 |
-|------|------|
-| `color(rgb)` | 颜色常量 |
-| `positionLocal` | 局部空间位置 |
-| `mix(a, b, t)` | 插值 |
-| `NodeMaterial` | 节点材质容器 |
+**最佳实践**：生产环境必加 DRACO + Meshopt + KTX2 三件套，模型体积可缩 70-90%；用 `AnimationMixer.clipAction(animation).play()` 播放动画；用 `RoomEnvironment` 提供 IBL 环境贴图给 PBR 材质。
 
-**最佳实践**：
+### 模式 10：射线检测（Raycaster）拾取与碰撞
 
-- ✅ 用 JS 描述材质——单一语言跨 GPU API
-- ✅ 节点可组合（mix → map → multiply）——DSL 表达力强
-- ✅ Nodes 编译器输出 GLSL/WGSL——后端切换零成本
-- ✅ 复杂效果（程序化纹理、噪声）用节点图比 GLSL 字符串清晰
-- ❌ 避免在节点图里写 100+ 节点——拆成子函数/子图
+**问题场景**：用户点击 3D 场景中的某个对象，需要知道点中了什么——DOM 事件只知道屏幕坐标，要反推 3D 命中。
 
-### 模式 10：`WebGLRenderLists` 对象池减少每帧 GC
-
-**问题场景**：每帧 render() 都要创建数千个 `RenderItem`（带材质、几何、变换的对象）。如果用 `new` 创建，GC 压力巨大，会导致 60fps 不稳。
-
-**解决方案**：
-
-```js
-// src/renderers/webgl/WebGLRenderLists.js
-class WebGLRenderLists {
-    constructor() {
-        this.lists = new Map();  // scene → RenderList 缓存
-    }
-    get(scene, renderListStack) {
-        const list = this.lists.get(scene) ?? new RenderList(renderListStack);
-        this.lists.set(scene, list);
-        return list;
-    }
-    dispose() {
-        this.lists.clear();  // 回收
-    }
-}
-```
+**解决方案**：`Raycaster` 从相机出发，沿鼠标 NDC 坐标发射射线，与场景中所有 `Object3D` 的几何做相交测试，返回交点（距离/点/法线/对象）。`recursive = true` 递归测试子节点，`layers` 过滤特定层。
 
 **关键参数**：
+- `raycaster.setFromCamera(mouse, camera)` 设置射线
+- `.intersectObjects(targets, recursive)` 测试对象
+- `.intersectObject(obj)` 单个
+- 返回 `Intersection` 数组：`distance`/`point`/`face`/`object`
+- `raycaster.layers` 层级过滤
 
-| 字段 | 说明 |
-|------|------|
-| `lists` | `Map<Scene, RenderList>` 缓存 |
-| `get` | 复用或新建 |
-| `dispose` | 帧末回收 |
+**最佳实践**：每帧射线检测前调 `raycaster.setFromCamera()`；用 `layers` 过滤 UI 层/编辑器层；`recursive = true` 遍历子节点；性能敏感场景用 `BVH` 八叉树加速。
 
-**最佳实践**：
+## 第三段：进阶范式
 
-- ✅ 跨帧复用对象池——避免每帧 `new` 数千元数据
-- ✅ 用 `Map` 按场景缓存——同场景的 RenderList 不重建
-- ✅ 在 render 末尾 `dispose()`——下帧重置内容
-- ✅ 把高频临时对象都池化（Vector3 / Matrix4 / RenderItem）
-- ❌ 避免在 render 中间 `new RenderItem()`——回到性能原点
+### 模式 11：Nodes 系统与 TSL（Three.js Shading Language）
 
-### 模式 11：`Layers` 通道系统实现按层过滤
+**问题场景**：自定义 shader 需要写 GLSL/WGSL，但跨平台（WebGL2/WebGPU）维护两套 shader 痛苦，且 shader 难以模块化、组合。
 
-**问题场景**：场景中不同对象需要不同处理（UI 浮层、辅助线、可拾取、不可拾取）。如果用 `if (obj.userData.tag === 'ui')` 判断，不可扩展。
-
-**解决方案**：
-
-```js
-// src/core/Layers.js
-class Layers {
-    constructor() {
-        this.mask = 0b00000001;  // 默认 layer 0
-    }
-    set(channel) { this.mask = (1 << channel) | 0; }
-    enable(channel) { this.mask |= (1 << channel) | 0; }
-    disable(channel) { this.mask &= ~((1 << channel) | 0); }
-    test(layers) { return (this.mask & layers.mask) !== 0; }
-}
-
-// 使用
-raycaster.layers.set(1);  // 只拾取 layer 1
-camera.layers.enable(0);   // 渲染 layer 0
-```
+**解决方案**：`src/nodes/` 引入节点式材质系统 TSL，用 JS 描述材质图（"颜色 × 基础色 + 高光 × 反射"），编译时自动生成 WebGL GLSL 与 WebGPU WGSL。`Trixel` 节点编辑器允许可视化编辑。
 
 **关键参数**：
+- `MeshBasicNodeMaterial` 节点版基础材质
+- `colorNode`/`positionNode`/`normalNode` 节点插槽
+- `.mul()`/`.add()`/`.mix()` 节点运算
+- `tslFn` 自定义函数节点
+- WebGL/WebGPU 自动后端
 
-| 字段 | 说明 |
-|------|------|
-| `mask` | 32 位位掩码 |
-| `set/enable/disable` | 操作通道 |
-| `test` | 按位与 |
+**最佳实践**：复杂材质（程序化纹理、噪声、菲涅尔）用 TSL 写可读性高；自定义节点用 `tslFn` 封装；TSL 与 Material 双轨并行（Material 适合简单场景，TSL 适合复杂）。
 
-**最佳实践**：
+### 模式 12：WebGPU 后端与 compute shader
 
-- ✅ 用位掩码而非 tag 字符串——O(1) 测试
-- ✅ 默认 `mask = 1`（layer 0）——新对象可见
-- ✅ Raycaster 用独立 Layers——不拾取 UI 浮层
-- ✅ 相机用 `layers.enableAll()`——临时切换全显示
-- ❌ 避免用 tag 字符串——慢 + 易拼写错
+**问题场景**：WebGL 在复杂场景下（数百万顶点、海量光源）性能受限；新一代 WebGPU 提供 compute shader、低开销驱动、显式管线。
 
-## 性能优化
-
-### 模式 12：临时对象池 + `/*@__PURE__*/` 标记
-
-**问题场景**：矩阵运算（如 `matrix.multiply(other)`）需要临时 `Vector3`、`Matrix4`。每帧 60 次、每场景数千节点，会产生数十万临时对象，GC 压力大。
-
-**解决方案**：
-
-```js
-// src/math/Matrix4.js
-const _v1 = /*@__PURE__*/ new Vector3();
-const _m1 = /*@__PURE__*/ new Matrix4();
-
-class Matrix4 {
-    makeTranslation(x, y, z) {
-        this.set(
-            1, 0, 0, x,
-            0, 1, 0, y,
-            0, 0, 1, z,
-            0, 0, 0, 1
-        );
-        return this;
-    }
-    multiply(m) {
-        // 内部使用 _v1, _m1 作为临时变量
-        const a = this.elements, b = m.elements;
-        // ...
-    }
-}
-```
+**解决方案**：`WebGPURenderer` 与 WebGLRenderer API 兼容，底层用 WebGPU 实现。`WebGPUComputeRenderer` 跑 compute shader 做 GPU 粒子、布料模拟、GPU 剔除。NodeMaterial 同一份代码可同时编译到 GLSL/WGSL。
 
 **关键参数**：
+- `WebGPURenderer({ forceWebGL: false })` 启用
+- `WebGPUComputeRenderer(computeNode)` compute
+- 适配器请求：`navigator.gpu.requestAdapter()`
+- 设备：`adapter.requestDevice()`
+- 自动 fallback：WebGPU 不可用时退回 WebGL2
 
-| 临时变量 | 用途 |
-|---------|------|
-| `_v1` ~ `_v5` | Vector3 池 |
-| `_q1` ~ `_q2` | Quaternion 池 |
-| `_m1` ~ `_m4` | Matrix4 池 |
+**最佳实践**：新项目优先 WebGPURenderer；compute 用例（粒子/布料/物理）性能比 WebGL 高 5-10 倍；用 `navigator.gpu` 特性检测并优雅降级；TSL 自动跨后端。
 
-**最佳实践**：
+### 模式 13：后处理管线（Post-Processing）
 
-- ✅ 全局临时变量复用——避免每帧 `new`
-- ✅ `/*@__PURE__*/` 告诉 Rollup 死代码消除
-- ✅ 写 benchmark 验证 GC 暂停时间下降
-- ✅ 配合 Chrome DevTools Performance 标签查 GC 频率
-- ❌ 避免把临时变量返回给调用方——会破坏封装
+**问题场景**：3D 渲染后还需要 Bloom 泛光、景深、SSAO、HDR 色调映射、FXAA 抗锯齿等效果——多个效果串联需要管线管理。
 
-### 模式 13：WebGL 扩展统一处理（`WebGLExtensions` / `WebGLCapabilities`）
-
-**问题场景**：WebGL 1.0/2.0 扩展差异大，浏览器支持度也不同。`OES_texture_float` vs `EXT_color_buffer_float` vs `OES_texture_half_float`，每个浏览器支持矩阵不同。
-
-**解决方案**：
-
-```js
-// src/renderers/webgl/WebGLExtensions.js
-class WebGLExtensions {
-    constructor(gl) {
-        this.gl = gl;
-        this.extensions = {};
-    }
-    has(name) {
-        return this.extensions[name] !== undefined;
-    }
-    init(name) {
-        if (this.extensions[name] !== undefined) return;
-        let ext;
-        switch (name) {
-            case 'WEBGL_depth_texture':
-                ext = this.gl.getExtension('WEBGL_depth_texture');
-                break;
-            case 'EXT_color_buffer_float':
-                ext = this.gl.getExtension('EXT_color_buffer_float');
-                break;
-        }
-        this.extensions[name] = ext;
-    }
-    get(name) {
-        this.init(name);
-        return this.extensions[name];
-    }
-}
-```
+**解决方案**：`EffectComposer` 是后处理管线，串接 `RenderPass`/`UnrealBloomPass`/`BokehPass`/`SSAOPass`/`OutlinePass`/`OutputPass` 等多个 pass。每个 pass 渲染到 render target，下一个 pass 消费其纹理。
 
 **关键参数**：
+- `new EffectComposer(renderer)`
+- `composer.addPass(new RenderPass(scene, camera))`
+- `composer.addPass(new UnrealBloomPass(...))`
+- `composer.setSize(w, h)` 调整
+- `composer.render()` 一帧
 
-| 扩展 | 用途 |
-|------|------|
-| `WEBGL_depth_texture` | 深度纹理 |
-| `EXT_color_buffer_float` | 浮点渲染目标 |
-| `OES_texture_float_linear` | 浮点纹理线性过滤 |
-| `EXT_shader_texture_lod` | 着色器纹理 LOD |
+**最佳实践**：管线顺序：RenderPass → 后处理 Pass → OutputPass；用 `MaskPass` 限定 Bloom 只影响亮区；用 `OutputPass` 做最后的 tone mapping 与色彩空间转换；性能敏感场景关闭部分 pass。
 
-**最佳实践**：
+### 模式 14：动画系统（AnimationMixer/Clip/Action）
 
-- ✅ 抽象层统一 getExtension——上层不关心浏览器差异
-- ✅ 懒加载扩展——按需查询，避免启动时阻塞
-- ✅ 缓存检测结果——避免重复 getExtension 调用
-- ✅ 在 `WebGLCapabilities` 中汇总——UI 显示"GPU 支持矩阵"
-- ❌ 避免硬编码"默认 WebGL 2.0 都有"——移动 Safari 经常缺
+**问题场景**：模型有骨骼动画（关键帧 + 骨骼变换），需要在指定时间点播放、混合（idle + 跑动）、循环。
 
-### 模式 14：`WebGLPrograms` 着色器程序缓存
-
-**问题场景**：每个材质 + 每个光源组合都对应一个 GLSL 着色器。GLSL 编译慢（50-200ms），重复编译会卡顿。
-
-**解决方案**：
-
-```js
-// src/renderers/webgl/WebGLPrograms.js
-class WebGLPrograms {
-    constructor(renderer) {
-        this.programs = [];
-        this.cacheKey = '';
-    }
-    getParameters(material, lights, shadows, scene, object) {
-        return JSON.stringify({
-            vertexShader: material.vertexShader,
-            fragmentShader: material.fragmentShader,
-            defines: material.defines,
-            lightsHash: lights.hash,  // 光源签名
-            shadowsHash: shadows.hash, // 阴影签名
-        });
-    }
-    getProgramCacheKey(parameters) {
-        // hash 字符串
-    }
-}
-```
+**解决方案**：`AnimationMixer` 持有模型，`clipAction(clip)` 创建 `AnimationAction` 控制播放/暂停/速度/权重。`AnimationClip` 包含多个 `KeyframeTrack`（VectorKeyframeTrack/QuaternionKeyframeTrack 等），可在 clip 间用 `crossFadeTo` 平滑过渡。
 
 **关键参数**：
+- `mixer = new AnimationMixer(model)`
+- `action = mixer.clipAction(gltf.animations[0])`
+- `action.play()`/`.stop()`/`.reset()`
+- `action.crossFadeTo(otherAction, duration)` 过渡
+- `mixer.update(deltaTime)` 每帧推进
 
-| 缓存键 | 说明 |
-|--------|------|
-| `vertexShader` | 顶点着色器源码 |
-| `fragmentShader` | 片元着色器源码 |
-| `defines` | `#define` 宏 |
-| `lightsHash` | 光源配置签名 |
+**最佳实践**：所有动画用 `mixer.update(dt)` 推进，不要用 `setTimeout`/setInterval；用 `crossFadeTo` 切换 idle↔run；`action.weight` 控制多动画混合权重；`action.loop = LoopRepeat` 设置循环。
 
-**最佳实践**：
+### 模式 15：CSS2DRenderer / CSS3DRenderer 与 DOM 集成
 
-- ✅ 着色器程序按 hash 缓存——同配置复用
-- ✅ hash 包含所有影响编译的因素（defines、lights）
-- ✅ 缓存 LRU 淘汰——避免内存爆炸
-- ✅ 启动时预编译关键材质——避免第一帧卡顿
-- ❌ 避免每帧重新编译——编译是 GPU 操作中最慢的之一
+**问题场景**：3D 场景中需要叠加 HTML 元素（标签、Tooltip、UI 控件），直接用绝对定位 div 跟随 3D 位置复杂且不同步。
 
-### 模式 15：Frustum Culling 视锥剔除减少 draw call
-
-**问题场景**：场景中 10000 个 Mesh，相机只看到其中 100 个。盲目渲染 10000 个 draw call 会浪费 99% GPU 时间。
-
-**解决方案**：
-
-```js
-// src/core/Frustum.js
-class Frustum {
-    setFromProjectionMatrix(matrix) {
-        // 从 projectionMatrix 提取 6 个平面
-    }
-    intersectsObject(object) {
-        if (object.boundingSphere === undefined) {
-            const geometry = object.geometry;
-            if (geometry.boundingSphere === null) geometry.computeBoundingSphere();
-            object.boundingSphere = geometry.boundingSphere.clone();
-            object.boundingSphere.applyMatrix4(object.matrixWorld);
-        }
-        return this.intersectsSphere(object.boundingSphere);
-    }
-}
-
-// WebGLRenderer.render() 中
-this._frustum.setFromProjectionMatrix(camera.projectionMatrix);
-visibleObjects = objects.filter(o => this._frustum.intersectsObject(o));
-```
+**解决方案**：`CSS2DRenderer` 把 2D HTML 元素投影到 3D 空间（始终面向相机），`CSS3DRenderer` 投影 3D 变换的 HTML 元素。`CSS2DObject` 包装 DOM 元素，作为 `Object3D` 子节点加入场景，自动随父节点变换。
 
 **关键参数**：
+- `labelRenderer = new CSS2DRenderer()`
+- `labelRenderer.domElement` 叠加层
+- `new CSS2DObject(div)` 包装
+- `labelRenderer.render(scene, camera)` 渲染
+- `pointerEvents: none` 不阻挡交互
 
-| 字段 | 说明 |
-|------|------|
-| `Frustum` | 6 个平面定义可视空间 |
-| `boundingSphere` | 物体包围球 |
-| `computeBoundingSphere` | 一次性计算 |
-| `intersectsSphere` | 球-平面测试 |
+**最佳实践**：用 CSS2DRenderer 做 3D 场景中的标签（城市名/数值）；HTML 元素 `pointer-events: none` 不阻挡 raycaster；用 TransformControls 拖拽时配合 CSS2D 显示坐标；CSS3D 性能差，优先 CSS2D。
 
-**最佳实践**：
+## 第四段：实战范式
 
-- ✅ 用包围球而非包围盒——球测试快
-- ✅ 预计算 `boundingSphere`——避免每帧重算
-- ✅ 关闭 `frustumCulled = false` 的物体要少——减少浪费
-- ✅ 配合 `Occlusion Culling`（遮挡剔除）效果更佳
-- ❌ 避免给小物体（< 1px）用昂贵包围体——得不偿失
+### 模式 16：性能优化（Instancing/Frustum Culling/矩阵更新）
 
-### 模式 16：`renderer.info` 监控 draw call 与三角面数
+**问题场景**：渲染 10000 棵树（每棵 1000 三角形）= 1000 万 draw call，FPS 跌到 5。性能瓶颈在 draw call 而非顶点数。
 
-**问题场景**：性能调优需要看 draw call 数、三角面数、纹理数。生产环境需要实时监控卡顿点。
-
-**解决方案**：
-
-```js
-// src/renderers/WebGLRenderer.js
-class WebGLRenderer {
-    constructor() {
-        this.info = {
-            autoReset: true,
-            render: { calls: 0, triangles: 0, points: 0, lines: 0 },
-            memory: { geometries: 0, textures: 0 },
-            programs: null,
-        };
-    }
-    render(scene, camera) {
-        if (this.info.autoReset) this.info.reset();
-        this._render(scene, camera);
-    }
-}
-
-// 监控
-const renderer = new WebGLRenderer();
-setInterval(() => {
-    console.log(`draw calls: ${renderer.info.render.calls}, triangles: ${renderer.info.render.triangles}`);
-}, 1000);
-```
+**解决方案**：`InstancedMesh` 用一次 draw call 渲染 N 个相同几何实例，每个实例有独立 `instanceMatrix`（位置/旋转/缩放）。`Frustum` 做视锥剔除——`mesh.frustumCulled = true` 默认开启，相机外的对象不送 GPU。`Object3D.matrixAutoUpdate = false` 手动控制矩阵更新时机。
 
 **关键参数**：
+- `new InstancedMesh(geom, mat, count)` 创建
+- `mesh.setMatrixAt(i, matrix)` 设置实例
+- `mesh.count` 实际渲染数量
+- `mesh.frustumCulled = true` 启用剔除
+- `matrixAutoUpdate = false` 手动控制
 
-| 字段 | 说明 |
-|------|------|
-| `render.calls` | draw call 次数 |
-| `render.triangles` | 三角形数 |
-| `memory.geometries` | 几何对象数 |
-| `memory.textures` | 纹理对象数 |
+**最佳实践**：相同几何 100+ 个对象用 `InstancedMesh`（FPS 提升 10x+）；大量小对象用 `BatchedMesh`（不同几何）；`frustumCulled` 默认开但要测试边界；动画循环前更新 `matrixWorld`。
 
-**最佳实践**：
+### 模式 17：响应式与设备像素比（DPR）
 
-- ✅ 在 dev 环境每 1 秒输出 renderer.info
-- ✅ 监控 draw call 突增——可能是不必要的 instancing 失效
-- ✅ 监控三角面数——超过 1M 就要优化 LOD
-- ✅ 配合 Chrome DevTools Performance——查 GPU 占用
-- ❌ 避免在生产每帧输出——IO 开销大
+**问题场景**：HiDPI 屏幕（Retina/4K）上 3D 模糊或性能差——DPR=2 像素数 ×4，FPS 跌一半。
 
-## 工程实践
-
-### 模式 17：`Object3D` 的 `id` + `uuid` 双标识
-
-**问题场景**：3D 对象需要可识别。进程内自增 id 方便 debug，但跨序列化/网络传输时冲突。需要两种标识。
-
-**解决方案**：
-
-```js
-// src/core/Object3D.js
-let _object3DId = 0;
-
-class Object3D {
-    constructor() {
-        this.id = _object3DId++;  // 进程内自增
-        this.uuid = generateUUID();  // 全局唯一
-    }
-}
-
-// UUID 生成
-function generateUUID() {
-    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
-    let uuid = '';
-    for (let i = 0; i < 36; i++) {
-        if (i === 8 || i === 13 || i === 18 || i === 23) {
-            uuid += '-';
-        } else if (i === 14) {
-            uuid += '4';
-        } else {
-            uuid += chars[(Math.random() * 64) | 0];
-        }
-    }
-    return uuid;
-}
-```
+**解决方案**：`renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))` 限制 DPR 上限为 2，平衡清晰度与性能。`window.addEventListener('resize', onResize)` 监听窗口变化，更新 `renderer.setSize` + `camera.aspect` + `composer.setSize`。
 
 **关键参数**：
+- `renderer.setPixelRatio(dpr)` 设置 DPR
+- `renderer.setSize(width, height)` 渲染区域
+- `composer.setSize(width, height)` 后处理管线
+- `camera.aspect = w/h` 相机比例
+- `camera.updateProjectionMatrix()` 重建
 
-| 字段 | 用途 |
-|------|------|
-| `id` | 进程内自增，debug 用 |
-| `uuid` | 全局唯一，序列化用 |
+**最佳实践**：DPR 上限 2（再高肉眼难分辨但性能崩）；用 `ResizeObserver` 替代 `resize` 事件（更准确）；移动端用低 DPR 进一步省电；高 DPR 截图导出用 `toDataURL`。
 
-**最佳实践**：
+### 模式 18：着色器调试（onShaderError / Spector.js）
 
-- ✅ id + uuid 双标识——兼顾 debug 与序列化
-- ✅ id 进程级自增——零成本
-- ✅ uuid 符合 RFC 4122——跨系统兼容
-- ✅ 把 id 暴露给 dev 工具——`window.scene.children[3].id`
-- ❌ 避免用 id 做主键——多页面冲突
+**问题场景**：自定义 shader 编译失败或运行时输出异常，浏览器控制台只能看到 GLSL 错误行号——找不到对应 JS 代码。
 
-### 模式 18：父子事件冒泡 + 嵌入式事件常量
-
-**问题场景**：`add`/`remove` 事件需要冒泡到所有子节点。如果监听器误改事件对象（`event.type = 'foo'`），会影响所有节点。
-
-**解决方案**：
-
-```js
-// src/core/Object3D.js
-const _addedEvent = { type: 'added' };
-const _removedEvent = { type: 'removed' };
-
-class Object3D extends EventDispatcher {
-    add(object) {
-        // ...
-        object.dispatchEvent(_addedEvent);  // 共享单例
-    }
-    remove(object) {
-        // ...
-        object.dispatchEvent(_removedEvent);
-    }
-}
-```
+**解决方案**：`renderer.debug.onShaderError = (gl, program, vs, fs) => { ... }` 捕获 shader 错误，可 dump 完整 shader 源码到 console。`Spector.js` 浏览器扩展能录制一帧的所有 draw call 与 shader 状态。`renderer.getContext().getExtension('WEBGL_debug_renderer_info')` 获取 GPU 信息。
 
 **关键参数**：
+- `renderer.debug.checkShaderErrors = true` 默认开
+- `onShaderError` 回调
+- `Spector.js` 浏览器扩展
+- `WEBGL_debug_renderer_info` 扩展
+- `#define USE_FOG` 等预处理宏
 
-| 常量 | 用途 |
-|------|------|
-| `_addedEvent` | 共享单例事件 |
-| `_removedEvent` | 共享单例事件 |
+**最佳实践**：开发环境开 `onShaderError` 调试 shader；用 Spector.js 录一帧分析 draw call；用 `#define USE_X` 宏控制 shader 变体；用 `ShaderMaterial.extensions.derivatives = true` 启用 dFdx/dFdy。
 
-**最佳实践**：
+### 模式 19：Tree-shaking 与按需 import
 
-- ✅ 共享单例事件对象——节省内存
-- ✅ 监听器只读事件对象——避免误改
-- ✅ 事件冒泡到所有子节点——Tree.add 触发整子树 added
-- ✅ 提供 `event.target` 字段——监听器知道触发者
-- ❌ 避免监听器修改 `_addedEvent.type`——会污染全局
+**问题场景**：three.js 全量 import（`import * as THREE from 'three'`）会打包进 600+ KB 的代码——绝大多数项目只用 10% 不到的 API。
 
-### 模式 19：`loaders` 抽象 GLTF/OBJ/FBX/Texture 等
-
-**问题场景**：3D 资源有 20+ 种格式（GLTF、OBJ、FBX、STL、PLY、Collada、3DS...）。每种格式解析逻辑不同，但用户接口应该统一。
-
-**解决方案**：
-
-```js
-// src/loaders/Loader.js (基类)
-class Loader {
-    constructor(manager) {
-        this.manager = manager ?? DefaultLoadingManager;
-    }
-    load(url, onLoad, onProgress, onError) { ... }
-}
-
-// src/loaders/GLTFLoader.js
-class GLTFLoader extends Loader {
-    load(url, onLoad, onProgress, onError) {
-        this.manager.itemStart(url);
-        fetch(url).then(r => r.arrayBuffer()).then(buf => {
-            const gltf = parseGLTF(buf);
-            onLoad(gltf);
-            this.manager.itemEnd(url);
-        });
-    }
-}
-
-// 使用
-const loader = new GLTFLoader();
-loader.load('scene.gltf', (gltf) => {
-    scene.add(gltf.scene);
-});
-```
+**解决方案**：现代 three.js（r150+）支持按需 import：`import { Scene, Mesh, BoxGeometry, MeshStandardMaterial } from 'three'`。配合 Vite/Rollup 的 tree-shaking，未使用的类自动剔除。`addons/` 目录（`three/addons/...`）也是按需加载。
 
 **关键参数**：
+- `import { Scene } from 'three'` 按需
+- `import 'three/addons/controls/OrbitControls.js'` 插件
+- Vite/Rollup 自动 tree-shake
+- `sideEffects: false` package.json
+- Bundle 分析 `rollup-plugin-visualizer`
 
-| Loader | 格式 |
-|--------|------|
-| GLTFLoader | glTF 2.0 |
-| OBJLoader | Wavefront OBJ |
-| FBXLoader | Autodesk FBX |
-| TextureLoader | PNG/JPG |
-| RGBELoader | HDR Environment |
+**最佳实践**：禁止 `import * as THREE from 'three'`；按需 import 后配合 tree-shaking 体积可压到 100-200 KB；用 `vite-plugin-glsl` 导入 shader 文件；用 bundle analyzer 监控产物。
 
-**最佳实践**：
+### 模式 20：3D 应用分层架构（场景/逻辑/数据/UI）
 
-- ✅ 抽象 `Loader` 基类——所有 loader 都有 `load` 接口
-- ✅ 用 `LoadingManager` 统一进度回调
-- ✅ 支持 `parse(buffer)` 与 `load(url)` 两种入口
-- ✅ 加载完成调用 `manager.itemEnd`——进度同步
-- ❌ 避免在 loader 内部创建 Object3D——交给用户组装
+**问题场景**：3D 项目从 demo 演进到生产，场景对象、业务逻辑、数据获取、UI 状态混在一起，代码难维护。
 
-### 模式 20：JSDoc + `manual/` 文档双轨制
-
-**问题场景**：3D 库的 API 极其庞大（`renderer`、`scene`、`camera`、`material`、`geometry` 各有几十个属性），纯手写文档维护不过来。纯自动生成文档可读性差。
-
-**解决方案**：
-
-```js
-// src/math/Vector3.js
-/**
- * 三维向量。
- * @param {number} [x=0] - X 分量
- * @param {number} [y=0] - Y 分量
- * @param {number} [z=0] - Z 分量
- */
-class Vector3 {
-    /**
-     * 线性插值。
-     * @param {Vector3} v - 目标向量
-     * @param {number} alpha - 插值因子 (0~1)
-     * @returns {Vector3}
-     */
-    lerp(v, alpha) { ... }
-}
-```
-
-```bash
-# 构建
-npm run build   # 编译 + 生成 .d.ts
-npm run docs    # 生成 JSDoc HTML
-```
+**解决方案**：分层架构：
+- 数据层：API/JSON/状态管理（Zustand/Pinia）持有业务数据
+- 场景层：`Scene` 树 + 控制器，把数据映射到 3D 对象
+- 逻辑层：动画循环、事件处理、状态机
+- UI 层：HTML/CSS 控件（leva/dat.gui），CSS2DObject 标签
+- 渲染层：renderer + composer + 后处理
 
 **关键参数**：
+- 状态管理：Zustand/Pinia/Redux
+- 控件：leva/dat.gui 实时调参
+- 事件：EventBus/EventEmitter
+- 循环：`requestAnimationFrame`
+- 数据：API/JSON/IndexedDB
 
-| 工具 | 输出 |
-|------|------|
-| JSDoc | API 文档（自动） |
-| `docs/` | 类型定义 `.d.ts` |
-| `manual/` | 教程（人类阅读） |
-
-**最佳实践**：
-
-- ✅ JSDoc + `manual/` 双轨——自动 API + 手动教程
-- ✅ 重要 API 写 `manual/` 教程——新手友好
-- ✅ JSDoc 标注参数类型——VSCode 智能提示
-- ✅ 写 `docs/` 维护更新日志——`rXXX → rXXX` 的 breaking change
-- ❌ 避免文档与代码不同步——CI 检查 JSDoc 覆盖率
+**最佳实践**：业务数据走状态管理（Zustand），不直接放在 Object3D.userData；用 leva 实时调参（光照/材质/后处理）；UI 控件与 3D 渲染解耦（UI 用 React/Vue，3D 用 imperative API）；用 `useFrame`（r3f）/自写循环同步。
 
 ## 附：仓库元信息
 
 | 字段 | 值 |
 |------|----|
 | 路径 | `G:\实战案例\GitHub顶尖项目\three.js\` |
-| 主语言 | JavaScript（ESM） |
+| 主语言 | JavaScript |
 | License | MIT |
-| 包大小 | minified ~600KB（gzip 130KB） |
-| 关键模块 | `core/`、`math/`、`geometries/`、`materials/`、`renderers/`、`nodes/` |
-
-## 一句话总结
-
-Three.js 的精髓在 `Object3D extends EventDispatcher`（树状事件） + `BufferGeometry` 与 `Material` 解耦（数据/渲染分离） + 多渲染器抽象（同场景多后端） + Nodes（JS 描述着色器）四件套——任何"树状结构 + 数据驱动 + 多后端 + 可编程管线"项目都适用。
+| 解析时间 | 2026-06-02 |
+| 核心模块 | `core/Object3D`、`math/`、`geometries/`、`materials/`、`renderers/`、`nodes/` |
+| 关键基础设施 | WebGL 1/2、WebGPU、TSL、GLSL/WGSL |

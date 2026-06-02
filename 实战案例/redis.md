@@ -1,623 +1,1135 @@
----
-title: redis
-type: 内存数据库
-lang: C
-stars: 65k+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - 内存数据库
-  - C
-  - KV存储
-  - 高性能
----
+# Redis · 架构与工程实践精要
 
-# redis · 项目深度解析
-
-> The open source, in-memory data store used by millions of developers as a database, cache, streaming engine, and message broker.
-> 来源：`G:\实战案例\GitHub顶尖项目\redis\`
-
-## 写在前面：解析哲学
-
-按 V3 模版，**先骨架后血肉，先 What 后 Why，最后 How to steal**。每个小点都遵循：点状解析 → 思维导图 → 落地模板 → 反例警示。
-
-```mermaid
-mindmap
-  root((redis<br/>深度解析))
-    哲学层
-      解析哲学
-      0.准备
-    项目层
-      1.计划书
-      2.框架
-      3.画像
-    架构层
-      4.架构设计
-      5.代码WHY
-      6.运行机制
-    时间层
-      7.演进历史
-      8.质量保障
-    生态层
-      9.生态依赖
-      10.生产实践
-    萃取层
-      11.社区
-      12.教训
-      13.萃取
-      14.速查
-```
+> Redis 是 in-memory data structure store，被数百万开发者用作数据库、缓存、流引擎、消息代理。本笔记从 Amazon Builders' Library 视角剖析其单线程事件循环、RESP 协议、数据结构、持久化与集群协议，聚焦 20 个工程模式与决策。
 
 ---
 
-## 0. 解析前的 5 个准备
+## 一、核心机制与单线程哲学
 
-**[点状解析]**：拿到 Redis 仓库后必须做的 5 件事。
+### 模式 1：单线程事件循环（ae 库）
 
-1. **克隆**：`git clone https://github.com/redis/redis.git` —— **不要**用 `--depth 1`，Redis 历史 commit 含金量极高（dict 演进、cluster 重构、ACL 引入）。
-2. **分类**：建 `_analysis/{src,deps,tests,utils,docs,confs}`。`src/` 100+ 文件是大头。
-3. **问题清单**：核心 5 问（单线程为何能跑 10w QPS？AOF/RDB 怎么选？Cluster 16384 槽怎么分？为什么不用 B+ 树？Replication 的 ack 机制？）
-4. **速查表**：版本、内存模型、线程数、是否开启 IO thread 6+。
-5. **锁 commit**：`git checkout 7.4.1`（最新稳定版）。
+**问题场景**：传统多线程服务器（Tomcat、Apache）每个连接一个线程，10k 连接 = 10k 线程，context switch 开销大。Redis 选择"单线程事件循环"——一个线程处理所有连接，10w+ QPS。
 
-**[反例警示]**：直接 `apt install redis-server` 然后看 man page → 学不到任何东西。Redis 的设计哲学在源码注释里，不在文档里。
-
----
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-|---|---|
-| 项目名 | Redis (REmote DIctionary Server) |
-| 一句话定位 | 内存数据结构服务器，KV 数据库的瑞士军刀 |
-| 核心问题 | 关系型数据库无法满足高 QPS 低延迟场景；纯 KV 又太弱，需要 List/Hash/Set/SortedSet 复合结构 |
-| 目标用户 | 互联网公司缓存层、排行榜、计数器、Pub/Sub 消息、限流、分布式锁 |
-| 商业模式 | 内存数据库 + 周边工具；商业公司 Redis Labs (现 Redis Inc.) 提供 Redis Enterprise (闭源模块) |
-| 复刻难度 | ⭐⭐⭐⭐⭐（C 系统编程 + 网络 IO + 内存管理 + 持久化 + 集群协议，工作量 > 5 人年） |
-| 当前状态 | 活跃（v7.4.1），Redis 8.0 已发布，IO threads 6+ 稳定 |
-| 团队规模 | 1 BDFL (Salvatore Sanfilippo/antirez) → 2018 后由 Redis Labs 接手；现核心维护 ~10 人 |
-| 关键里程碑 | 2009 立项 → 2010 V1.0 → 2012 V2.0 Lua 脚本 → 2013 Cluster → 2015 V3.0 Cluster GA → 2017 V4.0 模块化 → 2020 V6.0 ACL+多线程IO → 2024 V7.4 |
-
-**[反例警示]**：以为 Redis 只是"内存版 MySQL" → 错过了 90% 的设计精髓（数据结构、事件循环、RESP 协议、模块系统）。
-
----
-
-## 2. 项目框架（Repo Skeleton Map）
-
-**[点状解析]**：Redis 是**单进程 C 项目**，但内部高度模块化。"扁平 src"哲学（参考 ag）但 200+ 文件，需要按子系统划分。
-
-```mermaid
-mindmap
-  root((redis 框架))
-    src 源码 100+ 文件
-      server.c 服务主体
-      networking.c 协议解析
-      db.c 内存数据库
-      object.c 对象系统
-      dict.c 哈希表 心脏
-      t_string.c 数据结构
-      t_list.c
-      t_hash.c
-      t_set.c
-      t_zset.c 跳表
-      t_stream.c
-      aof.c 持久化
-      rdb.c
-      cluster.c 集群
-      replication.c 主从
-      bio.c 后台IO
-      networking.c
-    deps 依赖
-      jemalloc 内存分配
-      lua 脚本
-      hdr_histogram
-    tests 27 个 .t
-    utils 辅助
-      redis-cli
-      redis-benchmark
-    confs 配置
-      redis.conf
-```
-
-**[落地模板]**：阅读 Redis 的正确顺序（防迷路）：
-
-1. `dict.c`（心脏） → 理解 Redis 所有数据结构的底层
-2. `object.c`（统一对象） → 理解类型系统
-3. `server.c`（main 循环） → 看 `aeMain` 事件循环
-4. `networking.c`（RESP 协议） → 看命令分发
-5. `db.c` + `t_*.c`（数据库 + 数据结构） → 看命令实现
-6. `aof.c` + `rdb.c`（持久化）
-7. `cluster.c`（集群协议）
-
-**[反例警示]**：从 `server.c` 第一个函数 `main()` 开始读 → 立刻迷路，5 万行代码劝退。
-
----
-
-## 3. 项目画像（Profile）
-
-| 字段 | 内容 |
-|---|---|
-| 总文件数 | 150+ (src 100+, tests 27, utils 10, deps 10) |
-| 主语言 | C (98%) |
-| 涉及语言 | C, Tcl (测试), Lua (脚本), Makefile, Shell |
-| Star | 65k+ |
-| License | BSD-3-Clause (修改版)，商业模块双许可 |
-| Docker | 官方 `redis/redis-stack` 镜像 |
-| K8s | Helm chart、operator、StatefulSet 模式 |
-| CI | GitHub Actions + 自建 Redis CI Farm (多 OS) |
-| 测试 | 27 个 Tcl 测试套件 + 内存泄漏检测 (valgrind) + stress 测试 |
-
----
-
-## 4. 架构设计（Architecture Deep Dive）
-
-**[点状解析]**：Redis 架构 = **单线程事件循环 + 多线程异步 IO + 集群分片**。这三条线是理解 Redis 的主线。
-
-```mermaid
-flowchart TD
-    Client[客户端] -->|RESP| Listener[监听 socket]
-    Listener -->|accept| AE[ae 事件循环]
-    AE -->|read| QueryBuf[查询缓冲区]
-    QueryBuf --> Parse[协议解析]
-    Parse --> Dispatch[命令分发]
-    Dispatch --> Lookup[查 db dict]
-    Lookup --> Execute[执行命令]
-    Execute --> Reply[写回 socket]
-    Reply --> AE
-    
-    AE -.->|fork| BG[后台子进程 RDB]
-    AE -.->|线程| AOF[AOF 重写线程]
-    AE -.->|线程 v6+| IOTH[IO threads]
-    
-    Execute -.->|cluster| Slot[16384 槽位]
-    Slot -.->|MOVED/ASK| OtherNode[其他节点]
-    
-    style AE fill:#ff9
-    style Execute fill:#9f9
-    style BG fill:#99f
-    style IOTH fill:#f99
-```
-
-**核心架构 3 句话**：
-
-1. **单线程事件循环（ae.c）**：所有命令在 main 线程执行，避开了锁；瓶颈在内存而非 CPU，所以单线程是最佳性价比方案。
-2. **数据结构服务器**：不是 KV，是"带数据结构的 KV"；List/Hash/Set/ZSet/Stream 每个都是"专门优化的微型数据结构库"。
-3. **渐进式可扩展**：所有重操作（RDB/AOF/大 key 删除/cluster reshard）都用"渐进"方式（incremental）实现，永不阻塞主线程。
-
-**[ADR 关键设计决策]**：
-
-- **为什么单线程？** 内存操作 100ns 级，CPU 切换线程开销 > 业务开销；锁竞争比单线程串行更慢。2020 后 v6+ 才允许 IO 线程分担网络读写。
-- **为什么不用 B+ 树？** 纯内存场景 hash 找 O(1) 完爆 B+ 树的 O(log N)；持久化另说。
-- **为什么用 RESP 而不是二进制？** 协议简单可手写 + 调试方便 + 跨语言实现成本低。
-- **为什么 dict 用拉链法而不是开放地址？** 渐进式 rehash（见 §5.2）。
-
----
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 骨架代码（5 个核心文件）
-
-1. **`src/server.c`** (~6500 行) — 主循环、命令注册、信号处理
-2. **`src/dict.c`** (~1100 行) — 哈希表（Redis 一切数据的底层）
-3. **`src/networking.c`** (~3500 行) — 客户端连接、RESP 解析、回复
-4. **`src/object.c`** (~1700 行) — redisObject 统一对象抽象
-5. **`src/t_zset.c`** (~1700 行) — 跳表实现（ZSet 的灵魂）
-
-### 5.2 单文件分析卡
-
-#### `src/dict.c` — 哈希表
+**解决方案代码**：
 
 ```c
-struct dict {
-    dictType *type;       // 各种函数指针（hash, keyDup, valDup...）
-    void *privdata;
-    dictht ht[2];         // 两个 hashtable，用于渐进式 rehash
-    long rehashidx;       // -1 = 不在 rehash；>=0 = 当前 rehash 到 ht[1] 的索引
-    long iterators;       // 当前迭代器数量，>0 时不能 rehash
+// src/server.c: main()
+int main(int argc, char **argv) {
+  // 初始化
+  initServer();
+  // 事件循环（核心）
+  aeMain(server.el);
+}
+
+// src/ae.c: aeMain()
+void aeMain(aeEventLoop *eventLoop) {
+  eventLoop->stop = 0;
+  while (!eventLoop->stop) {
+    // 1. 跑 beforeSleep 钩子
+    if (eventLoop->beforesleep) eventLoop->beforesleep(eventLoop);
+    // 2. 调 epoll_wait / kqueue / select
+    numevents = aeApiPoll(eventLoop, tvp);
+    // 3. 处理就绪事件
+    for (j = 0; j < numevents; j++) {
+      fe = &eventLoop->events[eventLoop->fired[j].fd];
+      fe->fireProc(eventLoop, fd, fe->clientData, EVENT_MASK);
+    }
+  }
+}
+
+// src/ae.c: aeCreateEventLoop()
+aeEventLoop *aeCreateEventLoop(int setsize) {
+  aeEventLoop *eventLoop = zmalloc(sizeof(*eventLoop));
+  eventLoop->events = zmalloc(sizeof(aeFileEvent) * setsize);
+  eventLoop->fired = zmalloc(sizeof(aeFiredEvent) * setsize);
+  eventLoop->timeEventHead = NULL;
+  return eventLoop;
+}
+```
+
+**关键参数表**：
+
+| 事件类型 | 描述 | 用途 |
+|---|---|---|
+| `AE_READABLE` | 可读事件 | 客户端发来命令 |
+| `AE_WRITABLE` | 可写事件 | 准备发送响应 |
+| `AE_BARRIER` | 屏障（防竞争） | 客户端处理顺序 |
+| `AE_NOMORE` | 无更多事件 | 删除事件 |
+| 时间事件 | 定时器 | serverCron / expire |
+
+| 系统调用 | 用途 |
+|---|---|
+| `epoll` | Linux 高性能 IO 多路复用 |
+| `kqueue` | macOS / BSD |
+| `evport` | Solaris |
+| `select` | 跨平台 fallback |
+
+**最佳实践列表**：
+- 单线程 = 内存访问无锁 = 充分利用 CPU cache
+- "瓶颈"不在 CPU——网络 IO 和内存是瓶颈
+- v6.0+ 引入 IO threads 处理网络读写——主线程仍单线程
+- 业务命令执行仍是单线程——避免共享状态
+- 反模式：业务代码 `usleep()` / `sleep()` 阻塞事件循环——Redis 整体卡死
+
+### 模式 2：RESP 协议（序列化协议）
+
+**问题场景**：客户端用 C / Java / Python / Node.js 各语言，需统一通信协议。Redis 用 RESP（REdis Serialization Protocol）——5 种类型前缀，简单到 10 行可实现 parser。
+
+**解决方案代码**：
+
+```c
+// src/networking.c: processInputBuffer()
+void processInputBuffer(client *c) {
+  while (c->qb_pos < sdslen(c->querybuf)) {
+    // 解析 1 条 RESP 命令
+    if (!c->reqtype) {
+      // 探测协议类型
+      if (c->querybuf[c->qb_pos] == '*') c->reqtype = PROTO_REQ_MULTIBULK;  // RESP2 array
+      else c->reqtype = PROTO_REQ_INLINE;  // 简单 inline 命令
+    }
+    if (c->reqtype == PROTO_REQ_MULTIBULK) {
+      // 解析 *3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n
+      robj *argv[argc];
+      if (processMultibulkBuffer(c, &argc, argv) != C_OK) break;
+      // 执行命令
+      processCommand(c, argc, argv);
+    }
+  }
+}
+
+// RESP 类型
+// +OK\r\n                       简单字符串
+// -Error\r\n                    错误
+// :1234\r\n                     整数
+// $6\r\nfoobar\r\n              批量字符串
+// *2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n   数组
+// _\r\n (RESP3)                 null
+// ,1.23\r\n (RESP3)             双精度
+```
+
+**关键参数表**：
+
+| RESP 类型 | 字节前缀 | 例子 |
+|---|---|---|
+| Simple String | `+` | `+OK\r\n` |
+| Error | `-` | `-ERR unknown command\r\n` |
+| Integer | `:` | `:1000\r\n` |
+| Bulk String | `$` | `$5\r\nhello\r\n` |
+| Array | `*` | `*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n` |
+| Null (RESP3) | `_` | `_\r\n` |
+| Double (RESP3) | `,` | `,1.5\r\n` |
+| Boolean (RESP3) | `#` | `#t\r\n` / `#f\r\n` |
+| Map (RESP3) | `%` | `%1\r\n+key\r\n+value\r\n` |
+
+**最佳实践列表**：
+- 客户端用 RESP2 协议——最广泛兼容
+- 复杂数据用 RESP3——支持 Map/Set/Boolean
+- Pipeline 模式：多个命令一次发送——减少 RTT
+- pub/sub 用 push 模式——服务端主动推送
+- 反模式：每个命令一个 TCP 包——RTT 主导延迟
+
+### 模式 3：dict 哈希表（rehash 与渐进式 rehash）
+
+**问题场景**：Redis 所有数据结构（String/List/Hash/Set/SortedSet）底层都用 dict。dict 是"动态哈希表"——负载因子 >1 时 rehash，但 rehash 是 O(n) 操作，阻塞单线程。
+
+**解决方案代码**：
+
+```c
+// src/dict.c: dictExpand
+int dictExpand(dict *d, unsigned long size) {
+  unsigned long realsize = _dictNextPower(size);  // 2 的幂
+  dictht n;  // 新哈希表
+  n.size = realsize;
+  n.sizemask = realsize - 1;
+  n.table = zcalloc(realsize * sizeof(dictEntry*));
+  n.used = 0;
+  if (d->ht[0].table == NULL) {
+    d->ht[0] = n;  // 首次初始化
+    return DICT_OK;
+  }
+  d->ht[1] = n;  // 渐进式 rehash：分配新表但暂不搬
+  d->rehashidx = 0;  // 标记开始
+  return DICT_OK;
+}
+
+// 渐进式 rehash：每次 dict 操作搬 1 个 bucket
+static void _dictRehashStep(dict *d) {
+  if (d->rehashidx == -1) return;
+  d->rehashidx++;
+  while (d->ht[0].table[d->rehashidx] != NULL) {
+    // 搬 1 个 bucket
+    dictEntry *de = d->ht[0].table[d->rehashidx];
+    while (de) {
+      unsigned long h = dictHashKey(d, de->key) & d->ht[1].sizemask;
+      de->next = d->ht[1].table[h];
+      d->ht[1].table[h] = de;
+      d->ht[0].used--;
+      d->ht[1].used++;
+      de = de->next;
+    }
+    d->rehashidx++;
+  }
+  if (d->ht[0].used == 0) {
+    zfree(d->ht[0].table);
+    d->ht[0] = d->ht[1];  // 新表转正
+    d->rehashidx = -1;
+  }
+}
+```
+
+**关键参数表**：
+
+| 字段 | 含义 |
+|---|---|
+| `ht[2]` | 双哈希表（rehash 用） |
+| `rehashidx` | 当前 rehash 到第几个 bucket（-1 = 未在 rehash） |
+| `size` | bucket 数（2 的幂） |
+| `sizemask` | `size - 1`（用于 hash % size） |
+| `used` | 已用 entry 数 |
+
+| 触发 rehash | 负载因子 |
+|---|---|
+| 强制 | `used / size > 1.0`（dictForceRehash） |
+| 渐进 | `used / size > 5`（HT 满时） |
+
+**最佳实践列表**：
+- 渐进式 rehash = 每次操作搬 1 bucket——单次操作 < 1us
+- 避免大 key（field 数十万）——单次 rehash 步骤多
+- 用 `rehash 0 1` 限制 rehash 速度——7.0+ 新增
+- dict size 始终 2 的幂——位运算代替模运算
+- 反模式：HGETALL 一个 100w 字段的 hash——可能卡数十 ms
+
+### 模式 4：robj 统一对象系统
+
+**问题场景**：Redis 支持 6 种数据类型（String/List/Hash/Set/SortedSet/Stream），每种有独立实现。但命令分派、内存管理、序列化需要统一抽象——`robj` 是 RedisObject。
+
+**解决方案代码**：
+
+```c
+// src/server.h: redisObject
+typedef struct redisObject {
+  unsigned type:4;        // OBJ_STRING / OBJ_LIST / OBJ_HASH / OBJ_SET / OBJ_ZSET / OBJ_STREAM
+  unsigned encoding:4;    // 编码（int / embstr / raw / hashtable / ziplist / skiplist / quicklist / listpack）
+  unsigned lru:24;        // LRU 时间戳（用于 LRU/LFU 淘汰）
+  int refcount;           // 引用计数
+  void *ptr;              // 实际数据指针
+} robj;
+
+// src/object.c: createStringObject
+robj *createStringObject(const char *s, size_t len) {
+  if (len <= 44) {
+    // 小字符串 → embstr（一次分配 object + data）
+    return createEmbeddedStringObject(s, len);
+  }
+  // 大字符串 → raw（两次分配）
+  return createRawStringObject(s, len);
+}
+
+// SDS 字符串
+struct sdshdr {
+  uint32_t len;      // 已用
+  uint32_t alloc;    // 已分配
+  unsigned char flags;  // 类型标记
+  char buf[];        // 字符串内容
 };
 ```
 
-**核心设计点 1：渐进式 rehash**
+**关键参数表**：
+
+| type | encoding | 说明 |
+|---|---|---|
+| OBJ_STRING | int | 整数（long 范围内） |
+| OBJ_STRING | embstr | ≤ 44 字节字符串 |
+| OBJ_STRING | raw | > 44 字节字符串 |
+| OBJ_LIST | listpack / quicklist | 7.0 之前是 ziplist/linkedlist |
+| OBJ_HASH | listpack / hashtable | 7.0 之前是 ziplist/hashtable |
+| OBJ_SET | listpack / intset / hashtable | 整数小集合用 intset |
+| OBJ_ZSET | listpack / skiplist | 7.0 之前是 ziplist/skiplist |
+| OBJ_STREAM | radix tree | Stream 数据结构 |
+
+**最佳实践列表**：
+- 整数存储高效——能用 `INCR` 不要用 `SET key value` + `GET`
+- 小字符串用 embstr——单次分配
+- 小 hash（field < 128）用 listpack——节省内存
+- 反模式：`HSET key field1 ... field10000`——大 hash 性能差
+- LRU/LFU 由 lru 字段支持——`maxmemory-policy` 配置
+
+### 模式 5：跳表（skiplist）实现 SortedSet
+
+**问题场景**：SortedSet 需要"按 score 排序 + 按 member 查 score + 范围查询"。传统实现有 B+ 树（难实现 + 难并发）和红黑树（实现复杂）。Redis 用跳表（skiplist）——O(log n) 查询，实现简单，范围查询友好。
+
+**解决方案代码**：
+
 ```c
-// 普通 rehash：一次性把 ht[0] 全部迁移到 ht[1] → 阻塞主线程
-// 渐进式 rehash：每次 dictRehash(d, 1) 只迁移 1 个 bucket
-// 触发点：每次 dictAddRaw / dictFind / dictGetRandomKey / 定时任务
+// src/t_zset.c: zslInsert
+zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
+  // 从顶层往下找插入点
+  zskiplistNode *update[ZSKIPLIST_MAXLEVEL];
+  zskiplistNode *x = zsl->header;
+  for (int i = zsl->level - 1; i >= 0; i--) {
+    while (x->level[i].forward && x->level[i].forward->score < score) {
+      x = x->level[i].forward;
+    }
+    update[i] = x;  // 每层插入点的前驱
+  }
+  // 随机层高（几何分布，p=0.25）
+  int level = zslRandomLevel();
+  if (level > zsl->level) {
+    for (int i = zsl->level; i < level; i++) update[i] = zsl->header;
+    zsl->level = level;
+  }
+  // 插入新节点
+  zskiplistNode *node = zslCreateNode(level, score, ele);
+  for (int i = 0; i < level; i++) {
+    node->level[i].forward = update[i]->level[i].forward;
+    update[i]->level[i].forward = node;
+  }
+  return node;
+}
+
+// zskiplistNode 结构
+typedef struct zskiplistNode {
+  sds ele;             // member
+  double score;        // 排序分
+  struct zskiplistNode *backward;  // 上一节点
+  struct zskiplistLevel {
+    struct zskiplistNode *forward;  // 同层下一节点
+    unsigned long span;  // 跨度（节点数）
+  } level[];           // 层高数组
+} zskiplistNode;
 ```
 
-**WHY**：Redis 是单线程，rehash 100w 元素要 10ms+ 卡死。渐进式 = 每次只搬 1 个 bucket，分摊到几千次操作中。客户端无感知。
+**关键参数表**：
 
-**核心设计点 2：rehash 期间的查找**
+| ZSKIPLIST_MAXLEVEL | 32 |
+|---|---|
+| 随机层高 p | 0.25 |
+| 平均层高 | 1 / (1 - p) = 1.33 |
+| 索引空间 | log_0.25(N) |
+
+**最佳实践列表**：
+- SortedSet 是 O(log n) 插入、O(log n) 范围查询
+- `ZRANGEBYSCORE` + `LIMIT` 适合排行榜 Top N
+- 跳表 + 字典双索引——ZSCORE O(1)，ZRANGE O(log n)
+- 7.0+ 小 SortedSet 用 listpack——内存优化
+- 反模式：10w 个 ZADD 一次性执行——可用 pipeline 批量
+
+---
+
+## 二、持久化与复制
+
+### 模式 6：RDB 快照（dump.rdb）
+
+**问题场景**：内存数据易失——进程崩溃 = 数据丢失。需要周期性把内存全量 dump 到磁盘。RDB（Redis Database）是 Redis 默认持久化方式——二进制紧凑格式。
+
+**解决方案代码**：
+
 ```c
-dictEntry *dictFind(dict *d, const void *key) {
-    if (d->rehashidx >= 0) dictRehash(d, 1);  // 先帮忙搬
-    // 1. 在 ht[0] 找
-    // 2. 如果没找到且在 rehash 中，再去 ht[1] 找
+// src/rdb.c: rdbSave
+int rdbSave(char *filename, rdbSaveInfo *rsi) {
+  // 1. 打开临时文件
+  snprintf(tmpfile, 256, "temp-%d.rdb", (int)getpid());
+  fp = fopen(tmpfile, "w");
+  // 2. 写入 RDB 头
+  if (rdbWriteRaw(fp, "REDIS", 5) == -1) goto werr;
+  rdbSaveInfoAuxFields(fp, rsi, 0);
+  // 3. 遍历所有 db
+  for (j = 0; j < server.dbnum; j++) {
+    redisDb *db = server.db + j;
+    // 4. 遍历所有 key
+    dictIterator *di = dictGetSafeIterator(db->dict);
+    while ((de = dictNext(di)) != NULL) {
+      sds keystr = dictGetKey(de);
+      robj *o = dictGetVal(de);
+      rdbSaveKeyValuePair(fp, db, o, keystr, rsi);
+    }
+    dictReleaseIterator(di);
+  }
+  // 5. 写 EOF 标记
+  if (rdbWriteRaw(fp, "\xff\xff\xff\xff", 4) == -1) goto werr;
+  // 6. 原子 rename 临时文件
+  if (rename(tmpfile, filename) == -1) goto werr;
+  return C_OK;
+}
+
+// RDB 文件格式（紧凑二进制）
+// REDIS0009  (magic + version)
+// ... AUX fields (redis-ver, aof-preamble, repl-stream-db, etc.)
+// <db_number> <key_value_pairs>  (db 0)
+// <db_number> <key_value_pairs>  (db 1)
+// ...
+// <ff> <8-byte checksum>          (EOF + CRC64)
+```
+
+**关键参数表**：
+
+| 触发方式 | 时机 |
+|---|---|
+| `SAVE` | 同步（阻塞） |
+| `BGSAVE` | fork 子进程异步 |
+| 自动 save | `save 3600 1000`（3600s 内 1000 改动） |
+| `SHUTDOWN` | 默认自动 |
+| `FLUSHALL` 后 + save | 重置 |
+
+| 压缩策略 | 作用 |
+|---|---|
+| `rdbcompression yes` | LZF 压缩字符串（默认） |
+| `rdbchecksum yes` | CRC64 校验（默认） |
+
+**最佳实践列表**：
+- RDB 适合"定期备份"——冷启动快（10s 加载 10GB）
+- 不要用 SAVE 阻塞主线程——用 BGSAVE
+- `save ""` 关闭 RDB——只用 AOF
+- 容器化（Docker）：`--save "" --appendonly no` 避免双写
+- 监控 `rdb_last_save_time` / `rdb_last_bgsave_status`
+
+### 模式 7：AOF 追加日志（Append Only File）
+
+**问题场景**：RDB 丢失窗口大（最后一次 save 之后的数据全丢）。需要"每次写命令都记录"——AOF（Append Only File）日志式持久化，重启时重放命令恢复数据。
+
+**解决方案代码**：
+
+```c
+// src/aof.c: feedAppendOnlyFile
+void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
+  sds buf = sdsempty();
+  // 1. 序列化为 RESP 命令
+  for (j = 0; j < argc; j++) {
+    if (j > 0) buf = sdscatlen(buf, " ", 1);
+    robj *o = argv[j];
+    if (o->type == OBJ_STRING) {
+      buf = sdscatrepr(buf, (char*)o->ptr, sdslen(o->ptr));
+    } else {
+      buf = sdscatrepr(buf, "?", 1);
+    }
+  }
+  buf = sdscatlen(buf, "\r\n", 2);
+  // 2. 追加到 aof_buf
+  server.aof_buf = sdscatlen(server.aof_buf, buf, sdslen(buf));
+  // 3. 异步刷盘
+  if (server.aof_fsync == AOF_FSYNC_ALWAYS) {
+    aof_fsync(server.aof_fd);  // 每次都 fsync（最安全）
+  } else if (server.aof_fsync == AOF_FSYNC_EVERYSEC) {
+    aof_background_fsync();  // 后台线程每秒 fsync（默认）
+  }
+  // AOF_FSYNC_NO: 完全靠 OS
+}
+
+// AOF 重写（compact）
+int rewriteAppendOnlyFile(char *filename) {
+  // 遍历当前所有 key，生成等效的最小命令集
+  // 例：100 次 INCR → 1 次 SET key 100
+  for (j = 0; j < server.dbnum; j++) {
+    redisDb *db = server.db + j;
+    while ((de = dictNext(di)) != NULL) {
+      // ... 用最少命令表示当前状态
+    }
+  }
 }
 ```
 
-**WHY**：迁移期间数据分布在两个表里，必须两边都查；新数据直接进 ht[1]，避免 ht[0] 永远搬不完。
+**关键参数表**：
 
-**核心设计点 3：可装载因子 1.0 / 5.0**
-- `dict_force_resize_ratio = 5`：负载 >5 必须 rehash（性能已崩溃）
-- 默认扩触发：used >= size（紧凑）
+| `appendfsync` 选项 | 行为 | 性能 / 安全性 |
+|---|---|---|
+| `always` | 每次写都 fsync | 最安全（丢 < 1 条）但慢 |
+| `everysec` | 每秒 fsync | 默认（最多丢 1s）|
+| `no` | 完全靠 OS | 最快但可能丢分钟级 |
 
-**WHY**：5.0 是兜底，正常 1.0 触发，hash 表用满，O(1) 才有意义。
+| 重写策略 | 触发 |
+|---|---|
+| 自动 | `auto-aof-rewrite-percentage 100` + `auto-aof-rewrite-min-size 64mb` |
+| 手动 | `BGREWRITEAOF` |
 
-#### `src/server.c` — 事件循环
+**最佳实践列表**：
+- AOF 文件可能很大——用 `BGREWRITEAOF` 定期压缩
+- `everysec` 是生产默认——平衡安全 + 性能
+- 加载 AOF 时用 `redis-check-aof` 修复损坏
+- Multi Part AOF（7.0+）支持增量重写——避免 bgrewrite 阻塞
+- 反模式：`appendfsync always` + 写入密集——磁盘成为瓶颈
+
+### 模式 8：Replication 主从复制
+
+**问题场景**：单点 Redis 不可用，需要数据冗余。Redis 主从复制（master-replica）——主节点接受写，从节点同步数据，提供读扩展 + 高可用。
+
+**解决方案代码**：
 
 ```c
-void aeMain(aeEventLoop *eventLoop) {
-    eventLoop->stop = 0;
-    while (!eventLoop->stop) {
-        aeBeforeSleepProc *aftersleep = eventLoop->aftersleep;
-        aeProcessEvents(eventLoop, AE_ALL_EVENTS|
-                                   AE_CALL_BEFORE_SLEEP|
-                                   AE_CALL_AFTER_SLEEP);
-    }
+// src/replication.c: replicationCron
+void replicationCron(void) {
+  static long long repl_timeout_last = 0;
+  // 1. 检查超时
+  if (replicationTimeout()) {
+    // 重连
+    replicationAbortConnTransfer();
+  }
+  // 2. 周期 ping
+  if ((replicate_cron_loops % server.repl_ping_slave_period) == 0) {
+    replconf sendPing();
+  }
+  // 3. 全量同步触发条件
+  if (server.repl_backlog_size > 0 && server.repl_backlog == NULL) {
+    // 分配 backlog 缓冲区
+    server.repl_backlog = zmalloc(server.repl_backlog_size);
+  }
+}
+
+// 从节点首次连接 → 全量同步（RDB 传输）
+// 主节点：BGSAVE + 发 RDB 给从节点 + 同步期间的写命令也发过去
+// 从节点：清空旧数据 + load RDB + 应用增量命令
+
+// 从节点断线重连 → 增量同步（PSYNC）
+// 主节点：记录 backlog（环形缓冲），从节点带 offset 重连
+// 主节点从 backlog 取 offset 之后的数据发送
+```
+
+**关键参数表**：
+
+| `repl-backlog-size` | 1MB（默认）——越大越能容忍断线 |
+|---|---|
+| `repl-timeout` | 60s 超时 |
+| `repl-ping-replica-period` | 10s ping 周期 |
+| `min-replicas-to-write` | 至少 N 个从节点在线才接受写 |
+| `min-replicas-max-lag` | 从节点最大 lag（秒） |
+
+**最佳实践列表**：
+- 主从 + 哨兵 = 高可用（自动故障转移）
+- 启用 `repl-backlog-size 100mb`——断线 5min 还能增量同步
+- 多从节点时主节点压力：`client-output-buffer-limit replica 256mb 64mb 60`
+- 反模式：主从分叉严重（master 写 10k/s，replica 跟不上）——加 replica
+- 监控：`INFO replication` 关注 `master_repl_offset` vs `slave_repl_offset`
+
+### 模式 9：Redis Sentinel 哨兵
+
+**问题场景**：主节点挂了，需要自动选新主 + 通知应用。Sentinel 是 Redis 官方高可用方案——多 sentinel 进程投票选举，避免脑裂。
+
+**解决方案代码**：
+
+```c
+// src/sentinel.c: sentinelTimer
+void sentinelTimer(void) {
+  // 1. 定期 PING 所有主/从/其他 sentinel
+  sentinelPingAllSentinels();
+  // 2. 检查主观下线（SDOWN）
+  sentinelCheckSubjectivelyDown();
+  // 3. 检查客观下线（ODOWN）——需要多数 sentinel 同意
+  sentinelCheckObjectivelyDown();
+  // 4. 选主投票
+  if (sentinelStartFailoverIfNeeded())
+    sentinelRunFailover();
+  // 5. 故障转移
+  if (server.failover_state == FAILOVER_STATE_RECONF_SLAVES) {
+    sentinelFailoverReconfNextSlave();
+  }
+}
+
+// 应用客户端配置
+// sentinel monitor mymaster 127.0.0.1 6379 2  (2 = 多数 quorum)
+// sentinel down-after-milliseconds mymaster 5000
+// sentinel parallel-syncs mymaster 1
+// sentinel failover-timeout mymaster 60000
+```
+
+**关键参数表**：
+
+| 监控维度 | 默认值 |
+|---|---|
+| `down-after-milliseconds` | 30s |
+| `failover-timeout` | 180s |
+| `parallel-syncs` | 1（同时同步的从节点数） |
+| `quorum` | sentinel 多数 |
+
+**最佳实践列表**：
+- 至少 3 个 sentinel 节点——避免脑裂
+- 客户端用 `redis-sentinel://` URL——自动发现新主
+- `parallel-syncs` 不宜过大——避免主节点压力
+- Sentinel 也可能挂——多机部署
+- 监控 `SENTINEL get-master-addr-by-name mymaster` 验证状态
+
+### 模式 10：Redis Cluster 集群
+
+**问题场景**：单实例数据量 > 内存上限（>500GB），需要水平扩展。Redis Cluster 把数据分片到 16384 槽——多主多从，去中心化协议。
+
+**解决方案代码**：
+
+```c
+// src/cluster.c: clusterReadSlot
+int clusterReadSlot(unsigned int slot) {
+  // 根据 CRC16(key) % 16384 计算槽
+  unsigned int hash = crc16(key) & 16383;
+  // 查找槽在哪个节点
+  clusterNode *n = server.cluster->slots[hash];
+  return n ? n : NULL;
+}
+
+// Gossip 协议：节点间定期交换状态
+void clusterCron(void) {
+  // 1. 随机选 5 个节点 ping
+  for (j = 0; j < 5; j++) {
+    clusterNode *node = ...;
+    clusterSendPing(node, CLUSTER_TYPE_PING);
+  }
+  // 2. 接收 ping/pong，更新 slots 映射
+  // 3. 检测失败（pfail → fail）
+  // 4. 选举（leader + majority）
+}
+
+// MOVED 重定向：客户端发到错节点 → 收到 MOVED 15495 127.0.0.1:6380
+// ASK 重定向：节点正在迁移槽 → ASK 15495 127.0.0.1:6381
+```
+
+**关键参数表**：
+
+| 集群参数 | 默认值 |
+|---|---|
+| 槽数 | 16384（CRC16 模数） |
+| 节点最小数 | 6（3 主 + 3 从） |
+| 故障检测 | 30s 默认 |
+| 故障转移 | ~30s |
+| Gossip 周期 | 1s |
+| `cluster-node-timeout` | 15s |
+
+**最佳实践列表**：
+- 客户端必须支持 MOVED / ASK 重定向——`redis-cli -c` 模式
+- 16k 槽是"足够大 + 节省 bitmap 空间"权衡
+- 跨槽操作（MGET / MSET）会失败——用 hash tag `{user42}:name` 把相关 key 强制同槽
+- 监控 `cluster info` / `cluster slots`——看集群健康
+- 反模式：单 key 太大（>1MB）——migrate 慢
+
+---
+
+## 三、数据结构与命令
+
+### 模式 11：List 类型与 quicklist
+
+**问题场景**：Redis List 要支持 LPUSH / RPUSH / LPOP / RPOP / LRANGE，传统 linkedlist 节点零碎、内存碎片多。Redis 用 quicklist——ziplist + linkedlist 混合结构。
+
+**解决方案代码**：
+
+```c
+// src/t_list.c: listTypePush
+void listTypePush(robj *subject, robj *value, int where) {
+  if (subject->encoding == OBJ_ENCODING_QUICKLIST) {
+    quicklistPush(subject->ptr, value->ptr, sdslen(value->ptr), where);
+  } else {
+    serverPanic("Unknown list encoding");
+  }
+}
+
+// quicklistNode 结构
+typedef struct quicklistNode {
+  struct quicklistNode *prev;
+  struct quicklistNode *next;
+  unsigned char *zl;      // 节点数据（listpack 或 ziplist）
+  size_t sz;              // zl 字节数
+  unsigned int count:16;  // 元素数
+  unsigned int encoding:2;// 编码
+  unsigned int recompress:1;  // 是否需要重压缩
+} quicklistNode;
+
+// quicklist
+typedef struct quicklist {
+  quicklistNode *head;
+  quicklistNode *tail;
+  unsigned long count;  // 总元素数
+  unsigned int len;     // 节点数
+  int fill:16;          // 单个 node 最大元素数
+  int compress:16;      // 深度压缩
+} quicklist;
+```
+
+**关键参数表**：
+
+| `list-max-listpack-size` | 单个 quicklist 节点最大字节（默认 8KB） |
+|---|---|
+| `list-compress-depth` | 两端不压缩的节点数（默认 0 = 全不压缩） |
+
+| 操作 | 复杂度 |
+|---|---|
+| LPUSH / RPUSH | O(1) |
+| LPOP / RPOP | O(1) |
+| LINDEX | O(n)（需遍历节点） |
+| LRANGE | O(n+m)，n = start offset，m = count |
+| LINSERT | O(n) |
+
+**最佳实践列表**：
+- 短 List（<几百元素）性能好——quicklist 节点数少
+- 大 List 慎用 LINDEX / LSET——O(n)
+- LPUSH + RPOP = 队列；LPUSH + LPOP = 栈
+- 7.0+ listpack 替代 ziplist——更好的压缩
+- 反模式：百万级 List 单次 LRANGE 0 -1——网络阻塞
+
+### 模式 12：Stream 类型与消费者组
+
+**问题场景**：Pub/Sub 是"fire-and-forget"——消息不会持久化，重连丢失。Kafka 风格的消息队列需要"消息持久化 + 消费者组 + 消费进度"。Redis 5.0+ 引入 Stream。
+
+**解决方案代码**：
+
+```c
+// src/t_stream.c: streamAppendItem
+int streamAppendItem(stream *s, robj *key, robj **argv, int64_t numfields, int64_t *field_indexes) {
+  // 生成 ID：ms + seq
+  streamID id = s->last_id;
+  if (s->last_id.ms == currentMs) id.seq++;
+  else id.ms = currentMs, id.seq = 0;
+  // 存到 radix tree
+  streamNode *n = streamCreateNode(s, id);
+  streamLastId(s, &s->last_id);
+  // ...
+}
+
+// 消费者组
+int streamCreateCG(stream *s, const char *name, size_t name_len, streamID *id) {
+  streamCG *cg = streamCreateCG(s, name, name_len, id);
+  // 初始化 PEL (Pending Entry List)
+  raxInsert(&(cg->pel), ...);
+  return C_OK;
+}
+
+// XADD mystream * field1 value1 field2 value2
+// XREADGROUP GROUP consumer1 COUNT 10 STREAMS mystream >
+// XACK mystream consumer1 1234-0
+```
+
+**关键参数表**：
+
+| Stream 命令 | 用途 |
+|---|---|
+| `XADD` | 添加消息 |
+| `XREAD` | 读取（不消费） |
+| `XREADGROUP` | 消费者组读取（消费） |
+| `XACK` | 确认消费 |
+| `XPENDING` | 看未确认 |
+| `XCLAIM` | 转移未确认 |
+| `XTRIM` | 修剪（按 ID 或长度） |
+| `XINFO` | 流信息 |
+
+| 消息 ID | 格式 | 例子 |
+|---|---|---|
+| 显式 | `ms-seq` | `1234-0` |
+| 自动 | `*` | 服务器生成 |
+| 部分 | `1234-*` | 服务器选 seq |
+
+**最佳实践列表**：
+- Stream 适合"消息持久化 + 至少一次投递"场景
+- 消费者组：每条消息只被一个 consumer 处理
+- `XADD MAXLEN ~ 1000` 限制流大小——避免内存爆炸
+- `XREAD BLOCK 5000` 阻塞读——节省 CPU
+- 反模式：不用消费者组的 XREAD——消息不会"标记已读"
+
+### 模式 13：Lua 脚本与原子性
+
+**问题场景**：业务需要"多个命令原子执行"——事务（MULTI/EXEC）有局限（不支持复杂逻辑）。Redis 用 Lua 脚本（5+ 起的 EVAL）——脚本在 Redis 单线程内执行，天然原子。
+
+**解决方案代码**：
+
+```c
+// src/eval.c: evalCommand
+void evalCommand(client *c) {
+  // 1. 编译 Lua 脚本
+  // 2. 注入到 Lua runtime（带 redis.call/pcall 等库）
+  // 3. 在 lua_pcall 里跑
+  // 4. 把 redis.call 翻译为 C 函数 call()
+}
+
+// Lua 脚本（库存扣减）
+local stock = tonumber(redis.call('GET', KEYS[1]))
+if stock == nil then
+  return -1
+end
+if stock < tonumber(ARGV[1]) then
+  return 0
+end
+redis.call('DECRBY', KEYS[1], ARGV[1])
+return 1
+// SCRIPT LOAD 上传 → EVALSHA 调用
+```
+
+**关键参数表**：
+
+| Lua API | 用途 |
+|---|---|
+| `redis.call(cmd, ...)` | 执行 Redis 命令（抛错） |
+| `redis.pcall(cmd, ...)` | 执行（捕获错） |
+| `redis.error_reply()` | 抛错 |
+| `redis.status_reply()` | 状态回复 |
+| `redis.log(level, msg)` | 写日志 |
+| `KEYS[1..N]` | 键参数 |
+| `ARGV[1..N]` | 值参数 |
+
+| Lua 限制 | 默认值 |
+|---|---|
+| 脚本超时 | 5s（`lua-time-limit`） |
+| 函数库 | 默认禁用 `os` / `io` / `debug` |
+
+**最佳实践列表**：
+- 复杂业务用 Lua 脚本——避免竞态条件
+- 用 `EVALSHA` 节省带宽——只传 SHA1
+- `redis.replicate_commands()` 标记脚本可复制（旧版兼容）
+- 避免 Lua 死循环——超时会被 SCRIPT KILL
+- 反模式：Lua 内 `redis.call('KEYS', '*')`——影响复制
+
+### 模式 14：GEO 地理空间与 HyperLogLog
+
+**问题场景**：业务需要"附近的用户"（地理查询）、"独立访客数"（基数估算）。Redis 6+ 集成 GEO（基于 SortedSet），2.8+ 有 HyperLogLog。
+
+**解决方案代码**：
+
+```c
+// src/geo.c: geoAdd
+void geoAddCommand(client *c) {
+  // 1. 解析经纬度
+  // 2. 算 geohash（11 位精度）
+  uint64_t hash = geohashEncodeWGS84(longitude, latitude, 26);
+  // 3. 用 52 位 hash 作为 score 存到 SortedSet
+  // ZADD city geo:hash member
+}
+
+// HyperLogLog（HLL）
+struct hllhdr {
+  char magic[4];      // "HYLL"
+  uint8_t encoding;   // 0 = dense, 1 = sparse
+  uint8_t NOTUSED[3];
+  uint8_t registers[]; // 16384 个 6-bit 寄存器
+};
+
+// PFADD hll key1 key2 key3
+// PFCOUNT hll  → 估算基数（错误率 ~0.81%）
+// PFMERGE dst hll1 hll2
+```
+
+**关键参数表**：
+
+| GEO 命令 | 用途 |
+|---|---|
+| `GEOADD` | 添加位置 |
+| `GEODIST` | 两点距离 |
+| `GEOHASH` | geohash 字符串 |
+| `GEOPOS` | 经纬度 |
+| `GEOSEARCH` | 附近查询（6.2+） |
+| `GEORADIUS` | 旧版附近查询（已弃用） |
+
+| HLL 命令 | 用途 |
+|---|---|
+| `PFADD` | 添加元素 |
+| `PFCOUNT` | 估算基数 |
+| `PFMERGE` | 合并 HLL |
+
+**最佳实践列表**：
+- GEO 精度 5-6 位——城市级可用
+- `GEOSEARCH BYBOX WIDTH H HEIGHT H` 范围查询
+- HLL 内存恒定（每个 key 12KB）——百万级 UV 计数
+- HLL 错误率 ~0.81%——可接受"估算"
+- 反模式：精确 UV 用 HLL——需要精确用 Set（O(去重) 内存）
+
+### 模式 15：Pub/Sub 消息发布订阅
+
+**问题场景**：业务需要"广播消息"——一个发布者 N 个订阅者。Redis Pub/Sub 是 fire-and-forget 模式，订阅者断线 = 消息丢失。
+
+**解决方案代码**：
+
+```c
+// src/pubsub.c: pubsubSubscribeChannel
+int pubsubSubscribeChannel(client *c, robj *channel) {
+  // 把 channel 加入 client.pubsub_channels 字典
+  dictAdd(c->pubsub_channels, channel, NULL);
+  // 反向索引：channel → client 列表
+  if (dictAdd(server.pubsub_channels, channel, dict) == DICT_OK) {
+    server.pubsub_channels->type = OBJ_MAP;
+  }
+  return retval;
+}
+
+// 发布
+int pubsubPublishMessage(robj *channel, robj *message) {
+  int receivers = 0;
+  dictEntry *de;
+  dictIterator *di = dictGetSafeIterator(server.pubsub_channels);
+  while ((de = dictNext(di)) != NULL) {
+    robj *c = dictGetKey(de);
+    // 写消息到 client 输出缓冲
+    addReplyPubsubMessage(c, channel, message);
+    receivers++;
+  }
+  return receivers;
 }
 ```
 
-**WHY 这种 beforeSleep / afterSleep 设计**：
-- **beforeSleep**：处理 client reply（攒批发送，减少 syscall）、处理 AOF flush、cluster 心跳
-- **afterSleep**：处理 IO 线程 join 后的回填
-- 这两个 hook 让事件循环不只是"接收-处理-回复"，还能承担后台管理任务
+**关键参数表**：
 
-**反模式警告**：
-- ❌ 业务代码不应该在 beforeSleep 里做重操作（会卡所有客户端）
-- ❌ 不要在主循环里 `sleep()` 或同步 IO
+| Pub/Sub 命令 | 用途 |
+|---|---|
+| `SUBSCRIBE channel` | 订阅 |
+| `UNSUBSCRIBE [channel]` | 退订 |
+| `PUBLISH channel msg` | 发布 |
+| `PSUBSCRIBE pattern*` | 模式订阅 |
+| `PUBSUB CHANNELS` | 当前活跃 channel |
+| `PUBSUB NUMSUB` | 订阅者数量 |
 
-### 5.3 设计模式（Redis 用了哪些）
-
-```mermaid
-classDiagram
-    class redisObject {
-        +unsigned type:4
-        +unsigned encoding:4
-        +unsigned lru:24
-        +int refcount
-        +void *ptr
-    }
-    class dict {
-        +dictType *type
-        +dictht ht[2]
-        +long rehashidx
-    }
-    class adlist {
-        +listNode *head
-        +listNode *tail
-        +void *(*dup)
-        +void (*free)
-        +int (*match)
-    }
-    class sds {
-        +int len
-        +int free
-        +char buf[]
-    }
-    redisObject --> dict : string
-    redisObject --> adlist : list
-    redisObject --> sds : backing
-```
-
-1. **统一对象抽象（redisObject）**：所有 key/value 都是 `redisObject`，内部用 `type+encoding+ptr` 灵活切换实现（如 string 可能是 int / embstr / raw 三种编码）。
-2. **策略模式（dictType）**：hash 函数、key 比较函数都通过函数指针注入，让 dict 能装 string、hash、zset 等多种 key。
-3. **命令表驱动（redisCommandTable）**：所有命令注册到一张表，dispatch 走查表，避免 if-else 链。
-
-### 5.4 反模式（Redis 也有坑）
-
-1. **`redisCommandTable` 用大数组** + 线性查找：~200 个命令无所谓，但加新命令必须二分/哈希，扩展性差。
-2. **`server.c` 巨无霸**：6500 行，全局变量 100+。历史包袱，新人改个 bug 容易引入新 bug。
-3. **`copy-on-write` 假设**（fork 后子进程共享父页）：大 key 修改时实际是回写父进程页，触发 `COW` → 内存翻倍。
-
-### 5.5 独特看点
-
-**`OBJECT ENCODING key`** 命令可以查看某个 key 的内部编码：
-- `set num 1` → `int` 编码（直接存 long，省内存）
-- `set s "hello"` → `embstr` 编码（len≤44 时，sds 嵌入 redisObject 一次分配）
-- `set s "a-very-long-string..."` → `raw` 编码（普通 sds）
-- 同样的 `String`，编码会自动切换，这是 Redis "内存极致优化"的体现。
+**最佳实践列表**：
+- Pub/Sub 不持久化——断线即失
+- 高吞吐用 sharded pub/sub（7.0+）——分片到节点
+- 简单聊天 / 通知用 Pub/Sub；关键消息用 Stream
+- 客户端心跳保持连接——`PING` 间隔 < TCP keepalive
+- 反模式：百万订阅者——消息扇出爆炸
 
 ---
 
-## 6. 运行机制（Bring It Up）
+## 四、内存管理与生产实践
+
+### 模式 16：内存淘汰策略（maxmemory-policy）
+
+**问题场景**：Redis 内存满时怎么办？8 种淘汰策略，从"不淘汰（OOM 报错）"到"近似 LFU 淘汰"。
+
+**解决方案代码**：
+
+```c
+// src/evict.c: performEvictions
+int performEvictions(void) {
+  // 1. 内存未超限，不淘汰
+  if (server.maxmemory_policy == MAXMEMORY_NO_EVICTION || mem_used < server.maxmemory) return 0;
+  // 2. 采样一批 key
+  for (i = 0; i < server.maxmemory_samples; i++) {
+    if (server.maxmemory_policy == MAXMEMORY_ALLKEYS_LRU || ...) {
+      // 从 dict 中随机取 key
+      de = dictGetRandomKey(db->dict);
+      // 计算 idle 时间
+      idle = estimateObjectIdleTime(o);
+    }
+    // 放入 evict pool（最差的 N 个 key）
+    if (idle > pool[poolsize - 1].idle) {
+      // ... 排序
+    }
+  }
+  // 3. 淘汰 pool 中最差 key
+  for (i = 0; i < poolsize; i++) {
+    if (pool[i].keyobj) dbDelete(db, pool[i].keyobj);
+  }
+  return keys_freed;
+}
+```
+
+**关键参数表**：
+
+| 策略 | 说明 | 适用 |
+|---|---|---|
+| `noeviction` | 写命令返回 OOM | 默认（不丢数据） |
+| `allkeys-lru` | 所有 key 中 LRU 淘汰 | 缓存场景 |
+| `volatile-lru` | 过期 key 中 LRU 淘汰 | 混合 |
+| `allkeys-lfu` | LFU 淘汰（4.0+） | 热点数据保护 |
+| `volatile-lfu` | 过期 key 中 LFU 淘汰 | 混合 |
+| `allkeys-random` | 随机淘汰 | 通用 |
+| `volatile-random` | 过期 key 随机 | 通用 |
+| `volatile-ttl` | 优先淘汰 TTL 最短 | 临时数据 |
+
+**最佳实践列表**：
+- 纯缓存：`maxmemory-policy allkeys-lru`
+- 数据 + 缓存混合：`volatile-lru`（只淘汰过期）
+- LFU 比 LRU 抗"突发流量"——热点保留
+- `maxmemory-samples 10` 采样精度——越大越准但越慢
+- 监控 `used_memory` / `used_memory_peak` / `mem_fragmentation_ratio`
+
+### 模式 17：BigKey 检测与拆分
+
+**问题场景**：单 key 太大（String > 1MB / Hash > 10w fields）会阻塞 Redis（DEL 同步、序列化慢）。需要主动发现 + 拆分。
+
+**解决方案代码**：
 
 ```bash
-# 1. 编译
-cd /path/to/redis
-make -j$(nproc)
+# 1. 找大 key（redis-cli --bigkeys）
+redis-cli -h host -p port --bigkeys
+# 输出：-------- summary -------
+# Biggest string found '"foo"' has 1000000 bytes
+# Biggest list found '"bar"' has 100000 items
 
-# 2. 启动（默认端口 6379）
-./src/redis-server
+# 2. 用 MEMORY USAGE 看 key 字节
+redis-cli MEMORY USAGE mykey
 
-# 3. 测试连接
-./src/redis-cli ping   # → PONG
-./src/redis-cli set foo bar
-./src/redis-cli get foo   # → "bar"
+# 3. 用 DEBUG OBJECT 看编码
+redis-cli DEBUG OBJECT mykey
 
-# 4. 看运行信息
-./src/redis-cli info server
-./src/redis-cli info memory
-./src/redis-cli info stats
-
-# 5. RDB/AOF 触发
-./src/redis-cli save         # 同步 RDB（阻塞）
-./src/redis-cli bgsave       # 后台 RDB（fork 子进程）
-./src/redis-cli bgrewriteaof # 后台 AOF 重写
-
-# 6. 集群模式（3 主 3 从）
-./utils/create-cluster start
-./utils/create-cluster create
+# 4. 用 RDB 分析（rdb-tools）
+rdb -c memory dump.rdb | sort -k4 -nr | head -20
 ```
 
-**Smoke test**：
-```bash
-./runtest                          # Tcl 测试套件（27 个）
-./runtest --single unit/type/string
-./runtest --single integration/rdb
+**关键参数表**：
+
+| 数据类型 | BigKey 阈值 |
+|---|---|
+| String | > 1MB |
+| List | > 10w 元素 |
+| Hash | > 10w fields |
+| Set | > 10w members |
+| SortedSet | > 10w elements |
+| Stream | > 10w entries |
+
+**最佳实践列表**：
+- 定期跑 `redis-cli --bigkeys`——发现大 key
+- 拆分大 key：Hash 拆成多个，按 user_id % N 分桶
+- DEL 大 key 用 `UNLINK`（异步）——避免阻塞
+- 反模式：HGETALL 大 hash——可能阻塞数百 ms
+- 监控 `slowlog get`——大 key 操作会进入慢查询
+
+### 模式 18：慢查询日志（slowlog）
+
+**问题场景**：Redis 命令执行超过阈值（如 10ms）需要记录到慢查询日志——类似 MySQL slow log。
+
+**解决方案代码**：
+
+```c
+// src/debug.c: slowlogPushEntry
+void slowlogPushEntryIfNeeded(client *c, robj **argv, int argc, uint64_t duration) {
+  if (server.slowlog_log_slower_than == 0) return;  // 关闭
+  if (duration < server.slowlog_log_slower_than) return;  // 未超阈值
+  // 构造慢查询条目
+  slowlogEntry *se = zmalloc(sizeof(*se));
+  se->id = server.slowlog_entry_id++;
+  se->timestamp = commandTimeSnapshot();
+  se->duration = duration;
+  se->argv = argv;
+  se->argc = argc;
+  // 追加到 slowlog
+  listAddNodeHead(server.slowlog, se);
+  // 限制长度
+  while (listLength(server.slowlog) > server.slowlog_max_len)
+    listDelNode(server.slowlog, listLast(server.slowlog));
+}
 ```
 
----
+**关键参数表**：
 
-## 7. 演进历史（Time Travel）
+| 配置 | 默认值 |
+|---|---|
+| `slowlog-log-slower-than` | 10000（微秒，10ms） |
+| `slowlog-max-len` | 128（条数） |
 
-```mermaid
-gantt
-    title Redis 关键版本演进
-    dateFormat YYYY
-    section 数据结构
-    List+Set            :done, 2009, 1y
-    Hash                :done, 2010, 1y
-    Sorted Set (跳表)   :done, 2011, 1y
-    Stream              :done, 2017, 2y
-    section 持久化
-    RDB                 :done, 2010, 1y
-    AOF                 :done, 2012, 1y
-    混合 RDB+AOF        :done, 2020, 1y
-    section 高可用
-    主从复制            :done, 2010, 1y
-    Sentinel            :done, 2012, 2y
-    Cluster (16384槽)   :done, 2015, 3y
-    section 性能
-    单线程              :done, 2009, 10y
-    Lazy free           :done, 2017, 1y
-    多线程 IO (6+)      :done, 2020, 1y
-    section 安全
-    AUTH                :done, 2011, 1y
-    ACL                 :done, 2020, 1y
-    TLS                 :done, 2016, 1y
+| 命令 | 用途 |
+|---|---|
+| `SLOWLOG GET [n]` | 取最近 n 条 |
+| `SLOWLOG LEN` | 总条数 |
+| `SLOWLOG RESET` | 清空 |
+
+**最佳实践列表**：
+- 生产设 `slowlog-log-slower-than 5000`（5ms）——记录更细
+- `SLOWLOG GET 50` 定期看——发现慢命令
+- 常见慢命令：KEYS *（O(n)）、HGETALL（大 hash）、SMEMBERS（大 set）
+- 用 `monitor` 短时间抓包——诊断"突发慢"
+- 反模式：`MONITOR` 长时间开启——性能暴跌 10x
+
+### 模式 19：Pipeline 与事务
+
+**问题场景**：客户端发 100 个 GET 命令——100 次 RTT。Pipeline 把多条命令打包发送，服务器批量处理。同时"原子性"需要事务（MULTI/EXEC）。
+
+**解决方案代码**：
+
+```c
+// src/networking.c: processCommand
+// MULTI/EXEC 事务
+int processCommand(client *c) {
+  // 1. 普通命令入队
+  if (c->flags & CLIENT_MULTI) {
+    // 事务中，命令入队
+    queueMultiCommand(c);
+    addReply(c, shared.queued);
+  }
+  // 2. EXEC 时批量执行
+  if (strcasecmp(c->argv[0]->ptr, "exec") == 0) {
+    execCommand(c);
+    // 遍历 queueMultiCommand 列表，依次执行
+  }
+}
+
+// 客户端 pipeline
+auto pipe = redis.pipelined();
+pipe.set("a", 1);
+pipe.set("b", 2);
+pipe.get("a");
+pipe.get("b");
+pipe.execute();  // 一次 RTT 发送 4 命令
 ```
 
-**关键 commit / 事件**：
-- 2009-03 antirez 写出第一行代码
-- 2012-12 V2.6 发布，加入 Lua 脚本（EVAL）
-- 2015-04 V3.0 GA，Cluster 16384 槽
-- 2017-07 V4.0 模块化（Redis Module API）
-- 2020-05 V6.0 多线程 IO、ACL、客户端缓存
-- 2021 商业公司改名 Redis Inc.，部分模块转双许可
-- 2024 V7.4 Redis Functions (替代 Lua scripts)
+**关键参数表**：
 
----
+| 特性 | Pipeline | MULTI/EXEC | Lua 脚本 |
+|---|---|---|---|
+| 原子性 | ❌（穿插其他命令） | ✅（server 端串行） | ✅（server 端原子） |
+| RTT 优化 | ✅ | ✅ | ✅ |
+| 复杂逻辑 | ❌ | ❌（if/else 难表达） | ✅ |
+| 失败回滚 | ❌ | ❌（EXEC 不全回滚） | ✅（手动） |
+| Cluster 限制 | 单槽 | 单槽 | 单槽 |
 
-## 8. 质量保障（How It Doesn't Break）
+**最佳实践列表**：
+- 批量写用 Pipeline——5x 性能提升
+- 原子操作 + 简单逻辑：MULTI/EXEC
+- 原子操作 + 复杂逻辑：Lua 脚本
+- Cluster 下用 hash tag 强制同槽
+- 反模式：Pipeline 1000+ 命令——单次响应太大
 
-```mermaid
-flowchart LR
-    Code[代码提交] --> PR[Pull Request]
-    PR --> CI[GitHub Actions]
-    CI --> Tcl[27 个 .t 测试]
-    CI --> Valgrind[内存泄漏检测]
-    CI --> ASan[AddressSanitizer]
-    CI --> UBSan[UndefinedBehaviorSanitizer]
-    CI --> Stress[stress 测试 1M key]
-    CI --> Matrix[OS 矩阵<br/>Linux/macOS/FreeBSD]
-    PR -.->|fails| Block[阻塞合并]
-    CI -->|pass| Merge[合并到主干]
-    Merge --> Nightly[每夜构建]
-    Nightly --> Perf[性能基准对比]
-    Perf -->|regression| Alert[告警维护者]
+### 模式 20：监控与客户端库
+
+**问题场景**：线上 Redis 出问题怎么快速定位？需要：(1) 实时指标（QPS / 内存 / 连接数）；(2) 客户端库支持集群 / sentinel / pipeline；(3) 性能基线。
+
+**解决方案代码**：
+
+```c
+// src/server.c: serverCron —— 内部统计
+void serverCron(void) {
+  // 1. 更新 stats
+  run_with_period(1000) {
+    trackOperationsPerSecond();  // 算 instaneous_ops_per_sec
+    trackInstantaneousInputOutputMetrics();
+  }
+  // 2. 客户端表清理
+  // 3. AOF / RDB / 复制 cron
+  // 4. Cluster gossip
+}
+
+// INFO 命令
+void infoCommand(client *c) {
+  // 输出 200+ 字段
+  // INFO memory / replication / stats / cpu / cluster / keyspace
+}
 ```
 
-**4 道防线**：
-1. **单元 + 集成测试**（Tcl，27 个套件 ~10000 个断言）
-2. **内存安全**：valgrind / ASan / UBSan 在 PR 阶段必跑
-3. **stress 测试**：模拟 100w key + 高并发，发现内存泄漏
-4. **性能基准**：与上版本对比，QPS 退化 > 5% 必须解释
+**关键参数表**：
 
----
+| 指标 | 用途 |
+|---|---|
+| `used_memory` | 内存使用 |
+| `used_memory_rss` | 实际 RSS |
+| `mem_fragmentation_ratio` | 内存碎片率 |
+| `connected_clients` | 当前连接 |
+| `instantaneous_ops_per_sec` | 实时 QPS |
+| `keyspace_hits` / `keyspace_misses` | 命中率 |
+| `total_commands_processed` | 总命令数 |
+| `rejected_connections` | 拒绝连接数 |
 
-## 9. 生态依赖（Map of the World）
-
-```mermaid
-flowchart TD
-    Redis[Redis Core]
-    Redis --> Jemalloc[jemalloc 内存分配器]
-    Redis --> Lua[Lua 5.1 脚本引擎]
-    Redis --> HdrHist[hdr_histogram 延迟统计]
-    
-    Redis --> ClientEcosystem[客户端 SDK]
-    ClientEcosystem --> Java[jedis / lettuce / Redisson]
-    ClientEcosystem --> Python[redis-py / aioredis]
-    ClientEcosystem --> Go[go-redis / redigo]
-    ClientEcosystem --> Node[ioredis / node-redis]
-    
-    Redis --> Modules[Redis Modules]
-    Modules --> RediSearch[全文搜索]
-    Modules --> RedisJSON[JSON 类型]
-    Modules --> RedisGraph[图数据库]
-    Modules --> RedisTimeSeries[时序]
-    Modules --> RedisBloom[布隆过滤器]
-    
-    Redis --> Tools[工具]
-    Tools --> RedisInsight[官方 GUI]
-    Tools --> RedisCLI[命令行]
-    Tools --> RDBTools[第三方管理]
-    
-    Redis --> Compete[同类]
-    Compete --> Memcached[Memcached]
-    Compete --> KeyDB[KeyDB fork]
-    Compete --> Dragonfly[Dragonfly]
-    Compete --> Aerospike
-```
-
-**合规检查清单**：
-- ✅ BSD-3-Clause（修改版），商用 OK
-- ⚠️ Redis 7.4+ 部分模块（RedisJSON, RediSearch）改 SSPL 和 AGPLv3，**企业自部署需评估**
-- ✅ jemalloc 兼容 GPL 链接豁免
-- ✅ Lua 5.1 MIT
-- ✅ 无外部网络请求
-
----
-
-## 10. 生产实践（Battle-Tested）
-
-| 维度 | 现状 | 建议 |
+| 客户端库 | 语言 | 特点 |
 |---|---|---|
-| 配置热更新 | ✅ `CONFIG SET` 运行时改 | 但小心 `maxmemory` 调高触发 OOM |
-| 优雅停服 | ✅ `SHUTDOWN` 命令 + 信号 | SIGTERM 触发持久化后退出 |
-| 限流 | ⚠️ 内置 `maxclients`，但无限流 | 需前置 proxy (twemproxy/Codis) |
-| 链路追踪 | ❌ 无 | 需在客户端 SDK 注入 trace_id |
-| 健康检查 | ✅ `redis-cli ping` / 业务 PING-NODE | K8s liveness/readiness |
-| 结构化日志 | ⚠️ 仅文本日志 | 建议 ELK/Loki 收集 + 解析 |
+| `redis-py` | Python | 官方 |
+| `ioredis` | Node.js | 集群 + Sentinel |
+| `lettuce` | Java | 响应式 |
+| `go-redis` | Go | 集群 + Sentinel |
+| `redis-rs` | Rust | 异步 tokio |
 
-**生产必做清单**：
-1. 开启 `appendonly yes` + `appendfsync everysec`（防丢 1s 数据）
-2. 设置 `maxmemory` + `maxmemory-policy allkeys-lru`（防 OOM）
-3. 启用 `protected-mode yes`（防外网访问）
-4. 客户端开启 `tcp-keepalive 60`（防连接僵死）
-5. 大 key 监控：`redis-cli --bigkeys`
-6. 慢日志：`slowlog-log-slower-than 10000`
-
----
-
-## 11. 社区文化（People & Process）
-
-- **治理**：原 antirez 独裁 → 2020 后 Redis Inc. 接管，重大决策走 RFC 流程（公开 GitHub repo `redis/redis-doc`）
-- **维护者**：核心 ~10 人（Matias N. Goldberg, Oran Agra, Itamar Haber, Viktor Szepe 等）
-- **RFC 流程**：大特性必须先 RFC 讨论
-- **沟通**：GitHub Issues、Discourse 论坛、年度 RedisConf
-- **议题活跃**：~1000 open issues，~150 PR/月
-- **企业贡献者**：AWS、Alibaba、Tencent、ByteDance 都有专门团队贡献 patches
-
----
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **渐进式 rehash**（dict.c）：大数据量变更不阻塞主线程，写在你自己的 KV 库、LRU 缓存里。
-2. **redisObject 统一对象 + 多 encoding**：节省内存、提升命中率。任何"一个 key 多种存储"场景适用。
-3. **beforeSleep/afterSleep 钩子**：让事件循环承载后台管理任务（持久化、cluster 心跳），不用额外线程。
-
-### 12.2 必避 3 坑
-
-1. ❌ **全量 rehash**：100w 元素 rehash 一次就要 10ms+ 阻塞；用渐进式。
-2. ❌ **`server.c` 单文件 6500 行**：分层是工程化的代价，但 6500 行不可维护。从 1000 行开始分模块。
-3. ❌ **同步 IO**：`fsync()`、`save()` 等要 fork 后台或异步，否则一个慢盘卡全服务。
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7 天复刻简化版 Redis（K-V only）
-    dateFormat YYYY-MM-DD
-    section 基础
-    Day1 event loop + RESP 解析       :a1, 2026-06-01, 1d
-    Day2 dict + 渐进式 rehash          :a2, after a1, 1d
-    section 命令
-    Day3 GET/SET/DEL/EXISTS           :a3, after a2, 1d
-    Day4 INCR/EXPIRE (lazy)           :a4, after a3, 1d
-    section 进阶
-    Day5 RDB 快照                     :a5, after a4, 1d
-    Day6 AOF 增量                     :a6, after a5, 1d
-    Day7 主从复制                     :a7, after a6, 1d
-```
-
-### 12.4 打分卡（满分 10）
-
-| 维度 | 分数 | 评语 |
-|---|---|---|
-| 架构清晰度 | 9 | 事件循环 + 数据结构分层干净 |
-| 代码可读性 | 7 | server.c 巨无霸，C 风格注释稀薄 |
-| 文档完整度 | 9 | redis.io 文档业界顶尖 |
-| 测试覆盖 | 9 | Tcl 测试 + valgrind 严格 |
-| 性能 | 10 | 10w+ QPS，业界标杆 |
-| 社区活跃 | 8 | Issue 响应快，但 antirez 离开后 BDFL 削弱 |
-| 商业可用 | 7 | 7.4+ 模块许可证变化需评估 |
-| **综合** | **8.4** | KV 之王，学习 C 系统编程必读 |
-
----
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：单线程 + 极致内存优化 + 数据结构创新，三者结合成就 KV 之王。
-
-**3 核心洞察**：
-1. **不要用 B+ 树当内存数据结构**：纯内存用 hash O(1) 完爆
-2. **重操作 = 渐进式**：RDB/AOF/reshard 都"分摊"到每次操作
-3. **简单协议 RESP > 二进制协议**：易实现、易调试、跨语言友好
-
-**5 段必读代码**：
-1. `src/dict.c` 全文件（心脏）
-2. `src/object.c` 全文件（统一对象）
-3. `src/server.c` 的 `aeMain()` + `processCommand()`（事件循环 + 命令分发）
-4. `src/networking.c` 的 `readQueryFromClient()` + `addReply*`（协议 I/O）
-5. `src/t_zset.c` 的 `zslInsert()` / `zslDelete()`（跳表，看 skiplist 真谛）
-
-**1 反模式**：单文件 6500 行全局变量 100+（`server.c`）—— 维护灾难。
-
-**1 可复用模式**：**渐进式 rehash** —— 任何"大数据量结构变更"场景的标配。
-
-**3 立刻能用**：
-1. 在你项目的内存缓存里用 `dict` 的拉链法 + 渐进 rehash
-2. 把 "BigKey 删除 / 后台统计 / 持久化" 改造成 `beforeSleep` 钩子
-3. 用 `redisObject type+encoding` 模式做"一个 key 多种存储"
-
----
-
-## 14. 项目特点速查
-
-**独特看点**：
-- 单线程做到 10w+ QPS
-- 数据结构最丰富（KV 库里）
-- 集群协议最简洁（gossip + 16384 槽）
-- 模块系统（Redis Modules）开放生态
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title KV 内存数据库对比
-    x-axis 慢 --> 快
-    y-axis 弱 --> 强
-    quadrant-1 性能+功能双优
-    quadrant-2 功能强性能弱
-    quadrant-3 都弱
-    quadrant-4 性能强功能弱
-    "Redis": [0.95, 0.95]
-    "Memcached": [0.9, 0.4]
-    "KeyDB": [0.98, 0.7]
-    "Dragonfly": [1.0, 0.6]
-    "Aerospike": [0.85, 0.85]
-    "etcd": [0.7, 0.6]
-```
-
-**横向对比**：
-| 项目 | 语言 | 线程 | 数据结构 | 持久化 | 集群 | 适用场景 |
-|---|---|---|---|---|---|---|
-| **Redis** | C | 单/IO多线程 | 10+ | RDB/AOF | Cluster (16384槽) | 通用缓存/排行榜/Pub-Sub |
-| Memcached | C | 多线程 | KV | 无 | 一致性 hash | 纯缓存 |
-| KeyDB | C++ | 多线程 | 兼容 Redis | 同 Redis | 同 Redis | Redis 替代，性能高 |
-| Dragonfly | C++ | 多线程 | 兼容 Redis | 同 Redis | 同 Redis | Redis 替代，更高密度 |
-| etcd | Go | 多 | KV + watch | Raft WAL | Raft | 配置中心 / 服务发现 |
+**最佳实践列表**：
+- 监控：`connected_clients` < `maxclients`（默认 10000）
+- 监控：`keyspace_hits / (keyspace_hits + keyspace_misses) > 0.9`
+- 监控：`mem_fragmentation_ratio` 在 1.0-1.5 正常
+- 客户端连接池：避免"短连接风暴"
+- 反模式：监控只看不报警——配置 AlertManager / PagerDuty
 
 ---
 
 ## 附：仓库元信息
 
-- 路径：`G:\实战案例\GitHub顶尖项目\redis\`
-- 大小：~15MB（无子模块）
-- 解析时间：2026-06-01
+- **路径**：`G:\实战案例\GitHub顶尖项目\redis\`
+- **大小**：约 50MB
+- **总文件**：~200（src 100+, tests 27, utils 10）
+- **核心子系统**：`dict.c` / `object.c` / `server.c`（aeMain） / `networking.c`（RESP） / `aof.c` / `rdb.c` / `cluster.c` / `replication.c`
+- **锁定 commit**：v7.4.1
+- **学习入口**：先读 `dict.c`（哈希表）→ `object.c`（统一对象）→ `server.c` 的 `aeMain`（事件循环）→ `networking.c`（RESP 协议）→ `aof.c` / `rdb.c`（持久化）→ `cluster.c`（集群协议）
 
 ## 一句话总结
 
-**Redis = 内存数据结构服务器 + 极致单线程优化 + 渐进式哲学**，学 KV 缓存必看，学 C 系统编程必看，学"重操作如何分摊"必看。
+Redis 用"单线程事件循环 + 内存数据结构 + 8 种淘汰策略"定义了 in-memory data structure server 的工业标准。核心洞察：单线程 = 内存访问无锁 = 充分利用 CPU cache，IO 多路复用让单线程处理 10w+ QPS；dict 是所有数据结构的底层，渐进式 rehash 让单次操作 O(1)；RESP 协议简单到 10 行可实现 parser，配合 Pipeline 减少 RTT；AOF + RDB + Replication + Sentinel + Cluster 形成完整的"持久化 + 高可用 + 水平扩展"方案，让 Redis 从 KV 缓存进化为完整的内存数据平台。

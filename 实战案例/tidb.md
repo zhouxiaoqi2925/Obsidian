@@ -1,773 +1,333 @@
-# tidb
+# tidb - MySQL 兼容分布式 HTAP 数据库的三层分离与 Raft 共识典范
 
-> TiDB 是 MySQL 兼容的分布式 HTAP 数据库：Placement Driver（PD 调度）+ TiKV（KV 存储）+ TiDB（SQL 层）三层分离 + Raft 副本组 + MVCC。本篇把 38k+ star 的分布式数据库设计哲学拆成 20 个 Pattern，涵盖 4 大主题：核心机制、架构设计、性能优化、工程实践。
+**GitHub**: pingcap/tidb
+**Star**: ~37k
+**语言**: Go（含 Rust TiKV 部分）
+**主题**: 分布式数据库、HTAP、Raft 共识、SQL 优化器
+**适用场景**: MySQL 兼容场景、HTAP 混合负载、水平扩展 OLTP
 
-## 核心机制
+## 第一段：基础范式
 
 ### 模式 1：PD / TiKV / TiDB 三层分离架构
 
-**问题场景**：传统数据库把存储、计算、调度耦合在单进程。扩展时只能 scale-up（升级硬件），无法 scale-out（加机器）。云原生时代需要按层独立扩缩容。
+**问题场景**：传统数据库把存储、计算、调度耦合在单进程，扩展只能 scale-up（升级硬件），无法 scale-out（加机器）。云原生时代需要按层独立扩缩容。
 
-**解决方案**：
-
-```
-┌─────────────────────────────────────┐
-│ TiDB Server (SQL 层)               │  无状态，可任意水平扩展
-│ - 解析 SQL                         │
-│ - 优化器（成本估算 + 计划生成）     │
-│ - 执行器（点查 / 批处理）           │
-└──────────────┬──────────────────────┘
-               │ gRPC
-┌──────────────▼──────────────────────┐
-│ Placement Driver (PD 调度层)        │  全局调度 + TSO 时间戳
-│ - Region 调度                      │
-│ - 负载均衡                          │
-│ - 全局单调递增时间戳                │
-└──────────────┬──────────────────────┘
-               │ gRPC
-┌──────────────▼──────────────────────┐
-│ TiKV (分布式 KV 存储)              │  有状态，Raft 副本组
-│ - RocksDB (LSM 树)                 │
-│ - MVCC                              │
-│ - Raft 共识                         │
-└─────────────────────────────────────┘
-```
+**解决方案**：TiDB 拆分为三层：TiDB Server（无状态 SQL 层，解析/优化/执行）、TiKV（分布式 KV 存储，Raft 副本组）、Placement Driver PD（集群元数据 + 调度器）。各层独立扩缩容：SQL 慢加 TiDB，容量不够加 TiKV，调度热点加 PD。
 
 **关键参数**：
+- TiDB Server 无状态，水平扩展
+- TiKV 存数据，Region 分片（默认 96MB）
+- PD 持全局元数据（Region 位置、TSO 时间戳）
+- TSO 单点授时，PD Leader 颁发
+- Raft 副本组默认 3 副本
 
-| 组件 | 状态 | 副本数 | 扩展性 |
-|------|------|--------|--------|
-| TiDB Server | 无状态 | N | 水平扩展（加机器） |
-| PD | 有状态（单 leader + 2 follower） | 3 | 垂直 + 水平 |
-| TiKV | 有状态（Region 分片） | 3 副本 | 水平扩展（加节点） |
+**最佳实践**：TiDB 层无状态可放 K8s；TiKV 必须 SSD + 独享磁盘；PD 至少 3 节点高可用；跨 AZ 部署用 5 副本；TiDB Dashboard 提供 SQL 洞察。
 
-**最佳实践**：
+### 模式 2：Raft 一致性协议与副本组
 
-- ✅ 计算/存储/调度三层分离——可独立扩缩容
-- ✅ SQL 层无状态——可任意重启、滚动升级
-- ✅ 调度层独立——Region 调度与 SQL 执行解耦
-- ✅ 存储层有状态——用 Raft 保证副本一致性
-- ❌ 避免把 TSO 时间戳塞进 TiDB——会破坏全局单调性
+**问题场景**：分布式存储需要多副本保证可用性，但多副本写入需要强一致——Paxos 难实现，Raft 简化了协议设计。
 
-### 模式 2：MySQL 协议兼容降低迁移门槛
-
-**问题场景**：MySQL 是 OLTP 之王，存量应用数量巨大。TiDB 要进入市场，必须让"MySQL 客户端 + 驱动 + ORM"全部无缝对接，自己造协议等于自绝于生态。
-
-**解决方案**：
-
-```go
-// tidb 启动 MySQL 监听
-listener, _ := net.Listen("tcp", ":4000")
-for {
-    conn, _ := listener.Accept()
-    go session.newConn(conn).Run()  // MySQL handshake
-}
-
-// 协议解析
-handshakeV10 := []byte{
-    0x0a,                  // protocol version
-    '5', '7', '.', '2', 0, // server version
-    ...
-}
-```
+**解决方案**：TiKV 用 Raft 协议实现副本同步。每个 Region（数据分片）是一个 Raft Group，3-5 副本通过 Raft log 复制。Leader 处理写入，Follower 复制日志，多数派提交后返回客户端成功。
 
 **关键参数**：
+- Region 默认 96MB，分裂/合并自动调度
+- Raft Group 3 副本（默认）/ 5 副本（高可用）
+- Leader election 超时 1-2s
+- Snapshot 增量传输
+- Learner 节点（副本冷数据）
 
-| 字段 | 说明 |
-|------|------|
-| 默认端口 | 4000 |
-| 协议版本 | MySQL 5.7 / 8.0 |
-| 认证 | mysql_native_password / caching_sha2_password |
-| 字符集 | utf8mb4 / latin1 / binary |
+**最佳实践**：单 Raft Group 副本数不要超过 7（性能下降）；Region 大小 96MB 平衡分裂频率与心跳开销；用 `pd-ctl` 手动触发 Region 调度；Learner 用于备份节点。
 
-**最佳实践**：
+### 模式 3：MVCC 多版本并发控制
 
-- ✅ 协议级兼容——MySQL CLI / JDBC / MyBatis / GORM 全部直连
-- ✅ 慢查询日志、EXPLAIN、SHOW PROCESSLIST 全部对齐 MySQL
-- ✅ 用 `pt-online-schema-change` / `gh-ost` 测 DDL 兼容性
-- ✅ 维护"MySQL 不兼容清单"——主动告知用户差异
-- ❌ 避免在协议层"加强"——破坏兼容性
+**问题场景**：传统 2PL 锁并发度低，读写互斥；快照隔离需要事务读一致视图。
 
-### 模式 3：全局单调递增 TSO（Timestamp Oracle）保证事务顺序
-
-**问题场景**：分布式事务需要全局一致的时间戳，用于 MVCC 版本号、事务隔离、乐观锁。单机 `time.Now()` 不可行——多机时钟漂移，事务顺序错乱。
-
-**解决方案**：
-
-```go
-// PD 分配 TSO
-func (t *tsoOracle) getTimestamp(ctx context.Context, count uint64) (uint64, error) {
-    // PD leader 持有逻辑时钟
-    // 物理部分：当前毫秒时间戳（47 bit）
-    // 逻辑部分：同毫秒内的自增序号（18 bit）
-    return t.alloc(timestampOracle.physicalTime(), count)
-}
-
-// 客户端用法
-ts, _ := pdClient.GetTS(ctx)
-txn.SetStartTS(ts)  // 事务开始时间戳
-```
+**解决方案**：TiKV 实现 MVCC：每个 Key 保留多个版本（`(key, ts) -> value`），事务读取快照版本（start_ts），写入新版本（commit_ts）。GC 在后台清理旧版本（默认保留 10 分钟）。
 
 **关键参数**：
+- TSO 颁发全局单调递增时间戳
+- `(user_key, start_ts) -> value` 编码
+- `default`/`write`/`lock` 三列族
+- GC 周期 10 分钟
+- Async Commit 1PC 优化
 
-| 字段 | 位 | 含义 |
-|------|----|------|
-| physical | 47 bit | 毫秒时间戳（约 2^47 ms = 4.4 亿年） |
-| logical | 18 bit | 同毫秒内的自增序号（最大 26 万/毫秒） |
+**最佳实践**：长事务会阻塞 GC，监控 `tidb_gc_run_interval`；用 `SET GLOBAL tidb_gc_life_time = '30m'` 调整保留期；快照读用 `START TRANSACTION READ ONLY AS OF TIMESTAMP`；Async Commit 降低延迟 30-50%。
 
-**最佳实践**：
+### 模式 4：Percolator 分布式事务模型
 
-- ✅ TSO 由单点 PD leader 分配——避免分布式协调
-- ✅ 物理 + 逻辑双部分——支持高并发（毫秒内 26 万次）
-- ✅ 用 64 位整数——便于传输与比较
-- ✅ 客户端缓存 TSO 批量——减少 RPC 次数
-- ❌ 避免依赖 NTP 校时——物理时钟不要求绝对准确，只要求单调
+**问题场景**：分布式 KV 上需要 ACID 事务，但跨 Region 写入没有原生事务支持——需要 2PC 但要解决协调者崩溃问题。
 
-### 模式 4：MVCC 多版本并发控制
-
-**问题场景**：传统 2PL 锁并发度低，读写互斥。MVCC 让读写不冲突：读历史版本、写新版本，最后合并。SnapShot Isolation 级别下读永远不被写阻塞。
-
-**解决方案**：
-
-```go
-// TiKV 中 key 的编码
-// key = table_prefix{table_id}_record_prefix{row_id} -> value
-// version = start_ts (uint64)
-
-// 写入
-txn := store.Begin()
-txn.Set([]byte("user:1"), []byte(`{"name":"alice"}`))
-txn.Commit(ctx)  // commit_ts = PD.GetTS()
-
-// 读取（指定 snapshot ts）
-snapshot := store.GetSnapshot(commit_ts)
-val, _ := snapshot.Get(ctx, []byte("user:1"))  // 读 <= commit_ts 的版本
-```
+**解决方案**：TiKV 用 Percolator 模型实现分布式事务：Primary Key + PreWrite（CF write + CF lock）+ Commit（CF write + 解锁）。协调者（TiDB）记录事务状态，崩溃后通过 TTL + Primary 清理。
 
 **关键参数**：
+- PreWrite 阶段：写入数据 + 加锁
+- Commit 阶段：原子写 commit ts
+- Primary Key 状态决定事务结果
+- TTL 默认 60s（lock resolver 用）
+- Async Commit 单阶段提交
 
-| 版本字段 | 说明 |
-|---------|------|
-| start_ts | 事务开始时间戳（唯一 ID） |
-| commit_ts | 事务提交时间戳 |
-| key | 数据键 |
-| value | 数据值 |
+**最佳实践**：避免大事务（>1 万行），拆小事务；用 `tidb_disable_txn_auto_retry = OFF` 启用自动重试；监控 `Lock Resolve OPS`；Async Commit 适合短事务。
 
-**最佳实践**：
+### 模式 5：SQL 优化器（Cost-Based Optimization）
 
-- ✅ 写入路径带 start_ts / commit_ts——双时间戳
-- ✅ 读 snapshot 不阻塞写——并发度高
-- ✅ 旧版本异步 GC——避免无限膨胀
-- ✅ 用 `txn.SetStartTS(ts)` 控制事务起始时间——支持历史查询
-- ❌ 避免 MVCC 字段混入 value——会让 GC 复杂化
+**问题场景**：复杂 SQL（多 JOIN、子查询、聚合）的执行计划对性能影响 100x+——错误的 JOIN 顺序可让查询从 100ms 变 10s。
 
-### 模式 5：Raft 副本组实现强一致性
-
-**问题场景**：单机故障会导致数据丢失。多副本需要"过半写入"才返回成功，保证 RPO=0（不丢数据）。Raft 把一致性 + Leader 选举 + 日志复制统一算法。
-
-**解决方案**：
-
-```go
-// TiKV 启动 Raft group
-raftGroup, _ := raft.NewRawNode(&raft.Config{
-    ID:               regionID,           // 1, 2, 3 ...
-    ElectionTimeout:  10 * time.Second,    // 选举超时
-    HeartbeatTimeout: 1 * time.Second,     // 心跳
-    Storage:          raftStorage,
-    Applied:          appliedIndex,
-    ...,
-})
-// 提议写入
-raftGroup.Propose(ctx, data)
-```
+**解决方案**：TiDB 实现 Cascade Framework 风格的 CBO 优化器：解析 SQL → 逻辑计划 → 物理计划（枚举 JOIN 顺序、访问路径）→ 选择 cost 最低的计划。统计信息（直方图、CM-Sketch、Sample）驱动 cost 估算。
 
 **关键参数**：
+- `ANALYZE TABLE` 收集统计信息
+- 直方图（Histogram）+ TopN + Count-Min Sketch
+- Cascade 框架枚举所有 JOIN 顺序
+- Cost 模型：CPU/IO/Network
+- Plan Replayer 记录执行计划
 
-| 字段 | 说明 |
-|------|------|
-| ElectionTimeout | 选举超时（10s） |
-| HeartbeatTimeout | 心跳间隔（1s） |
-| 副本数 | 默认 3 |
-| 半写入 | 2/3 成功即提交 |
+**最佳实践**：新表/数据大幅变化后跑 `ANALYZE TABLE`；用 `EXPLAIN ANALYZE` 看实际执行计划；用 `tidb_enable_cascades_planner = ON` 启用新优化器（实验）；用 SQL Binding 固定执行计划。
 
-**最佳实践**：
+## 第二段：扩展范式
 
-- ✅ 默认 3 副本——单节点故障不丢数据
-- ✅ ElectionTimeout > HeartbeatTimeout × 2——避免误判
-- ✅ 用 `raft-rs` 而非自研——协议稳定性高于一切
-- ✅ Leader 选举优先级 + PreVote——避免脑裂
-- ❌ 避免 5 副本——成本翻倍、收益递减
+### 模式 6：Placement Driver 调度系统
 
-## 架构设计
+**问题场景**：数百个 TiKV 节点 + 数万 Region 需要持续均衡：热点 Region 分散、容量均衡、Leader 均匀、跨 AZ 分散。
 
-### 模式 6：Region 分片 + 范围分片策略
-
-**问题场景**：单机存储有上限。要支持 PB 级数据，必须把数据切分到多台机器。Hash 分片难支持范围扫描；Range 分片天然适配 SQL 索引。
-
-**解决方案**：
-
-```go
-// Region 定义
-type Region struct {
-    ID          uint64
-    StartKey    []byte
-    EndKey      []byte
-    Peers       []*PeerMeta  // 副本列表
-    Leader      uint64
-    RegionEpoch Epoch
-}
-
-// 范围：[a, m), [m, z)
-```
+**解决方案**：PD 是独立调度服务，持续运行 scheduler（balance-region/leader/space/score）触发 Region 调度。Operator 描述调度步骤（add/learner/remove/transfer-leader），保证调度的原子性与安全。
 
 **关键参数**：
+- Scheduler 队列：region/leader/space 三大类
+- `score` 公式：容量 + leader 数 + region 数
+- Operator 步骤：add-peer/learner/remove/transfer
+- 限速：`scheduler.limit` 避免影响业务
+- `evict-leader-scheduler` 临时下线
 
-| 字段 | 默认 | 说明 |
-|------|------|------|
-| Region 大小 | 96 MB | 切分阈值 |
-| Region 数量 | 单集群万级 | 调度粒度 |
-| 切分触发 | Region > 96MB | 自动 split |
+**最佳实践**：大促前用 `evict-leader-scheduler` 下线部分 Leader；用 `replica-scheduler` 调整副本数；监控 `PD schedule_operators_count`；调度器过激进会拖慢业务，限速 `1-10 ops/sec`。
 
-**最佳实践**：
+### 模式 7：Region 分裂与合并
 
-- ✅ 用 Range 分片而非 Hash——支持范围扫描
-- ✅ Region 大小控制在 100MB 内——调度灵活
-- ✅ 热 Region 自动拆分——避免热点
-- ✅ 用 PD 调度器均衡——避免单 Region 瓶颈
-- ❌ 避免 Region 过小（< 10MB）——元数据开销大于数据
+**问题场景**：数据持续写入，单个 Region 会无限增长（热点 + 数据倾斜），需要自动分裂；反之小 Region 多会带来心跳/调度开销。
 
-### 模式 7：SQL 优化器（Cost-Based Optimizer）
-
-**问题场景**：同一条 SQL 可能有几十种执行计划（如 JOIN 顺序、索引选择），不同计划性能差 1000 倍。需要基于成本的优化器选最优计划。
-
-**解决方案**：
-
-```go
-// pkg/planner/core
-func (p *PhysicalPlan) optimize() {
-    // 1. 解析 SQL → AST
-    // 2. 逻辑优化（谓词下推、列裁剪、子查询解关联）
-    // 3. 物理优化（JOIN 顺序、索引选择、聚合策略）
-    // 4. 代价估算（行数、IO、CPU）
-    return min(cost) plan
-}
-```
+**解决方案**：TiKV 自动分裂（Region 达到阈值 96MB 或 key 数 8 万）+ 合并（相邻小 Region）。分裂策略：key range 中点切分 + Pre-split（建表预分裂 N 段）。
 
 **关键参数**：
+- Region 大小默认 96MB
+- Key 数阈值 8 万
+- Split 触发：size/key 阈值
+- Merge 触发：相邻小 Region
+- Pre-split：`SPLIT TABLE t BY (RANGE)` 预分裂
 
-| 优化阶段 | 技巧 |
-|---------|------|
-| 逻辑优化 | 谓词下推、列裁剪、Subquery Unnesting |
-| 物理优化 | JOIN 顺序、Index Hint、Hash Join vs Merge Join |
-| 代价模型 | 行数估算、IO/CPU 代价 |
+**最佳实践**：批量导入用 `SPLIT TABLE t BY (RANGE)` 避免热点；监控 `region_size` 直方图；分裂风暴（频繁 split）说明 key 顺序混乱；调大 `region-split-size` 减少分裂。
 
-**最佳实践**：
+### 模式 8：Coprocessor 算子下推
 
-- ✅ 收集统计信息（analyze table）——优化器依赖
-- ✅ 用 EXPLAIN ANALYZE 验证计划——执行期统计反推
-- ✅ 维护 Cardinality Estimation 模型——基于直方图
-- ✅ 给优化器调试开关——`tidb_enable_cascades_planner`
-- ❌ 避免让优化器过载（> 100 表 JOIN）——超时
+**问题场景**：大量数据从 TiKV 拉回 TiDB 做过滤/聚合，网络带宽与延迟成本高。
 
-### 模式 8：Percolator 分布式事务模型
-
-**问题场景**：传统 2PC 协调者单点 + 同步阻塞。Google Percolator 用 MVCC + Primary Key 锁实现分布式事务，延迟低、可水平扩展。
-
-**解决方案**：
-
-```go
-// 2PC 实现
-// Prewrite 阶段
-txn.Lock(primaryKey)        // 锁住 Primary
-txn.Write(primaryKey, data)  // 写 Primary
-txn.Write(secondKeys, data)  // 写 Secondaries
-
-// Commit 阶段
-pd.GetTS() -> commitTS
-txn.Write(primaryKey, {commitTS})  // 原子标记
-// 异步清理 Secondaries
-```
+**解决方案**：TiKV 内置 Coprocessor，支持算子下推（`Selection`/`Aggregation`/`TopN`/`Limit`/`Join build`）。TiDB 把算子下推到 TiKV 节点执行，只返回少量结果。
 
 **关键参数**：
+- `Selection` 谓词下推
+- `Aggregation` 聚合下推
+- `TopN` 排序下推
+- `Join build` 端下推（小表）
+- `IndexLookUp` 索引回表
 
-| 阶段 | 操作 | 失败恢复 |
-|------|------|---------|
-| Prewrite | 锁 + 写 Primary + 写 Secondaries | 锁超时回滚 |
-| Commit | 写 Primary 提交标记 | 异步扫尾 |
-| Get | 读 Primary 提交标记 | 重试读 |
+**最佳实践**：索引列上做过滤可触发下推；用 `EXPLAIN` 看 `task: cop[tikv]` 任务；`HashJoin` 内表小可下推；`STREAM_AGG` 替代 `HASH_AGG` 减少内存。
 
-**最佳实践**：
+### 模式 9：HTAP 混合负载（TiFlash 列存）
 
-- ✅ Primary Key 选访问频繁的 key——决定 commit 延迟
-- ✅ 事务大小控制在 1000 行内——减少锁竞争
-- ✅ 客户端重试 + 幂等——处理写冲突
-- ✅ 用 TSO 排序——保证可串行化
-- ❌ 避免在事务内做长耗时 RPC——锁持有时间爆炸
+**问题场景**：OLTP 与 OLAP 业务共用同一份数据，传统的 ETL 到数据仓库链路长、成本高、数据延迟大。
 
-### 模式 9：TiDB Server 无状态化支持 K8s 调度
-
-**问题场景**：传统数据库的 SQL 层与存储层绑定在同一进程，K8s 部署困难（StatefulSet + 复杂调度）。无状态 SQL 层才能用 Deployment。
-
-**解决方案**：
-
-```yaml
-# TiDB Server Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: tidb
-spec:
-  replicas: 3
-  template:
-    spec:
-      containers:
-      - name: tidb
-        image: pingcap/tidb:v7.0
-        ports:
-        - containerPort: 4000
-        - containerPort: 10080
-```
+**解决方案**：TiFlash 是列存副本（独立 Raft 角色 `Learner`），从 TiKV 实时异步复制数据（通过 Raft log）。TiDB 优化器根据 SQL cost 自动选择 TiKV（点查）或 TiFlash（分析）。两副本数据最终一致。
 
 **关键参数**：
+- TiFlash 副本数独立配置
+- `Learner` Raft 角色
+- 列存：按列压缩 + 向量化执行
+- 自动选择：cost < 阈值用 TiKV
+- `tidb_allow_tiflash_cop` 开启下推
 
-| 字段 | 说明 |
-|------|------|
-| 4000 | MySQL 协议端口 |
-| 10080 | HTTP 状态/Metrics |
-| TiDB | 无状态（K8s Deployment） |
-| TiKV | 有状态（K8s StatefulSet） |
-| PD | 有状态（K8s StatefulSet） |
+**最佳实践**：OLTP 业务关 TiFlash 节省资源；用 `SET SESSION tidb_isolation_read_engines = 'tikv'` 强制走 TiKV；监控 TiFlash 同步延迟（`<5s` 正常）；大宽表查询走 TiFlash 10x+ 加速。
 
-**最佳实践**：
+### 模式 10：索引与统计信息
 
-- ✅ SQL 层用 K8s Deployment——滚动升级零停机
-- ✅ PD/TiKV 用 StatefulSet——稳定网络标识
-- ✅ 用 TiDB Operator 自动化运维——TiDBGroup CRD
-- ✅ SQL 层用 HPA 自动扩缩——按 QPS 弹性
-- ❌ 避免把 PD 部署成无状态——TSO 单点切换会丢时间戳
+**问题场景**：缺乏合适索引导致全表扫描（慢）；统计信息过期导致优化器选错计划。
 
-### 模式 10：Coprocessor 下推计算到 TiKV
-
-**问题场景**：把 1 亿行数据从 TiKV 拉到 TiDB 过滤会拖垮网络。理想是"在 TiKV 端过滤，只返回 100 行结果"——这就是 Coprocessor 下推。
-
-**解决方案**：
-
-```go
-// TiDB 端构造 Coprocessor 请求
-req := &coprocessor.Request{
-    Tp:      kv.ReqTypeSelect,
-    StartTs: readTS,
-    Data:    encodedPlan,  // 序列化后的执行计划
-    Ranges:  []*coprocessor.KeyRange{{Start: startKey, End: endKey}},
-}
-resp, _ := tikvClient.SendCopReq(ctx, req, timeout)
-```
+**解决方案**：TiDB 支持主键索引、唯一索引、二级索引、表达式索引、Hash/Range 分区表。统计信息包括直方图（per-column）、TopN、Count-Min Sketch、Sample 采样。
 
 **关键参数**：
+- `ANALYZE TABLE` 触发
+- 直方图桶数默认 256
+- CMSketch 估计 NDV
+- 采样率 1 万行
+- `tidb_analyze_version = 2` 增强统计
 
-| 字段 | 说明 |
-|------|------|
-| Range | 扫表范围 |
-| Plan | 执行计划（下推部分） |
-| Result | 流式返回 |
+**最佳实践**：新表/数据大幅变化后必跑 `ANALYZE`；用 `tidb_stats_load_sync_wait = 600` 让 SQL 等待统计加载；用 `CREATE INDEX` 在线 DDL 不阻塞读写；用 `EXPLAIN` 确认索引生效。
 
-**最佳实践**：
+## 第三段：进阶范式
 
-- ✅ 过滤条件下推——减少数据传输
-- ✅ 聚合下推（COUNT/SUM/MAX）——减少网络 IO
-- ✅ Join 下推到 TiKV（小表）——避免 shuffle
-- ✅ Coprocessor Task 拆分——并行执行
-- ❌ 避免下推包含用户函数的表达式——执行器不支持
+### 模式 11：CDC（Change Data Capture）实时同步
 
-## 性能优化
+**问题场景**：需要把 TiDB 数据变更实时同步到下游（Kafka、MySQL、StarRocks、Elasticsearch）——传统 binlog 解析复杂且与存储耦合。
 
-### 模式 11：RocksDB LSM 树 + Compaction 策略
-
-**问题场景**：B+ 树随机写放大严重（每次写都要更新多层页）。LSM 把随机写转顺序写（追加到 MemTable + 刷盘 SST），写吞吐高 10x+。
-
-**解决方案**：
-
-```go
-// TiKV 内部使用 RocksDB
-opts := &rocksdb.Options{
-    WriteBufferSize:           64 * 1024 * 1024,  // 64MB MemTable
-    MaxWriteBufferNumber:      5,                  // MemTable 数量
-    MinWriteBufferNumberToMerge: 2,
-    Level0FileNumCompactionTrigger: 4,
-    NumLevels: 7,
-}
-```
+**解决方案**：TiCDC 监听 TiKV 的 change log（scan + pull），把 DML/DDL 事件流式输出到下游。支持多种 sink（Kafka/Pulsar/MySQL/对象存储），支持 Avro/JSON/Canal 等格式。
 
 **关键参数**：
+- `changefeed` 配置
+- `sink-uri` 下游地址
+- `protocol` 序列化协议
+- `filter.rules` 表过滤
+- `cyclic-replicated-id` 循环复制
 
-| 参数 | 默认 | 调优 |
-|------|------|------|
-| MemTable | 64MB | 越大写越快、读越慢 |
-| Compaction | level/universal | universal 写放大小 |
-| Block Cache | 总内存 30% | 越大读越快 |
+**最佳实践**：CDC 任务用专门的 TiKV 节点跑（CPU 密集）；监控 `resolved ts` 延迟；下游用 Kafka + Schema Registry 维护 schema 演进；用 `ts` checkpoint 断点续传。
 
-**最佳实践**：
+### 模式 12：DM（Data Migration）从 MySQL 迁移
 
-- ✅ 写多读少用 universal compaction——写放大最小
-- ✅ 读多写少用 level compaction——读放大最小
-- ✅ 限制 compaction 带宽（rate limiter）——避免影响前台
-- ✅ 监控 stall time——超过 5% 要调参
-- ❌ 避免 Block Cache 设太大——挤压 Page Cache
+**问题场景**：从 MySQL 迁移到 TiDB 需要全量 + 增量同步，且要兼容分库分表（sharding）。
 
-### 模式 12：Region Cache 减少 PD 请求
-
-**问题场景**：每个 KV 请求都要查 PD 找 Region Leader？PD 压力爆炸。需要客户端缓存 Region 信息。
-
-**解决方案**：
-
-```go
-// TiDB 维护 Region Cache
-type RegionCache struct {
-    mu      sync.RWMutex
-    regions map[RegionKey][]*Region
-}
-
-func (c *RegionCache) LocateKey(bo *Backoffer, key []byte) (*Region, error) {
-    if r := c.searchCache(key); r != nil {
-        return r, nil  // 命中缓存
-    }
-    r, _ := pdClient.GetRegion(bo, key)  // 未命中查 PD
-    c.mu.Lock()
-    c.regions[r.RegionKey()] = append(c.regions[r.RegionKey()], r)
-    c.mu.Unlock()
-    return r, nil
-}
-```
+**解决方案**：DM（Data Migration）从 MySQL binlog 拉取，全量 dump + 增量 binlog 解析，自动合并分库分表到单 TiDB 表。支持 `black & white list` 过滤、`DDL` 合并、`online DDL` 工具过滤（gh-ost/pt-osc）。
 
 **关键参数**：
+- 全量：`loader` dump + load
+- 增量：`syncer` binlog 解析
+- 分库分表合并：`shard-mode: "pessimistic"`/`"optimistic"`
+- `route-rules` 库表重命名
+- `block-allow-list` 黑白名单
 
-| 字段 | 说明 |
-|------|------|
-| 缓存粒度 | Region 范围 |
-| 失效机制 | Region Epoch 变化时清 |
-| 预热 | 启动时按主键 range 预热 |
+**最佳实践**：分库分表用悲观模式（默认）；用 `online-ddl-scheme: "gh-ost"` 过滤 online DDL；监控 `replicate lag`；全量 + 增量切换用 `start-time` 对齐。
 
-**最佳实践**：
+### 模式 13：BR（Backup & Restore）备份恢复
 
-- ✅ 客户端缓存 Region——PD 压力下降 100x
-- ✅ Region Epoch 变化时清缓存——防止脏读
-- ✅ 异步后台刷新——不影响前台
-- ✅ 用 LRU 淘汰冷 Region——内存可控
-- ❌ 避免缓存无 epoch——Region 切片后旧缓存指向新 region
+**问题场景**：TiDB 集群（数十 TB）需要定期全量备份 + 增量备份，恢复到任意时间点（PITR）。
 
-### 模式 13：TiFlash 列存引擎支持 HTAP 实时分析
-
-**问题场景**：传统 OLTP 走 TiKV（行存），OLAP 需要列存加速。TiFlash 是 TiDB 的列存副本——同一份 Raft 数据，行列双引擎。
-
-**解决方案**：
-
-```sql
--- 主从副本（行存 + 列存）
-ALTER TABLE orders SET TIFLASH REPLICA 2;
-
--- 自动选择
-SELECT COUNT(*) FROM orders WHERE price > 100;  -- TiFlash
-SELECT * FROM orders WHERE id = 12345;          -- TiKV
-```
+**解决方案**：BR 是分布式备份工具，备份到 S3/GCS/Azure Blob。支持全量（`br backup full`）、增量（`br backup diff`）、PITR（log backup + restore to point）。底层用 M3 协议做并发备份。
 
 **关键参数**：
+- `--storage` 备份目标 URL
+- `--ratelimit` 限速
+- `--concurrency` 并发
+- `tikv-incremental` 增量
+- `log-backup` 日志备份
 
-| 字段 | 说明 |
-|------|------|
-| 副本数 | 默认 0（不开 TiFlash） |
-| 同步延迟 | Raft Learner，跟随主 |
-| 自动选择 | 优化器基于 cost 选 |
+**最佳实践**：定期测恢复（DR 演练）；用 `tikv-importer` 加速恢复；监控 `BR` 进度；S3 用 cross-region replication 做异地容灾；PITR 保留期按业务合规要求。
 
-**最佳实践**：
+### 模式 14：TiProxy 智能代理
 
-- ✅ OLTP + 实时分析——避免 ETL 延迟
-- ✅ TiFlash 用 Raft Learner——非投票副本，不影响写入
-- ✅ 让优化器自动选择——避免硬编码
-- ✅ 大表列裁剪——只读必要列
-- ❌ 避免在 TiFlash 上做高频点查——延迟高于 TiKV
+**问题场景**：TiDB Server 节点多，客户端要管理连接池；热点查询打到固定节点；版本升级要滚动。
 
-### 模式 14：Batch 消息合并 + 流水线提升吞吐
-
-**问题场景**：10 万次 RPC 串行调用延迟高。批量合并 + 流水线把 10 万次压成 1000 次。
-
-**解决方案**：
-
-```go
-// TiKV gRPC client batch
-type batchCommandsClient struct {
-    batched      sync.Map
-    batchSize    int
-    flushTimeout time.Duration
-}
-
-func (c *batchCommandsClient) send(cmd *Request) {
-    c.batched.Store(cmd.GetSeq(), cmd)
-    if c.batched.Length() >= c.batchSize {
-        c.flush()
-    }
-}
-
-func (c *batchCommandsClient) flush() {
-    reqs := [][]*Request{}
-    c.batched.Range(func(_, v) { reqs = append(reqs, v.(*Request)) })
-    c.stream.Send(reqs)  // 一次发多个
-}
-```
+**解决方案**：TiProxy 是 L4/L7 反向代理，客户端连 TiProxy，TiProxy 根据后端负载（CPU/连接数/版本）做负载均衡。支持滚动升级（keep version-aware routing）、故障转移。
 
 **关键参数**：
+- L4/L7 模式
+- `health-check` 探活
+- `load-balance-policy: "connection"`/`"cpu"`/`"memory"`
+- `version-aware` 滚动升级
+- `pool` 连接池
 
-| 字段 | 默认 | 调优 |
-|------|------|------|
-| batchSize | 64 | 越大延迟越高、吞吐越高 |
-| flushTimeout | 1ms | 越大延迟越高 |
+**最佳实践**：客户端连 TiProxy 入口而非 TiDB；升级 TiDB 时 TiProxy 保留旧版本连接直到事务结束；监控 `tiproxy` 后端健康；高并发场景用 `cpu` 策略。
 
-**最佳实践**：
+### 模式 15：资源管控（Resource Control）
 
-- ✅ 高并发场景用 batch——吞吐提升 5-10x
-- ✅ flushTimeout 控制在 1-5ms——避免等待太久
-- ✅ 区分读/写 batch——读可异步、写需同步
-- ✅ 监控 batch ratio——低于 30% 要排查
-- ❌ 避免在 batch 中混长任务——长尾效应
+**问题场景**：单集群多业务共用，某个慢查询抢占 CPU/IO 资源影响其他业务——需要 quota 隔离。
 
-### 模式 15：Raft Log Compact + Snapshot 控制日志膨胀
-
-**问题场景**：Raft 日志持续追加，新节点加入 / 老节点追数据需要快照。日志太大会导致 Apply 慢、存储浪费。
-
-**解决方案**：
-
-```go
-// 定期触发 Snapshot
-func (r *raftWorker) maybeTriggerSnapshot() {
-    appliedIdx := r.raftStorage.AppliedIndex()
-    if appliedIdx - r.lastSnapshotIdx < r.snapshotInterval {
-        return
-    }
-    snapshot, _ := kvStore.CreateSnapshot(appliedIdx)
-    r.raftStorage.ApplySnapshot(snapshot)
-    r.lastSnapshotIdx = appliedIdx
-}
-```
+**解决方案**：TiDB Resource Control 用 `Resource Group` 把用户绑定到组，配置 `RU per second` 配额。调度器（TiDB Server）按 RU 限流，RU 估算查询 cost。
 
 **关键参数**：
+- `CREATE RESOURCE GROUP rg1 RU_PER_SEC = 1000`
+- `ALTER USER u1 RESOURCE GROUP rg1`
+- `BURSTABLE`/`BACKGROUND`
+- 估算：基于 cost 模型
+- `RU` 单位是 read unit
 
-| 字段 | 默认 | 说明 |
-|------|------|------|
-| snapshotInterval | 10000 entries | 触发间隔 |
-| snapshotSize | 100MB | 触发大小 |
+**最佳实践**：核心业务单独 RG；用 `BACKGROUND` 处理 ETL 不抢占前台；监控 `Resource Manager` 指标；高优先级任务给小 quota 反而慢（限流），按业务峰值设置。
 
-**最佳实践**：
+## 第四段：实战范式
 
-- ✅ Snapshot 按 entries 数触发——避免日志无限增长
-- ✅ Snapshot 异步生成——不影响前台写入
-- ✅ Snapshot 存储在共享存储（S3/NFS）——新节点直接拉
-- ✅ 用 `raft snapshot` 子命令手动触发——排查用
-- ❌ 避免 Snapshot 太频繁——生成本身有 IO 开销
+### 模式 16：连接管理与 SQL 调优
 
-## 工程实践
+**问题场景**：应用连接数暴涨（数千连接），TiDB 节点 CPU 满载；SQL 慢但找不到原因。
 
-### 模式 16：Go + Bazel 单仓多模块构建
-
-**问题场景**：TiDB / TiKV / PD 三个组件相互依赖，传统 `go build` 无法共享缓存。重复编译 30+ 分钟。
-
-**解决方案**：
-
-```bash
-# Bazel 构建
-bazel build //cmd/tidb-server:tidb-server
-bazel build //cmd/tikv-server:tikv-server
-bazel build //cmd/pd-server:pd-server
-
-# 增量构建（命中远端缓存）
-bazel build //pkg/...   # 仅重建改动的包
-```
+**解决方案**：应用侧用 `TiProxy` 代理或驱动端 `tidb-prepared-statement-cache=true` 复用 prepared statement；TiDB 端调 `tidb_max_delta_length`、`tidb_index_lookup_size` 等参数。SQL 调优用 `EXPLAIN ANALYZE` + SQL Binding。
 
 **关键参数**：
+- `tidb_prepared_plan_cache_size` 100
+- `tidb_mem_quota_query` 单查询内存
+- `tidb_distsql_scan_concurrency` scan 并发
+- `tidb_index_lookup_concurrency` 回表并发
+- `tidb_enable_prepared_plan_cache`
 
-| 工具 | 作用 |
-|------|------|
-| Bazel | 增量构建 + 远端缓存 |
-| `go.mod` | 依赖管理 |
-| `BUILD.bazel` | Bazel 规则 |
-| `.bazelversion` | 版本锁定 |
+**最佳实践**：连接池用 HikariCP 配 10-30 连接；用 `EXPLAIN ANALYZE` 看实际算子耗时；用 `tidb-slow.log` 抓慢查询；用 `SQL Binding` 固定不稳计划。
 
-**最佳实践**：
+### 模式 17：监控告警（Prometheus + Grafana）
 
-- ✅ 用 Bazel 而非裸 go build——CI 提速 10x
-- ✅ 远端缓存（S3/GCS）——团队成员共享构建结果
-- ✅ 拆分多个 BUILD 文件——按包粒度
-- ✅ 用 `bazel test //...` 运行所有测试——统一入口
-- ❌ 避免 Go vendor + Bazel 混用——路径冲突
+**问题场景**：分布式数据库组件多（TiDB/TiKV/PD），出问题难定位——需要统一监控告警。
 
-### 模式 17：分层监控 Metrics（PD/TiKV/TiDB 各暴露 Prometheus）
-
-**问题场景**：分布式系统定位慢查询/慢 Region 难。要能从 SQL → Region → TiKV 全链路追踪。
-
-**解决方案**：
-
-```go
-// PD 暴露 metrics
-import "github.com/prometheus/client_golang/prometheus"
-
-var regionHeartbeatCounter = prometheus.NewCounter(prometheus.CounterOpts{
-    Name: "pd_region_heartbeat_total",
-    Help: "Total number of region heartbeats.",
-})
-
-func handleRegionHeartbeat(...) {
-    regionHeartbeatCounter.Inc()
-    ...
-}
-```
+**解决方案**：TiUP 部署默认集成 Prometheus + Grafana，监控指标覆盖 QPS/latency/QPS-per-instance/Region 分布/慢查询/错误日志。告警规则用 Alertmanager 发送 Slack/钉钉/飞书。
 
 **关键参数**：
+- Prometheus scrape 间隔 15s
+- Grafana dashboard 内置 50+ 张
+- 关键告警：`TiKV_write_stall`/`PD_miss_peer`/`QPS_drop`
+- 慢查询日志：`slow-threshold: 300ms`
+- `tidb_enable_top_sql` 开启 Top SQL
 
-| 组件 | 关键 Metrics |
-|------|-------------|
-| TiDB | `tidb_session_duration_seconds` |
-| TiKV | `tikv_grpc_msg_duration_seconds` |
-| PD | `pd_region_heartbeat_total` |
-| TiFlash | `tiflash_storage_write_count` |
+**最佳实践**：核心告警：write stall、coprocessor 慢、Region 失衡、QPS 突降；用 `Top SQL` 看 CPU 消耗最大的查询；Grafana 加 business metric（业务 QPS）做关联分析。
 
-**最佳实践**：
+### 模式 18：高可用与故障转移
 
-- ✅ 用 Prometheus 客户端库——标准协议
-- ✅ 给 hot path 加 Histogram——分布数据
-- ✅ 区分 Counter/Gauge/Histogram/Summary
-- ✅ Grafana Dashboard 内置（dashboard.json）
-- ❌ 避免 metrics 名重复——多实例会冲突
+**问题场景**：TiDB 节点宕机、TiKV 节点磁盘故障、PD 主备切换——需要快速恢复且不丢数据。
 
-### 模式 18：OpenTelemetry 全链路追踪
-
-**问题场景**：单条 SQL 涉及 TiDB + PD + TiKV × N 副本，问题难以定位。需要 trace ID 串联所有 RPC。
-
-**解决方案**：
-
-```go
-// TiDB 端开启 trace
-import "go.opentelemetry.io/otel"
-
-tracer := otel.Tracer("tidb")
-ctx, span := tracer.Start(ctx, "ExecuteSQL",
-    trace.WithAttributes(
-        attribute.String("db.statement", sql),
-    ),
-)
-defer span.End()
-
-// gRPC 透传 trace 头
-md, _ := metadata.FromOutgoingContext(ctx)
-trace.SpanContextFromContext(ctx)
-```
+**解决方案**：TiDB 无状态（K8s 自动重启），TiKV 副本组自动选主（< 30s），PD 主备切换（< 10s）。Region 自动 rebalance 到其他节点。客户端重试（`tidb_retry_limit = 10`）保证事务最终成功。
 
 **关键参数**：
+- `raft-election-timeout` 1s
+- `raft-store-pool-size` 4
+- `tidb_retry_limit` 10
+- `tidb_disable_txn_auto_retry` OFF
+- `evict-leader-scheduler` 下线前驱逐
 
-| 字段 | 说明 |
-|------|------|
-| TraceID | 全局唯一请求 ID |
-| SpanID | 单跳 ID |
-| ParentSpanID | 上游 SpanID |
-| Attributes | 标签（SQL、Region、TSO） |
+**最佳实践**：部署 3 副本 TiKV + 3 节点 PD；用 `evict-leader-scheduler` 优雅下线节点；客户端用 `tidb_retry_limit` 自动重试；定期做 chaos 演练（kill 节点、模拟磁盘故障）。
 
-**最佳实践**：
+### 模式 19：TiUP 一键部署
 
-- ✅ 用 OpenTelemetry SDK——跨语言标准
-- ✅ gRPC 自动 inject trace headers——零侵入
-- ✅ 把 TraceID 写进慢查询日志——用户可关联
-- ✅ 在 Grafana Tempo / Jaeger 查看——可视化链路
-- ❌ 避免 trace 全量开——100% 采样影响性能
+**问题场景**：TiDB 集群组件多（PD/TiKV/TiDB/TiFlash/CDC/DM），手动部署运维复杂；版本升级需要滚动。
 
-### 模式 19：Online DDL + `tidb-lightning` 批量导入
-
-**问题场景**：传统 MySQL ALTER TABLE 锁表 30 分钟。TiDB 用 Online DDL 让 DDL 不阻塞读写。TB 级数据导入用 lightning 工具。
-
-**解决方案**：
-
-```sql
--- Online DDL（TiDB）
-ALTER TABLE orders ADD COLUMN tags JSON DEFAULT NULL;  -- 异步执行，不锁表
-ADMIN SHOW DDL JOBS;  -- 查看 DDL 进度
-```
-
-```bash
-# tidb-lightning 导入
-./tidb-lightning -config tidb-lightning.toml
-# 配置 backend = "local" / "tidb" / "file"
-# 配置 checkpoint 断点续传
-```
+**解决方案**：TiUP 是包管理 + 部署工具，YAML 描述拓扑（`topology.yaml`），一条命令 `tiup cluster deploy` 起集群。`tiup cluster upgrade` 滚动升级。
 
 **关键参数**：
+- `topology.yaml` 描述节点
+- `tiup cluster deploy prod v7.5 ./topo.yaml`
+- `tiup cluster start/stop` 启停
+- `tiup cluster upgrade prod v7.6` 升级
+- `tiup cluster display prod` 状态
 
-| 特性 | 工具 |
-|------|------|
-| Online DDL | TiDB 原生（async） |
-| 批量导入 | tidb-lightning（1TB/h） |
-| 数据导出 | dumpling |
-| 备份恢复 | BR (Backup & Restore) |
+**最佳实践**：所有集群用 TiUP 部署（生产/测试统一）；YAML 入 git 版本化；升级前 `tiup cluster check` 检查兼容性；用 `tiup dm deploy` 部署 DM。
 
-**最佳实践**：
+### 模式 20：TiDB 7.x 关键新特性
 
-- ✅ DDL 默认走 async 模式——不阻塞读写
-- ✅ 大表导入用 lightning——比 INSERT 快 100x
-- ✅ 导入前关闭 GC（`SET GLOBAL tidb_gc_life_time = '720h'`）——避免误删
-- ✅ 用 BR 做全量/增量备份——支持 PITR
-- ❌ 避免在导入期间做 DDL——会冲突
+**问题场景**：TiDB 7.x 在性能、稳定性、成本上做了大量优化，需要了解核心新特性用好这些能力。
 
-### 模式 20：TiDB Operator K8s 自动化运维
-
-**问题场景**：分布式数据库在 K8s 上部署复杂（StatefulSet + ConfigMap + Service + PVC），手工维护成本高。需要 Operator 抽象。
-
-**解决方案**：
-
-```yaml
-# TiDBCluster CR
-apiVersion: pingcap.com/v1alpha1
-kind: TiDBCluster
-metadata:
-  name: basic
-spec:
-  version: v7.5.0
-  pd:
-    baseImage: pingcap/pd
-    replicas: 3
-    requests:
-      storage: "10Gi"
-  tikv:
-    baseImage: pingcap/tikv
-    replicas: 3
-    requests:
-      storage: "100Gi"
-  tidb:
-    baseImage: pingcap/tidb
-    replicas: 2
-```
+**解决方案**：核心新特性：
+- **资源管控 Resource Control**：RU 配额隔离
+- **TiProxy 1.0**：智能代理
+- **CDC 8.0+**：并行解码 + 多 topic
+- **PITR GA**：时间点恢复
+- **TiFlash 7.x**：MPP 性能 3x 提升
+- **TiDB 7.5**：内核优化（RangeDelete、FastOnline DDL）
+- **TiKV 7.x**：Raft Engine 2.0 写吞吐 +50%
 
 **关键参数**：
+- `tidb_enable_resource_control` 开启资源管控
+- `tidb_opt_range_max_size` 大范围扫描优化
+- `tidb_distsql_scan_concurrency` 自动调整
+- `tidb_mem_quota_analyze` 统计内存
+- `tiflash_fastscan` 列存快扫
 
-| 资源 | 用途 |
-|------|------|
-| TiDBCluster | 顶层 CRD |
-| TiDBGroup | 多集群（联邦） |
-| TidbMonitor | Grafana + Prometheus |
-| BackupSchedule | 定时备份 |
-
-**最佳实践**：
-
-- ✅ TiDB Operator 把运维知识沉淀在 CRD——降低上手门槛
-- ✅ 用 Helm Chart 部署 Operator——K8s 生态标准
-- ✅ 配合 TidbMonitor 自动采集 Metrics——开箱即用
-- ✅ Backup CRD 定时备份到 S3——PITR 基础
-- ❌ 避免绕开 Operator 手改 StatefulSet——会与 Operator 状态冲突
+**最佳实践**：升级到 7.5 LTS 享受 3 年支持；用 Resource Control 做多业务隔离；TiFlash 7.x 适合大宽表分析；用 `TiProxy` 入口屏蔽后端拓扑；监控 `TiKV-Raft Engine` 写吞吐。
 
 ## 附：仓库元信息
 
 | 字段 | 值 |
 |------|----|
-| 路径 | `tidb-master.zip`（已镜像） |
-| 主语言 | Go |
+| 路径 | `G:\实战案例\GitHub顶尖项目\tidb\` |
+| 主语言 | Go（TiKV 用 Rust） |
 | License | Apache 2.0 |
-| 总文件 | 8858 |
-| 核心目录 | `pkg/executor`, `pkg/expression`, `pkg/ddl`, `pkg/planner/core` |
-
-## 一句话总结
-
-TiDB 的精髓在 PD/TiKV/TiDB 三层分离（独立扩缩容） + Percolator 分布式事务（MVCC + Primary Key） + Raft 副本组（强一致） + Coprocessor 下推（减少网络 IO）四件套——任何"分布式 + 强一致 + SQL 兼容"项目都适用。MySQL 协议 + Online DDL + TiDB Operator 三件生态基础设施让生产部署像单机 MySQL 一样简单。
+| 解析时间 | 2026-06-02 |
+| 核心组件 | TiDB SQL 层、TiKV 存储、PD 调度、TiFlash 列存、TiCDC、DM、BR、TiProxy |
+| 关键基础设施 | Raft、Percolator、MVCC、CBO 优化器、Cascade Framework |

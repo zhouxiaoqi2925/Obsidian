@@ -1,454 +1,303 @@
----
-title: etcd
-type: 分布式KV
-lang: Go
-stars: 48k+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - 分布式KV
----
+# etcd - 强一致分布式 KV 存储
 
-# etcd · 项目深度解析
-
-> 强一致分布式 KV，K8s 的数据底座
-> 来源：etcd-main.zip
-
-## 写在前面：解析哲学
-
-按 V3 模版，**先骨架后血肉，先 What 后 Why，最后 How to steal**。
-每个小点都遵循：点状解析 → 思维导图 → 落地模板 → 反例警示。
+**GitHub**: etcd-io/etcd
+**Star**: 48k+
+**语言**: Go
+**主题**: 分布式 KV / Raft / 一致性
+**适用场景**: K8s 控制面 / 服务发现 / 配置中心 / 分布式锁
 
 ---
 
-## 0. 解析前的 5 个准备
+## 第一段：基础范式（模式 1-5）
 
-**[点状解析]**：拿到仓库后先做 5 件不起眼但极重要的事，避免后面返工。
+### 模式 1：Raft 一致性协议
 
-**[思维导图]**：
-```
-解析前准备
-├── 0.1 克隆仓库（--depth 1 瘦身）
-├── 0.2 建 _analysis 子目录（13 个分类）
-├── 0.3 写问题清单（5 问）
-├── 0.4 速查表（meta 信息）
-└── 0.5 锁定 commit（避免中途漂移）
-```
+**问题场景**：多节点 KV 同步难——Paxos 难实现，Zab 绑死 ZK 协议栈；需要通用强一致库。
 
-**[反例警示]**：没用 --depth 1 → 大仓库拉半天还失败；目录没分类 → 文件全堆一起；没锁 commit → 写到一半上游 push 了你不知道。
+**解决方案**：etcd 用 Raft 算法包（`raft/` 目录）+ bbolt 状态机，对外暴露 KV。Raft 把一致性拆成 leader election + log replication + safety 三段。
 
----
+**关键参数**：
+- `election timeout` 默认 1s 随机 1-2s
+- `heartbeat interval` 100ms
+- `snapshot threshold` 控制日志压缩
+- `quorum = N/2 + 1`
 
-## 1. 开发计划书（Project Charter）
+**最佳实践**：集群规模 3/5/7 奇数节点；2N+1 节点数 = N 容忍故障；RTT < 100ms 才能跑。
 
-| 字段 | 内容 |
-|---|---|
-| 项目名 | etcd |
-| 一句话定位 | 强一致分布式 KV，K8s 的数据底座 |
-| 核心问题 | 解决「Raft 共识 + WAL + watch 机制」领域的核心痛点：强一致分布式 KV，K8s 的数据底座 |
-| 目标用户 | 集群 / SRE |
-| 商业模式 | 云服务（AWS/阿里云） |
-| 复刻难度 | ⭐⭐⭐⭐ |
-| 当前状态 | 活跃 |
-| 团队规模 | 10-50 |
-| 关键里程碑 | v0.1 / v1.0 / 当前版本 |
+### 模式 2：KV 数据模型与 revision
 
-**[反例警示]**：只看 star 数就开干 → 玩具项目不值得学一个月；不看 license → GPL-3.0 商用直接踩坑；不看 pushedAt → 仓库 3 年没动 = 学了也用不上。
+**问题场景**：分布式 KV 需要"全序"和"事务"语义，但单机 KV 做不到。
 
----
+**解决方案**：etcd 用 bbolt（B+ 树）存数据，每个写操作单调递增 `revision`（64-bit），前缀区间查询带 `Range`。事务用 mini-transaction 比较目标版本后再写。
 
-## 2. 项目框架（Repo Skeleton Map）
+**关键参数**：
+- `revision` 全局单调递增
+- `mod_revision` / `create_revision` / `version` 四元组
+- `Range` 请求支持 `range_end`
+- `Txn` 支持 compare + succeed/failure 分支
 
-**[点状解析]**：不读代码，先看"目录怎么长"。Go 项目常见布局：cmd/ + internal/ + pkg/
+**最佳实践**：用 `mod_revision` 做乐观锁；事务用 `compare([...])` 验目标版本再 `put`。
 
-**[思维导图]**：
-```
-分布式KV 框架
-├── 2.1 顶层结构（tree -L 2）
-├── 2.2 配置入口（go.mod / Makefile）
-├── 2.3 代码入口（main.*/app.*/server.*/cli.*）
-├── 2.4 文档位置（docs/README/CHANGELOG）
-├── 2.5 测试位置（test/tests/*_test.*）
-└── 2.6 部署相关（deploy/k8s/docker）
-```
+### 模式 3：Watch 机制
 
-**[本项目实际结构]**：
-```
-├── /
-├── .devcontainer/
-├── .github/
-├── .gitignore/
-├── .go-version/
-├── .header/
-├── ADOPTERS.md/
-├── CHANGELOG/
-├── CONTRIBUTING.md/
-├── DCO/
-├── Dockerfile/
-├── Documentation/
-├── GOVERNANCE.md/
-├── LICENSE/
-├── Makefile/
-├── OWNERS/
-├── OWNERS_ALIASES/
-├── Procfile/
-├── README.md/
-├── THREAT_MODEL.md/
-```
+**问题场景**：客户端需要实时感知 KV 变更；轮询耗资源 + 延迟大。
 
-**实际配置入口**：`- `api/go.mod`
-- `cache/go.mod`
-- `client/pkg/go.mod`
-- `client/v3/go.mod`
-- `etcdctl/go.mod``
+**解决方案**：etcd v3 watch 走 gRPC streaming + revision bookmark，server 推增量事件。客户端 `WatchRequest{start_revision}` 支持断点续传。
 
-**实际代码入口**：`contrib/raftexample/main.go`
+**关键参数**：
+- `start_revision` 断点续传
+- `progress_notify` 心跳
+- `filter` 过滤事件
+- `watch_id` 多路复用
 
-**核心目录**（文件数最多）：`tests/e2e`, `client/v3`, `tests/fixtures`, `etcdctl/ctlv3/command`, `scripts`, `server/storage/mvcc`
+**最佳实践**：客户端重连后用最近 `revision + 1` 续传；长时间不消费触发服务端 close；限流防 OOM。
 
-**[反例警示]**：上来就 cat main.go → 找不到入口；忽略 vendor/node_modules → 看 10 万行依赖以为项目很大；错过 docs/ → 错过作者的"自述"。
+### 模式 4：Lease 租约
+
+**问题场景**：需要 key 自动过期 / 服务注册 TTL 失效 / 临时锁。
+
+**解决方案**：Lease 抽象（64-bit ID），关联 key 自动过期；`KeepAlive` 续约。批量 key 可绑同一 lease。
+
+**关键参数**：
+- `LeaseGrant` 创建租约
+- `LeaseKeepAlive` 续约（stream）
+- `LeaseRevoke` 主动撤销
+- `TTL` 过期秒数
+
+**最佳实践**：服务注册用 lease TTL = 30s + KeepAlive 5s；key 绑 lease 自动清理。
+
+### 模式 5：gRPC API 与 v2/v3
+
+**问题场景**：HTTP/JSON 性能弱，二进制协议门槛高。
+
+**解决方案**：v3 用 gRPC + protobuf（`rpc.proto`）；v2 兼容 HTTP/JSON。etcd 客户端支持 v2/v3 自动协商。
+
+**关键参数**：
+- v3 `127.0.0.1:2379` gRPC
+- v2 `127.0.0.1:4001` HTTP
+- `etcdctl --endpoints=` 多端点
+- `compact` / `defrag` 运维命令
+
+**最佳实践**：新项目走 v3 gRPC；v2 仅过渡用；v2/v3 数据不互通。
 
 ---
 
-## 3. 项目画像（Profile）
+## 第二段：扩展范式（模式 6-10）
 
-**[点状解析]**：用 5 个数字量化"这个项目长什么样"，5 分钟形成判断。
+### 模式 6：WAL 与 Snapshot
 
-| 维度 | 数据 |
-|---|---|
-| 总文件数 | 1759 |
-| 主语言 | Go |
-| 涉及语言 | Go, Markdown, Shell, YAML |
-| Star | 48k+ |
-| License | Apache License |
-| Docker 支持 | ✅ |
-| K8s 支持 | ✅ |
-| CI 配置 | ✅ |
-| 有测试 | ✅ |
+**问题场景**：节点重启数据丢失 / 内存状态与磁盘状态对不齐 / 慢节点追不上 leader。
 
-**[反例警示]**：cloc 包含测试 → 数字虚高 2 倍；只看 contributors 总数 → 1 人贡献 90% = 伪活跃；忽略 indirect deps → 漏洞扫描漏一半。
+**解决方案**：所有写先写 WAL（Write Ahead Log）落盘；周期性 snapshot 到 `snap` 文件；新节点或慢节点走 `InstallSnapshot` RPC 拿全量。
 
----
+**关键参数**：
+- WAL 64MB segment 轮转
+- `--snapshot-count` 默认 100000
+- `--max-snapshots` / `--max-wals` 保留
+- `compact` 物理压缩
 
-## 4. 架构设计（Architecture Deep Dive）
+**最佳实践**：生产 `--quota-backend-bytes` 限 8GB 防爆；定期 `defrag` 提性能。
 
-**[点状解析]**：分布式KV 项目的核心架构看点是 **Raft 共识 + WAL + watch 机制**。
+### 模式 7：MVCC 与事务
 
-**[思维导图]**：
-```
-分布式KV 架构
-├── 4.1 部署图（节点 + 容器 + 网络）
-├── 4.2 组件图（服务 + 依赖 + 协议）
-├── 4.3 4+1 视图（逻辑/进程/部署/开发/场景）
-└── 4.4 关键设计决策 ADR
-```
+**问题场景**：读写冲突 / 写写竞争 / 事务隔离。
 
-**核心架构看点**（Raft 共识 + WAL + watch 机制）：
-- Raft 共识 + WAL
-- MVCC 多版本控制
-- watch 机制 + lease
+**解决方案**：etcd v3 用 MVCC，每个 key 维护 version 链；事务 `Txn` 支持 `compare(mod_revision) → put` 原子操作。
 
-**ADR-001: 为什么是 分布式KV 方向**
-- 状态：已采纳
-- 背景：解决「Raft 共识 + WAL + watch 机制」领域的核心痛点：强一致分布式 KV，K8s 的数据底座
-- 决策：采用 Raft 共识 + WAL + watch 机制 作为核心架构思路
-- 理由：该方向在 分布式KV 领域已被广泛验证，兼顾性能、可维护性与生态
-- 替代：其他可选方案（取决于具体场景与团队技术栈）
+**关键参数**：
+- `Compare.value` / `Compare.mod_revision` / `Compare.version`
+- `Txn.when = [...]` 条件数组
+- `Txn.then / else` 操作数组
+- `Range.mode: SERIALIZABLE | LINEARIZABLE`
 
-**[反例警示]**：只画总图看不清细节；没有 ADR 不知道为什么这样设计；忽略部署视图上线才发现问题。
+**最佳实践**：分布式锁用 `compare-and-swap`；leader 选举用 `put with lease`。
 
----
+### 模式 8：Auth 与 RBAC
 
-## 5. 代码深度解析（带 WHY）⭐ 重点
+**问题场景**：多租户共享 etcd 集群；权限隔离。
 
-**[点状解析]**：每读一个文件必须回答"为什么这样写"。
+**解决方案**：`auth enable` 启 RBAC；`root` / 普通 user 配 role + permission（key prefix 范围 + 读/写/读写）。
 
-### 5.1 找骨架代码
+**关键参数**：
+- `auth enable` 启
+- `user add` / `user grant-role`
+- `role add` / `role grant-permission`
+- 权限 `{key, range_end, perm: read|write|readwrite}`
 
-**前 5 个最大源码文件**：
-```
-1. `api/etcdserverpb/gw/rpc.pb.gw.go`
-2. `api/etcdserverpb/rpc_grpc.pb.go`
-3. `server/etcdserver/server.go`
-4. `tests/integration/v3_grpc_test.go`
-5. `server/embed/config.go`
-```
+**最佳实践**：生产必开 auth；TLS 必开（`--cert-file` / `--key-file`）。
 
-**入口文件**：`contrib/raftexample/main.go`
+### 模式 9：TLS 与安全
 
-### 5.2 单文件分析卡（入口示例）
+**问题场景**：集群通信 / 客户端通信明文被嗅探。
 
-```markdown
-## 文件：contrib/raftexample/main.go
+**解决方案**：双向 mTLS（client + server + peer 三套证书）；`--auto-tls` 配 cfssl 生成测试证书；生产用 `cfssl` 正式 CA。
 
-### 职责（What）
-项目的引导入口，负责初始化配置、装配依赖、启动核心服务。
+**关键参数**：
+- `--cert-file` / `--key-file` server
+- `--client-cert-auth` 强制客户端证书
+- `--trusted-ca-file` CA
+- `--peer-cert-file` / `--peer-key-file` 节点间
 
-### 关键代码段
-（实际精读时填）
+**最佳实践**：生产必须 mTLS；证书用 1 年短周期；K8s 集成用 `kube-apiserver` 自动轮换。
 
-### 为什么这样写（WHY）❗
-- 入口越薄越好 → 让核心逻辑可独立测试
-- 配置/启动/路由三层分离 → 各层可替换
-- 显式依赖注入（而非全局变量）→ 业务代码可移植
-```
+### 模式 10：性能调优
 
-### 5.3 设计模式识别清单
+**问题场景**：高并发写延迟高 / 磁盘 IO 瓶颈 / fsync 阻塞。
 
-| 模式 | 出现位置 | 解决什么问题 |
-|---|---|---|
-| Factory | `NewXxx()` | 屏蔽复杂初始化 |
-| Observer | `OnXxx` 回调 | 解耦事件源与处理者 |
-| Middleware | `Use/Handler chain` | 链式处理横切关注点 |
-| Pool | `sync.Pool / object pool` | 减少 GC 压力 |
-| Strategy | 接口+多种实现 | 运行时切换算法 |
+**解决方案**：调整 `--election-interval` / `--heartbeat-interval`；`--max-request-bytes` 限大请求；`--quota-backend-bytes` 限存储；后端 bbolt 走 mmap。
 
-### 5.4 反模式 / 坑位识别
+**关键参数**：
+- `--election-interval=100ms`
+- `--heartbeat-interval=10ms`
+- `--max-request-bytes=1.5MB`
+- 监控 `disk_wal_fsync_duration_seconds`
 
-```bash
-grep -rn 'panic(' --include='*.go' .    # 找 panic
-grep -rn 'go func' --include='*.go' .   # 找裸 goroutine
-grep -rn 'global\|window\.' --include='*.py' .  # 找全局变量
-```
-
-### 5.5 分布式KV 项目的独特看点
-
-- **Raft 共识 + WAL + watch 机制**：这是 etcd 的"灵魂"功能，必须精读
-- **Raft 共识 + WAL**：核心架构创新
-- **MVCC 多版本控制**：性能/可用性关键
-
-**[反例警示]**：只看 What 不看 Why → 抄过来不理解；跳过测试代码 → 错过"作者怎么自测"的精华；忽略 vendor/ 依赖代码 → 失去"作者如何用 std lib"的线索。
+**最佳实践**：高写场景用 SSD + ext4/xfs；监控 `backend_commit_duration` 超过 25ms 扩容。
 
 ---
 
-## 6. 运行机制（Bring It Up）
+## 第三段：进阶范式（模式 11-15）
 
-**[点状解析]**：跑起来才算。光看代码是幻觉。
+### 模式 11：Learner 节点（非投票成员）
 
-```bash
-# 6.1 找启动脚本
-ls -la | grep -E 'Makefile|run|start|serve'
+**问题场景**：跨地域多活 / 灾备从节点；不希望影响 quorum。
 
-# 6.2 本地起服务
-make run 2>&1 | tee _analysis/run/stdout.log &
+**解决方案**：Raft learner（pre-vote + demote/promote）允许节点同步但不参与投票；v3.4+ 支持。
 
-# 6.3 smoke test
-curl -sS http://localhost:8080/health
-```
+**关键参数**：
+- `--initial-cluster` 配 learner
+- `member add --learner`
+- `member promote` 转 voter
+- 异步同步不阻塞
 
-**[反例警示]**：跳过 smoke test → 一跑就崩；不看 /proc/PID/fd → 资源泄漏查不出；不打 trace → 链路黑盒。
+**最佳实践**：跨地域复制用 learner 同步 + 异步 promote；灾备 RPO 取决于 learner 同步延迟。
 
----
+### 模式 12：Backend 存储与磁盘
 
-## 7. 演进历史（Time Travel）
+**问题场景**：bbolt 单文件膨胀 / 写放大 / 备份恢复慢。
 
-**[点状解析]**：看一个项目的"人生"，比看它"现在"更能学到东西。
+**解决方案**：bbolt 单文件 mmap；`etcdctl snapshot save/ restore` 备份恢复；`defrag` 重建文件；`compact` 物理删除历史版本。
 
-```bash
-git log --oneline --decorate --graph | head -100
-gh release list --limit 20
-```
+**关键参数**：
+- `bolt` 默认后端
+- `--quota-backend-bytes=8GB`
+- `compact` / `defrag` 子命令
+- `snapshot save` 全量
 
-**已知里程碑**：
-- v0.x 原型：MVP 验证
-- v1.0 稳定：API 冻结
-- v2.0：性能与生态
-- 现状：持续维护/社区化
+**最佳实践**：每晚 cron `compact 0` + `defrag`；`quota` 满了就告警；离线备份 `snapshot save`。
 
-**[反例警示]**：只看 master 分支 → 错过"为什么不这么写"的讨论；忽略 v1 → v2 的 commit → 错过"推翻重来的理由"；不看 issue → 错过设计权衡。
+### 模式 13：多集群与代理
 
----
+**问题场景**：客户端需要聚合查询多 etcd / 跨 region 灾备。
 
-## 8. 质量保障（How It Doesn't Break）
+**解决方案**：grpc-proxy（`etcd grpc-proxy`）聚合多集群；客户端 connect proxy 看视图一致。`DNS SRV` 记录自动发现集群端点。
 
-**[点状解析]**：测试 + CI + Lint + 性能基准，4 道防线。
+**关键参数**：
+- `--listen-addr` proxy
+- `--endpoints` 多 etcd
+- `dns+srv://` 端点格式
+- K8s 走 `etcd-endpoints` configmap
 
-| 维度 | 状态 |
-|---|---|
-| 单测 | ✅ |
-| CI | ✅ |
-| Docker | ✅ |
-| K8s | ✅ |
-| Lint 配置 | 见 - `api/go.mod`
-- `cache/go.mod`
-- `client/pkg/go.mod`
-- `client/v3/go.mod`
-- `etcdctl/go.mod` |
-| 性能基准 | 待验证 |
+**最佳实践**：跨 region 走 proxy；客户端只配 proxy 地址；proxy 自身需高可用。
 
-**[反例警示]**：只看覆盖率不看断言质量 → 100% 覆盖但测了空函数；没 CI → 本地能跑别人拉下来崩；没模糊测试 → parser 永远有边角 case 没覆盖。
+### 模式 14：运维与监控
 
----
+**问题场景**：集群出问题不告警 / 性能瓶颈难定位。
 
-## 9. 生态依赖（Map of the World）
+**解决方案**：`/metrics` Prometheus 端点；关键指标 `etcd_server_has_leader` / `etcd_disk_wal_fsync_duration_seconds` / `etcd_mvcc_db_total_size_in_bytes`；Grafana 模板。
 
-**[点状解析]**：依赖图 = 项目的"供应链"。一个 GPL 依赖毁掉整个商业版。
+**关键参数**：
+- `--listen-metrics-urls` 启指标
+- `--enable-prometheus` 旧版
+- `wal_fsync` / `backend_commit` 关键 SLO
+- `leader_elections_total` 告警
 
-**关键配置文件**：`- `api/go.mod`
-- `cache/go.mod`
-- `client/pkg/go.mod`
-- `client/v3/go.mod`
-- `etcdctl/go.mod``
+**最佳实践**：5 个核心指标告警：no leader、wal_fsync > 10ms、proposal_failed、db_size、heartbeat 延迟。
 
-**依赖合规检查清单**：
-- [ ] 全部 License 是 Apache License 或更宽松
-- [ ] 无 GPL 传染（AGPL 同理）
-- [ ] 无 3 年未更新的死库
-- [ ] 无已知 CVE
+### 模式 15：客户端与一致性
 
-**[反例警示]**：只看直接依赖 → 漏掉间接 GPL；不看 license → 上线后被法务叫停；不看 pushedAt → 用了一个已死 3 年的库。
+**问题场景**：客户端读从 leader 还是 follower；读到旧值。
+
+**解决方案**：`WithRequireLeader` / `Serializable` 选项；`MinLinearizableRead` 强制 leader；followers 读可走 `--read-replicate` 同步；多版本读不阻塞写。
+
+**关键参数**：
+- `clientv3.Config{DialTimeout: 5s, Endpoints: []string{...}}`
+- `clientv3.WithRequireLeader(ctx)`
+- `WithRev(rev)` 历史快照读
+- `concurrency.NewSession` 分布式并发原语
+
+**最佳实践**：敏感读必 `WithRequireLeader`；非敏感走 follower 提并发；`WithRev` 走 MVCC 历史。
 
 ---
 
-## 10. 生产实践（Battle-Tested）
+## 第四段：实战范式（模式 16-20）
 
-**[点状解析]**：生产里踩过的坑比文档里写得多。
+### 模式 16：选举与脑裂
 
-| 实践 | etcd 怎么做的 | 能不能抄 |
-|---|---|---|
-| 配置热更新 | viper / fsnotify (Go) / dotenv (Node) / pydantic (Python) | ✅/❓ |
-| 优雅停服 | signal.NotifyContext + Server.Shutdown | ✅/❓ |
-| 限流 | token bucket / sliding window | ✅/❓ |
-| 链路追踪 | opentelemetry SDK | ✅/❓ |
-| 健康检查 | /healthz + /readyz 双探针 | ✅/❓ |
-| 结构化日志 | zap / logrus / winston 结构化日志 | ✅/❓ |
+**问题场景**：网络分区导致双 leader；旧 leader 复活后 commit 覆盖新数据。
 
-**[反例警示]**：只看 README 怎么跑 → 上线发现没考虑 K8s readiness；没看优雅停服 → K8s 滚动更新丢请求；没看链路追踪 → 出问题查不到慢在哪。
+**解决方案**：Raft term 机制：旧 leader 见更高 term 自动 step down；commit 规则需多数派 ack；`Check Quorum` 失联超阈值自降。
 
----
+**关键参数**：
+- `--election-interval` + `--heartbeat-interval` 比 = 10:1
+- `PreVote` 防分区恢复时扰动
+- `CheckQuorum` 自检
+- 多数派原则
 
-## 11. 社区文化（People & Process）
+**最佳实践**：Pre-Vote + CheckQuorum 双保险；监控 `leader_elections_total` 频繁告警查网络。
 
-**[点状解析]**：项目能不能长寿，10% 看代码，90% 看人。
+### 模式 17：K8s 集成
 
-| 维度 | 状态 |
-|---|---|
-| 治理模式 | 待查（GOVERNANCE.md） |
-| 维护者 | 待查（MAINTAINERS.md） |
-| RFC 流程 | 待查（docs/rfcs/） |
-| 沟通渠道 | 待查（README） |
-| 议题活跃 | 48k+ star 量级 |
+**问题场景**：K8s 集群的"大脑"必须用 etcd；etcd 故障 K8s 全瘫。
 
-**[反例警示]**：只看代码不看人 → 投奔 BDFL 跑路项目；不看 issue 响应 → 项目其实已死；不看 RFC → 错过"为什么改 API"的讨论。
+**解决方案**：K8s `kube-apiserver` 直接连 etcd；`etcd-member` `etcd-operator`（v3 之前）/ `etcd-defrag` cron job / `etcd-backup-restore` Operator。
 
----
+**关键参数**：
+- `etcd-servers=https://127.0.0.1:2379`
+- `etcd-cafile` / `etcd-certfile` / `etcd-keyfile`
+- `etcd-compaction-interval` 5min
+- K8s 1.30+ 推 `etcd-defrag-controller`
 
-## 12. 教训总结（What To Steal / What To Avoid）
+**最佳实践**：K8s 节点 ≤ 5000 时 etcd 3 节点够；定期 `snapshot save` + `etcdctl snapshot restore` 演练。
 
-### 12.1 必偷的 3 件事
+### 模式 18：备份与恢复
 
-```markdown
-1. **Raft 共识 + WAL + watch 机制**（etcd 的核心）
-   - 实现思路：该方向在 分布式KV 领域已被广泛验证，兼顾性能、可维护性与生态
-   - 应用场景：Raft 共识 + WAL
-   - 自己项目：可借鉴到 云服务（AWS/阿里云）
+**问题场景**：数据误删 / 集群全挂 / 跨环境迁移。
 
-2. **Raft 共识 + WAL**（架构设计）
-   - 解耦了什么/怎么解耦
-   - 借鉴到自己的分层架构
+**解决方案**：`etcdctl snapshot save` 全量备份；`snapshot restore` 恢复新集群；K8s 走 `etcd-backup-restore` 工具；定期演练。
 
-3. **MVCC 多版本控制**（性能/可用性）
-   - 关键技巧：watch 机制 + lease
-   - 用到自己的热点路径
-```
+**关键参数**：
+- `etcdctl snapshot save backup.db`
+- `snapshot restore --name=node1 --initial-cluster=...`
+- `etcdctl backup`（v3.2 之前）
+- 加密备份 `etcdutl snapshot --encrypt`
 
-### 12.2 必避的 3 个坑
+**最佳实践**：每 6 小时全量 + 加密上传 S3；恢复演练每季度 1 次；保留 30/90/365 多档。
 
-```markdown
-1. **过度设计**（分布式KV 常见）
-   - 症状：抽象层叠层叠
-   - 解决：先跑起来再抽象
+### 模式 19：客户端重试与负载均衡
 
-2. **配置硬编码**
-   - 解决：12-factor + 显式配置
+**问题场景**：节点切换 / 网络瞬断 / 端点失效。
 
-3. **同步阻塞调用链**
-   - 解决：context + async/await
-```
+**解决方案**：`grpc-keepalive` + `grpc-timeout`；客户端 ep 自动发现（DNS SRV / 静态列表）；重试 with backoff + jitter。
 
-### 12.3 7 天复刻路线图
+**关键参数**：
+- `--dial-timeout=5s`
+- `--keepalive-time=2s --keepalive-timeout=6s`
+- 客户端 endpoint pool 自动刷新
+- gRPC retry policy
 
-```markdown
-## 7 天复刻路径（以 etcd 为例）
-- D1: 跑起来 → 混个脸熟
-- D2: 读 contrib/raftexample/main.go → 理解启动流程
-- D3: 读核心目录 `tests/e2e`, `client/v3`, `tests/fixtures`, `etcdctl/ctlv3/command`, `scripts`, `server/storage/mvcc` → 理解主流程
-- D4: 跑测试 + 改一处 → 理解可扩展点
-- D5: 自己写个 200 行的 mini-etcd（只保留核心）
-- D6: 把 Raft 共识 + WAL + watch 机制 用到自己的项目
-- D7: 写一篇博客把 5 天串起来
-```
+**最佳实践**：客户端用 `endpoints` 多端点 + balancer；服务端 `MaxConcurrentStreams` 限并发；网络 RTT > 50ms 必查。
 
-### 12.4 项目打分卡
+### 模式 20：测试与混沌工程
 
-| 维度 | 1 分 | 3 分 | 5 分 | etcd 自评 |
-|---|---|---|---|---|
-| 代码质量 | 凑合 | 工业级 | 教科书 | ⭐⭐⭐⭐⭐ |
-| 文档完整 | 没有 | 有 README | 完整 + RFC | ⭐⭐⭐⭐⭐ |
-| 社区活跃 | 死了 | 有 issue 响应 | 繁荣 | ⭐⭐⭐⭐ |
-| 设计优雅 | 能用 | 合理 | 艺术 | ⭐⭐⭐⭐ |
-| 可借鉴 | 抄不抄无所谓 | 部分可抄 | 必抄 | ⭐⭐⭐⭐ |
+**问题场景**：Raft 边界条件难测 / 网络分区难模拟 / 写丢失难发现。
 
----
+**解决方案**：`etcd` 仓库 `tests/` 集成测试 + linearizability 验证（`go-fail` 注入）；chaos-mesh 注入网络分区；Jepsen 第三方验证。
 
-## 13. 学习萃取（Cheat Sheet）
+**关键参数**：
+- `etcd/tests/integration/`
+- `go-fail` 注入故障
+- `jepsen.etcd` 框架
+- `linearizability-check`
 
-```markdown
-# 《etcd》学习卡片
-
-## 一句话价值
-> 强一致分布式 KV，K8s 的数据底座
-
-## 3 个核心洞察
-1. Raft 共识 + WAL + watch 机制：该方向在 分布式KV 领域已被广泛验证，兼顾性能、可维护性与生态
-2. Raft 共识 + WAL：MVCC 多版本控制
-3. watch 机制 + lease：可直接借鉴到自己的项目
-
-## 5 段必读代码
-1. contrib/raftexample/main.go — 启动流程
-2. api/etcdserverpb/gw/rpc.pb.gw.go — 核心实现
-3. api/etcdserverpb/rpc_grpc.pb.go — 关键算法
-4. server/etcdserver/server.go — 性能优化
-5. tests/integration/v3_grpc_test.go — 边界处理
-
-## 1 个反模式
-- 分布式KV 常见过度设计
-
-## 1 个可复用模式
-- Raft 共识 + WAL + watch 机制 实现方式
-
-## 我能马上用的 3 件事
-1. [ ] 把 Raft 共识 + WAL + watch 机制 拆成 3 个步骤
-2. [ ] 学 Raft 共识 + WAL 写一个 mini-etcd
-3. [ ] 把 MVCC 多版本控制 用到自己的 云服务（AWS/阿里云）
-```
-
----
-
-## 14. 项目特点速查（分布式KV 类）
-
-> etcd 作为 分布式KV 类项目，它的独特看点：
-
-- **Raft 共识 + WAL + watch 机制** → 该方向在 分布式KV 领域已被广泛验证，兼顾性能、可维护性与生态
-- **Raft 共识 + WAL** → MVCC 多版本控制
-- **watch 机制 + lease** → 可借鉴的工程实践
-
-**与同类的对比**：
-vs ZooKeeper / Consul：更现代 API + watch
-
----
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-|---|---|
-| 文件 | etcd-main.zip |
-| 大小 | 8.1 MB |
-| 总文件 | 1759 |
-| 解析时间 | 2026-06-01 |
-
----
-
-## 一句话总结
-
-> 解析 etcd = 计划书 + 框架图 + Raft 共识 + WAL + watch 机制 + 跑起来 + 偷过来。
+**最佳实践**：CI 跑 `make test` + `go-fail` 注入；生产前 Jepsen 验证一致性；K8s 上 chaos-mesh 演练。

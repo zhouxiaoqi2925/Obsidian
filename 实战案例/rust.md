@@ -1,487 +1,383 @@
----
-title: rust
-type: programming-language
-lang: Rust
-stars: 100000+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - programming-language
----
+# rust - 内存安全 + 零成本抽象的系统级编程语言典范
 
-# rust · 项目深度解析
+**GitHub**: rust-lang/rust
+**Star**: 100k+
+**语言**: Rust (~92%) / Python（bootstrap）/ LLVM IR
+**主题**: programming-language / compiler / borrow-checker / cargo
+**适用场景**: 学习编译器多 IR 流水线、所有权系统、Cargo 依赖管理、三层 std 架构
 
-> 全球增速最快的系统级编程语言，"内存安全 + 零成本抽象"理念的工程化身
-> 来源：G:\实战案例\GitHub顶尖项目\rust\
+> Rust 是一套用类型系统和所有权机制替代 GC 的完整生态，由 Rust 基金会 + 1000+ 贡献者维护，6 周一个 minor release。本仓库是 rustc 编译器本体（200+ 子 crate）+ 标准库（core/alloc/std/proc_macro）+ 工具链（cargo/clippy/rustfmt/rust-analyzer）的合体。
 
-## 写在前面：解析哲学
+## 第一段：基础范式（模式 1-5）
 
-Rust 不只是一个编译器，而是一套**用类型系统和所有权机制替代 GC**的完整生态。本笔记不会逐文件读 1500+ crate 的源码，而是聚焦在它最值得理解的 4 件事：① rustc 编译流程（HIR → MIR → LLVM IR）；② Borrow Checker 怎么在编译期证明内存安全；③ Cargo + crates.io 怎么把包管理做成 Rust 杀手锏；④ std core 与 alloc 三层架构怎么让 Rust 跑在嵌入式到浏览器。
+### 模式 1 · 多 IR 编译流水线
 
-## 0. 解析前的 5 个准备
+**问题场景**：单一 IR 难同时做语法检查、类型推断、借用检查、代码优化——不同分析需要不同抽象层次。
 
-1. **克隆**：`git clone https://github.com/rust-lang/rust.git`（注意 submodules）
-2. **分类**：编程语言 / 编译器 / 包管理 / 标准库
-3. **问题清单**：① ownership 怎么编译期验证？② lifetime annotation 是必需的吗？③ rustc 与 rustup 怎么协作？④ Cargo.lock 锁版本哲学？⑤ trait 系统怎么实现多态？
-4. **速查表**：`compiler/`（rustc 全部 200+ crate）/ `library/`（std/core/alloc/proc_macro 等 80+ crate）/ `src/tools/`（cargo / clippy / rustfmt）/ `tests/`（UI 测试 + 集成测试）
-5. **锁定 commit**：基于 1.84 stable 分支
+**解决方案**：HIR（High-level IR）→ MIR（Mid-level IR）→ LLVM IR 三层流水线——HIR 喂给类型检查 + 借用检查，MIR 做控制流图 + 借用检查 + 优化，LLVM IR 交给 LLVM 优化 + 指令生成。
 
-## 1. 开发计划书（Project Charter）
+**关键参数**：
+- 解析阶段：`rustc_lexer` → `rustc_parse` → AST
+- Lowering：`rustc_ast_lowering` 把 AST 降到 HIR
+- 类型检查：`rustc_typeck` 推断 + 强制约束
+- 借用检查：`rustc_borrowck` 在 HIR/MIR 上证明所有权
+- 代码生成：`rustc_codegen_llvm` 或 `rustc_codegen_cranelift`
+- 单态化：MIR → LLVM IR 时按泛型参数展开
 
-| 项 | 内容 |
-|---|---|
-| 项目名 | Rust |
-| 定位 | 系统级编程语言，专注内存安全 + 并发安全 + 零成本抽象 |
-| 核心问题 | C/C++ 内存不安全；GC 语言性能差；OOP 范式难用于低层 |
-| 用户 | 系统程序员、WebAssembly、嵌入式、CLI 工具、Linux 内核 |
-| 商业模式 | Rust 基金会（2021 成立） + 商业公司（AWS / Google / Microsoft / Huawei） |
-| 复刻难度 | ★★★★★（编译器 + 标准库 + 包管理 + 工具链 + 200+ 子 crate） |
-| 状态 | 活跃；6 周一个 minor release |
-| 团队 | Rust 基金会 + Project 团队（lang / libs / compiler / cargo / dev-tools / infra） + 1000+ 贡献者 |
-| 里程碑 | 2006 Graydon Hoare 起手 · 2010 Mozilla 接手 · 2015 1.0 稳定 · 2018 1.31 async/.await · 2020 1.56 const fn · 2021 Rust 基金会 · 2022 1.65 GATs · 2024 1.78 async fn in trait · 2025 1.85 edition 2024 |
+**最佳实践**：编译器分多 IR 是工业标准（vs. 单 IR 重复分析快 N 倍）；每阶段做最适合的分析任务。
 
-## 2. 项目框架（Repo Skeleton Map）
+### 模式 2 · Borrow Checker 编译期内存安全
 
-```mermaid
-mindmap
-  root((rust-lang/rust))
-    compiler rustc
-      rustc_ast AST
-      rustc_hir HIR
-      rustc_mir MIR
-      rustc_borrowck 借用检查
-      rustc_llvm 后端
-      rustc_codegen_cranelift
-      rustc_session
-      rustc_driver
-    library std
-      core 核心
-      alloc 堆分配
-      std 标准库
-      proc_macro
-      test
-      stdarch SIMD
-    tools
-      cargo 包管理
-      rustdoc
-      rustfmt
-      clippy
-      rust-analyzer
-      rust-gdb
-      rustup
-    tests
-      ui 编译错误测试
-      run-pass
-      assembly
-    src bootstrap
-    library portable-simd
-```
+**问题场景**：C/C++ 内存不安全（use-after-free / double-free / 数据竞争）；GC 语言性能差且延迟不可预测；OOP 范式难用于低层。
 
-**核心角色**：
-- `compiler/`：rustc 编译器本体，200+ 子 crate
-- `library/`：标准库，4 个核心 crate（core / alloc / std / proc_macro）
-- `src/tools/`：cargo / clippy / rustfmt / rust-analyzer
-- `src/bootstrap/`：自举构建脚本
-- `tests/`：UI 测试（基于 stderr 快照）
-
-**代码入口**：
-- `compiler/rustc_driver/src/lib.rs`：`rustc` main
-- `src/tools/cargo/src/cargo/main.rs`：`cargo` main
-- `library/std/src/lib.rs`：标准库入口
-
-## 3. 项目画像（Profile）
-
-| 指标 | 数值 / 描述 |
-|---|---|
-| 总文件数 | ~50000（含 stdlib + compiler + tests） |
-| 主语言 | Rust (~92%) |
-| 涉及语言 | Rust / Python（bootstrap / 工具脚本）/ LLVM IR / C（少量 C 库） |
-| Star | 100k+ |
-| License | MIT + Apache-2.0 |
-| Docker | 官方 `rust:1.85-bookworm` |
-| K8s | 库；K8s 自身用 Rust（kubelet 部分） |
-| CI | 自家 `rust-lang/rust-ci` + GitHub Actions |
-| 有测试 | 是；UI 测试 + run-pass + 性能基准 |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-### 4.1 编译流程
-
-```mermaid
-flowchart TB
-  SRC[.rs 源码] --> PARSE[Parser]
-  PARSE --> AST[AST]
-  AST --> LOW[AST Lowering]
-  LOW --> HIR[HIR]
-  HIR --> TYPE[Type Check]
-  TYPE --> BORROW[Borrow Check]
-  BORROW --> MIR[MIR]
-  MIR --> OPT[MIR Opt]
-  OPT --> MONO[Monomorphization]
-  MONO --> LLVM[LLVM IR / Cranelift]
-  LLVM --> ASM[机器码]
-```
-
-**HIR（High-level IR）**：类型检查 + 借用检查的输入。
-**MIR（Mid-level IR）**：控制流图，做借用检查 + 优化。
-**LLVM IR**：交给 LLVM 优化 + 指令生成。
-
-**WHY 多 IR**：每个 IR 阶段做最适合的分析，比单 IR 重复分析快。
-
-### 4.2 Borrow Checker
-
-借用检查是 Rust 的灵魂。规则：
-1. **每个值有唯一所有者**
-2. **借用分共享 `&T` / 独占 `&mut T` 两种**
-3. **共享借用期间，值不能被独占借用**
-4. **独占借用期间，值不能再被任何借用**
+**解决方案**：Borrow Checker 编译期静态分析——每个值有唯一所有者，借用分共享 `&T` / 独占 `&mut T`，共享期间不能独占，独占期间不能共享。
 
 ```rust
 fn main() {
     let mut s = String::from("hello");
-    let r1 = &s;      // OK：共享
+    let r1 = &s;      // OK：共享借用
     let r2 = &s;      // OK：可多个共享
-    // let r3 = &mut s; // ERROR：r1/r2 还活着
+    // let r3 = &mut s; // ERROR：r1/r2 还活着，独占冲突
     println!("{} {}", r1, r2);
     let r3 = &mut s;  // OK：r1/r2 不再使用
     r3.push_str("!");
 }
 ```
 
-**WHY 这套规则**：把"内存安全"从"运行时 GC / 引用计数"挪到"编译期静态分析"，0 运行时开销。
+**关键参数**：
+- 4 条核心规则 = 每个值有唯一所有者 / 共享 `&T` / 独占 `&mut T` / 排他性
+- NLL（Non-Lexical Lifetimes）= 借用生命周期按使用范围算，非词法作用域
+- Polonius = 新一代 Datalog 借用检查（nightly）
+- 0 运行时开销 = 编译期静态证明
+- 错误诊断 = `rustc_borrowck/src/diagnostics/mod.rs` 模板厚
 
-### 4.3 三层 std 架构
+**最佳实践**：把"内存安全"从运行时 GC / 引用计数挪到编译期静态分析，0 运行时开销是 Rust 杀手锏。
 
-```mermaid
-flowchart TB
-  CORE[core 核心] --> ALLOC[alloc 堆分配]
-  ALLOC --> STD[std 标准库]
-  CORE --> PROC[proc_macro]
-  STD --> TEST[test]
-  STD --> STDSIMD[stdarch SIMD]
-```
+### 模式 3 · 三层 std 架构（core/alloc/std）
 
-- `core`：无堆、无 OS（`no_std` 跑得动）
-- `alloc`：加堆分配，无 OS
-- `std`：加 OS（文件 / 网络 / 线程）
+**问题场景**：同一套语言要支持 MCU 嵌入式（无堆无 OS）、内核（无标准库）、桌面/服务器（要 OS），怎么分层？
 
-**WHY 三层**：嵌入式、OS 内核、WebAssembly 等 `no_std` 场景用 core；普通应用用 std。
+**解决方案**：`core`（无堆无 OS）→ `alloc`（加堆无 OS）→ `std`（加 OS）三层依赖——`no_std` 工程用 `core`，普通应用 `use std::*`。
 
-### 4.4 Cargo 生态
+**关键参数**：
+- `core` = 基础 trait、切片、整数、浮点（`no_std` 跑得动）
+- `alloc` = `Vec` / `String` / `Box` 等堆分配
+- `std` = `File` / `Thread` / `TcpStream` 等 OS 调用
+- `proc_macro` = 编译期代码生成（与 core 平级）
+- `stdarch` = SIMD intrinsics
 
-```mermaid
-flowchart LR
-  CRATES[crates.io] --> CARGO[Cargo]
-  CARGO --> RES[Registry]
-  CARGO --> LOCK[Cargo.lock]
-  CARGO --> BUILD[rustc 编译]
-  BUILD --> ART[crate artifact]
-```
+**最佳实践**：库代码默认 `no_std + alloc` 兼容——只依赖 core/alloc，让 MCU/内核/WASM 都能用，应用层再 opt-in std。
 
-`Cargo.toml` + `Cargo.lock` 模式：
-- `Cargo.toml` 声明依赖（语义版本）
-- `Cargo.lock` 锁定精确版本（提交到 git）
-- `cargo build` 优先用 lock，没 lock 才用 toml
+### 模式 4 · Cargo + Cargo.lock 锁版本哲学
 
-**WHY lock 入库**：可复现构建，CI 与本地一致。
+**问题场景**：依赖版本飘移导致"本地能跑 CI 挂"、"昨天能跑今天挂"；语义版本（semver）不能完全保证兼容。
 
-### 4.5 核心架构看点（3 条）
+**解决方案**：`Cargo.toml` 声明语义版本（`^1.2.3`），`Cargo.lock` 锁定精确版本（提交到 git），`cargo build` 优先用 lock，没 lock 才用 toml。
 
-1. **HIR/MIR/LLVM IR 三层 IR 流水线**：每个阶段做最适合分析
-2. **Borrow Checker 编译期验证所有权**：0 运行时开销的内存安全
-3. **core/alloc/std 三层**：让 Rust 从嵌入式到浏览器都能跑
+**关键参数**：
+- `Cargo.toml` = 人类可读声明，含 `^1.2.3` / `~1.2` / `*` 等约束
+- `Cargo.lock` = 机器生成的精确版本图（应入库）
+- `cargo build` 顺序 = 先查 lock → 再查 toml → 再查 registry
+- workspace = 多 crate 单仓（共享 lock）
+- 工具链 = `rust-toolchain.toml` 锁 rustc/cargo 版本
 
-### 4.6 关键 ADR
+**最佳实践**：应用项目 `Cargo.lock` 必入库（可复现构建），库项目 `Cargo.lock` 加 `.gitignore`（避免限制下游）。
 
-- **2015 1.0**：语法 + 所有权 + trait 稳定，承诺向后兼容
-- **2018 1.31**：`async/.await` 稳定
-- **2020 1.56**：`const fn` 通用化，编译期计算
-- **2022 1.65**：GATs（Generic Associated Types）稳定
-- **2024 1.78**：`async fn` in trait + RPITIT（return position impl trait in trait）
-- **2025 1.85**：edition 2024 引入 let chains、gen blocks
+### 模式 5 · Trait 系统多态
 
-## 5. 代码深度解析（带 WHY）⭐
+**问题场景**：静态分发（泛型）性能好但代码膨胀；动态分发（trait object）灵活但有 vtable 开销——怎么选？
 
-### 5.1 找骨架代码
+**解决方案**：Trait 系统 + 单态化——泛型 `<T: Trait>` 默认静态分发（编译器为每个 T 复制一份代码），`dyn Trait` 显式动态分发（运行时 vtable）。
 
-`rustc` 启动链：
-1. `compiler/rustc_driver/src/lib.rs` → `run_compiler`
-2. `Session` 初始化 → `rustc_session`
-3. `rustc_lexer` → `rustc_parse` → AST
-4. `rustc_ast_lowering` → HIR
-5. `rustc_typeck` → 类型检查
-6. `rustc_borrowck` → 借用检查
-7. `rustc_mir` → MIR 构建 + 优化
-8. `rustc_codegen_llvm` → LLVM IR
-9. LLVM 优化 + 指令生成
+**关键参数**：
+- 静态分发 = `<T: Display>` 编译期展开，零开销
+- 动态分发 = `Box<dyn Display>` 运行时查 vtable，开销 1 次间接跳转
+- Trait Object = `dyn Trait` 指针 + 宽指针（data + vtable）
+- 异步 trait = `async-trait` crate / 1.78 起 `async fn in trait`
+- RPITIT = Return Position Impl Trait In Trait（1.78 稳定）
 
-### 5.2 单文件分析卡
+**最佳实践**：性能敏感路径用静态分发（泛型），异构集合（`Vec<Box<dyn Animal>>`）用动态分发——按需选择，不要"全 dyn"也不要"全泛型"。
 
-#### `compiler/rustc_borrowck/src/diagnostics/mod.rs`
+## 第二段：扩展范式（模式 6-10）
 
-借用错误诊断模板。**WHY 厚**：错误信息是 Rust 的强项，每条都有人类语言解释 + 修复建议。
+### 模式 6 · Edition 语法演进
 
-#### `compiler/rustc_mir/src/borrow_check/mod.rs`
+**问题场景**：语言需要演进（加新语法、改语义），但又不能破坏存量代码；用户不想重写老项目。
 
-借用检查主算法。Polonius 是新一代 Datalog 实现，正在迁移。
+**解决方案**：Edition 机制——2015 / 2018 / 2021 / 2024 四代共存，crate 用 `edition = "2024"` 显式声明，老 edition 永远兼容。
 
-#### `compiler/rustc_typeck/src/check/mod.rs`
+**关键参数**：
+- 2015 → 2018：模块系统、impl Trait、async/await
+- 2018 → 2021：disjoint capture、panic macros
+- 2021 → 2024：let chains、gen blocks、unsafe extern
+- 跨 edition 兼容 = `cargo fix --edition` 自动迁移
+- 编译器支持 = 同一 rustc 同时编译所有 edition
 
-类型检查入口，类型推断 + 强制约束。
+**最佳实践**：新项目用最新 edition，老项目按节奏（每 3 年一次 edition 升级）迁移；不要长期停 2015 edition。
 
-#### `compiler/rustc_llvm/src/lib.rs`
+### 模式 7 · Procedural Macros 编译期代码生成
 
-LLVM 桥接：`rustc_llvm::Context` / `Module` / `Builder` 包装 LLVM C API。
+**问题场景**：`#[derive(Debug, Clone)]` 这类样板代码手写太烦；想给类型附加通用行为（序列化、Builder、SQL 映射）。
 
-#### `library/core/src/iter/mod.rs`（~5000 行）
+**解决方案**：proc-macro crate（依赖 `proc_macro` 库）——编译器调用用户编写的 Rust 函数，拿到 TokenStream 改写后返回，编译期生成代码。
 
-迭代器 trait：`Iterator` + `IntoIterator` + 大量 `Iterator::map` / `filter` / `fold` 实现。**WHY 这么厚**：迭代器是 Rust 函数式编程核心。
+**关键参数**：
+- `#[derive(MyDerive)]` = 结构体上声明要派生
+- `proc_macro2` = 稳定的 TokenStream 操作
+- `syn` = 解析 Rust 语法树
+- `quote` = 生成 Rust 代码
+- 编译期执行 = 0 运行时开销
 
-#### `library/std/src/sync/mutex.rs`
+**最佳实践**：写库必备 `#[derive(Debug, Clone, PartialEq, Eq, Hash)]` 五件套；自定义 derive 用 `syn` + `quote` 组合。
 
-`Mutex<T>` 实现。Rust 标记 `T: Send` 自动证明 Mutex 跨线程安全。
+### 模式 8 · Async/.await 稳定化
 
-#### `library/std/src/thread/mod.rs`
+**问题场景**：回调地狱（callback hell）嵌套深、可读性差；线程池对 IO 密集型浪费（每连接 1 线程 = 8MB 栈）。
 
-线程 + `std::thread::spawn` 闭包。
+**解决方案**：`async fn` 编译为状态机，返回 `Future`；`executor`（tokio / async-std）poll Future；`.await` 暂停点 = 协作式调度。
 
-#### `src/tools/cargo/src/cargo/ops/cargo_build.rs`
+**关键参数**：
+- `async fn foo() -> Result<T, E>` 返回 `impl Future<Output = Result<T, E>>`
+- 暂停点 = `.await`，保存状态机到堆
+- 调度器 = tokio（多线程 / 单线程）
+- 1.78 = `async fn in trait` 稳定（无需 async-trait crate）
+- Pin / Unpin = 自引用 Future 的内存安全
 
-`cargo build` 实现：解析 manifest、查 registry、下载、编译。
+**最佳实践**：IO 密集型用 async + tokio；CPU 密集型用 `rayon` 并行迭代；不要混用 `std::sync::Mutex` + tokio（会跨 await 持锁死锁）。
 
-### 5.3 设计模式
+### 模式 9 · Const Generics 与数组泛型
 
-- **Builder**：`Command::new().arg().env()` 链式
-- **RAII**：`MutexGuard` 出作用域自动 unlock
-- **Newtype**：`struct Meters(f64)` 区分单位
-- **Trait Object**：`Box<dyn Trait>` 动态分发
-- **Type State**：`struct Locked; struct Unlocked;` 用类型表达状态
+**问题场景**：泛型 `Vec<T>` 容易，但 `Array<T, N>` 怎么表达"任意长度的数组"？传统宏展开代码丑。
 
-### 5.4 反模式
+**解决方案**：Const Generics——`[T; N]` 中 N 接受 const 值，编译器为每个 N 单态化一份代码（vs. 宏的代码生成）。
 
-1. **`unwrap()` 滥用**：panic 多，库代码应该返回 `Result`
-2. **`clone()` 解借用冲突**：掩盖真实所有权问题
-3. **`String` 而非 `&str`**：堆分配 vs 借用的性能差距
-4. **`std::sync::Mutex` vs `tokio::sync::Mutex`**：同步/异步混用易死锁
+**关键参数**：
+- 1.51 起 `[T; N]` 支持 const N
+- `impl<T, const N: usize> Array<T, N>` = 任意 N 数组的 trait
+- 单态化 = 每个 N 编译一份代码，0 抽象开销
+- 限制 = 不支持 const fn 调用图灵完备运算（1.85+ 部分放宽）
+- 用途 = 矩阵、张量、SIMD 寄存器包装
 
-### 5.5 独特看点
+**最佳实践**：库代码用 const generics 表达"任意大小"——比宏展开可读，比 trait object 快。
 
-- **Edition**：2015 / 2018 / 2021 / 2024 语法演进，不破坏老代码
-- **Procedural Macros**：`#[derive(Debug)]` 等是编译期代码生成
-- **Trait Specialization**（nightly）：trait 默认实现 + 特殊化
-- **Const Generics**：`[T; N]` 任意 N 数组
-- **async-trait** / **async fn in trait**：异步 trait 表达
+### 模式 10 · Type State Pattern
 
-## 6. 运行机制（Bring It Up）
+**问题场景**：对象有多个状态（连接、鉴权、上传、关闭），状态机用 enum 表达后，状态转换合法性靠运行时检查——太晚。
 
-### 6.1 本地构建
-
-```bash
-git clone https://github.com/rust-lang/rust.git
-cd rust
-./configure
-python x.py build
-```
-
-### 6.2 Smoke test
+**解决方案**：Type State Pattern——用类型表达状态，`struct Locked; struct Unlocked;`，状态转换函数消耗旧状态返回新类型，非法状态在编译期拒绝。
 
 ```rust
-// main.rs
-fn main() {
-    let mut v = vec![1, 2, 3];
-    v.push(4);
-    println!("{:?}", v);  // [1, 2, 3, 4]
+struct Connection<State> { state: State, /* ... */ }
+struct Open;
+struct Closed;
+
+impl Connection<Open> {
+    fn close(self) -> Connection<Closed> { Connection { state: Closed, ..self } }
 }
 ```
 
-```bash
-rustc main.rs
-./main
+**关键参数**：
+- Zero-Sized Type（ZST）= 状态用空 struct 表达，0 运行时开销
+- 转换函数 = `fn close(self) -> NewState`，消耗 self
+- 编译期拒绝 = 调 `closed.send()` 编译错误
+- 适用 = 锁、连接、Builder、IO 状态机
+- 库例 = `typestate` 模式在 tokio / hyper 大量使用
+
+**最佳实践**：状态机密集的资源（连接、锁、Builder）用 type state 编码状态——把运行时错误变编译期错误。
+
+## 第三段：进阶范式（模式 11-15）
+
+### 模式 11 · MIR 优化 Pass
+
+**问题场景**：LLVM IR 优化粒度粗（看不到 Rust 特有语义）；想做 Rust 专属优化（常量传播、死代码消除、借用检查下沉）需要中间层。
+
+**解决方案**：MIR（Mid-level IR）——控制流图（CFG）+ 类型保留的中间表示，rustc 跑数十个 MIR 优化 pass 后再丢给 LLVM。
+
+**关键参数**：
+- MIR pass = `rustc_mir/src/transform/` 下的 `const_prop.rs` / `dead_code_elimination.rs` / `inline.rs`
+- 常量传播 = `const fn` 求值下沉到 MIR
+- 内联 = 跨 crate 也能 inline（Cross-crate inlining）
+- GVN / LICM = 公共子表达式删除 / 循环不变代码外提
+- MIR opt 优势 = 看到 Rust 语义（lifetime / borrow），LLVM 看不到
+
+**最佳实践**：写 `#[inline]` 标注小函数、热点路径用 `#[inline(always)]`；编译器 MIR pass 比 LLVM 优化更懂 Rust 语义。
+
+### 模式 12 · Cargo Registry 与依赖图
+
+**问题场景**：包管理要做到"快速、确定、可复现"；依赖冲突（不同 crate 要求不同版本）怎么解？
+
+**解决方案**：`crates.io` 中心化 registry + Cargo 依赖求解器——读取所有 `Cargo.toml` 约束，建约束图，semver 求解生成 `Cargo.lock`。
+
+**关键参数**：
+- `crates.io` = 官方 registry（Web API + S3 存储）
+- 依赖求解 = backtracking algorithm（NP 难但 crate 少时够用）
+- 特性开关 = `[features] default = ["std"]` 条件编译
+- workspaces = 多 crate 单 repo，共享 lock
+- 替代 registry = 公司内网（`sparse` 协议）
+
+**最佳实践**：用 `cargo update -p <crate>` 单点升级；用 `cargo tree` 查依赖图；用 `[patch.crates-io]` 临时替换 crate 修 bug。
+
+### 模式 13 · UI 测试与 stderr 快照
+
+**问题场景**：编译器错误信息是 Rust 强项，怎么保证"重构不改错误信息"？手动 review 几百条编译失败用例不可行。
+
+**解决方案**：UI 测试——`tests/ui/*.rs` 编译预期失败，stderr 与 `.stderr` 快照文件 diff；任何错误信息改动必须显式更新快照。
+
+**关键参数**：
+- 测试目录 = `tests/ui/`（数万文件）
+- 快照文件 = `tests/ui/<name>.stderr`
+- 工具 = `cargo test` + `compiletest` crate
+- 跑法 = 编译 + 比对 stderr + 期望状态（pass / fail / warn）
+- 更新 = `cargo bless`（CI 用 `--bless` 显式触发）
+
+**最佳实践**：改编译器错误信息要跑 `cargo test --bless` 更新快照；故意破坏错误信息会被 CI 抓住。
+
+### 模式 14 · rust-analyzer LSP 实现
+
+**问题场景**：IDE 需要实时语法高亮、自动补全、跳转到定义、重构——单独写一套等价于写半个 rustc。
+
+**解决方案**：rust-analyzer 复用 rustc 的 `rustc_*` crate 作为库（vs. 把它当黑盒）——LSP 服务把 rustc 的 HIR/MIR 暴露给编辑器。
+
+**关键参数**：
+- 核心 = `ide` + `hir` crate
+- LSP 协议 = JSON-RPC over stdio
+- 能力 = autocomplete / go-to-def / find-refs / rename / refactor
+- 性能权衡 = 启动慢（要建 symbol 表），编辑流畅（增量重算）
+- 替代 = 老的 RLS（Rust Language Server）已弃用
+
+**最佳实践**：用 rust-analyzer 而不是 RLS；VSCode 装 `rust-analyzer` 扩展而非 `Rust`（老 RLS 包装）。
+
+### 模式 15 · RAII + Drop trait
+
+**问题场景**：C++ 资源管理靠成对 `new/delete` / `lock/unlock` / `fopen/fclose`，容易泄漏；Java/Python 用 try-finally 但繁琐。
+
+**解决方案**：RAII（Resource Acquisition Is Initialization）——资源在构造函数获取，`Drop::drop()` 析构时自动释放，编译器保证作用域结束必调。
+
+```rust
+{
+    let _guard = mutex.lock();  // 获取
+    // ... 临界区 ...
+}  // 离开作用域，_guard.drop() 自动 unlock
 ```
 
-### 6.3 启动链路
+**关键参数**：
+- `Drop` trait = `fn drop(&mut self)`，编译器保证调用
+- 移动语义 = 资源所有权随 `let x = y` 转移，原变量失效
+- `Drop` 链 = 字段析构顺序与声明顺序相反
+- 不能抛异常 = Drop 中 panic = abort
+- 库例 = `MutexGuard` / `File` / `TcpStream` / `Vec<u8>` 都 RAII
 
-```mermaid
-sequenceDiagram
-  participant U as 用户
-  participant R as rustc
-  participant P as Parser
-  participant TC as Type Check
-  participant BC as Borrow Check
-  participant MIR as MIR
-  participant CG as CodeGen
-  U->>R: rustc main.rs
-  R->>P: 解析 + AST
-  P->>TC: AST → HIR
-  TC->>BC: HIR
-  BC->>MIR: HIR → MIR
-  MIR->>CG: MIR + 单态化
-  CG->>CG: LLVM IR + 优化
-  CG-->>R: .o
-  R-->>U: 链接 + 可执行文件
+**最佳实践**：写资源包装类型必实现 `Drop`；绝不 `unwrap()` 写在 Drop 里（panic 会 abort）；用 `ManuallyDrop` 标注故意不析构的字段。
+
+## 第四段：实战范式（模式 16-20）
+
+### 模式 16 · Polonius 与下一代 Borrow Checker
+
+**问题场景**：现行 NLL（Non-Lexical Lifetimes）借用检查有"假阳性"——明明代码安全但编译失败（典型：跨 if 块的 `&mut` 重用）。
+
+**解决方案**：Polonius——用 Datalog 声明式语言重写借用检查，支持"loan 存活到最后一个使用点"，消除大部分假阳性。
+
+**关键参数**：
+- 状态 = nightly（`RUSTFLAGS="-Z polonius"`）
+- 优势 = 复杂借用模式（链表/图）通过率提升 30%+
+- 性能 = 比 NLL 慢 2-3 倍（仍在优化）
+- 迁移 = 替代 `rustc_borrowck` 主算法
+- 备选 = 临时绕道（`mem::take` / 拆分函数）
+
+**最佳实践**：nightly 尝鲜 Polonius；stable 遇假阳性用 `Rc<RefCell<T>>` 临时绕道，不要硬改业务逻辑。
+
+### 模式 17 · 异步生态（Tokio / async-std）
+
+**问题场景**：async 语法稳定了，但"runtime 选哪个"、"smol vs tokio vs async-std" 怎么选？
+
+**解决方案**：Tokio 是事实标准（vs. async-std）——多线程 + 工作窃取调度 + 同步原语齐全 + 生态最广（hyper / axum / tonic 都用）。
+
+**关键参数**：
+- 调度器 = `tokio::main` 宏默认多线程（worker 线程数 = CPU 核数）
+- 同步原语 = `tokio::sync::Mutex`（跨 await 安全）vs `std::sync::Mutex`（跨 await 死锁）
+- 超时 = `tokio::time::timeout(Duration::from_secs(5), fut)`
+- 取消 = `tokio::select!` + `tokio_util::sync::CancellationToken`
+- 通道 = `mpsc` / `oneshot` / `broadcast` / `watch`
+
+**最佳实践**：新项目用 tokio；不要 `std::sync::Mutex` 跨 `.await`；用 `tokio::spawn` + `JoinHandle` 显式管理任务。
+
+### 模式 18 · FFI 与 C 互操作
+
+**问题场景**：Rust 要调 C 库（OpenSSL / SQLite / 系统调用），C 库要调 Rust 写的高性能模块——怎么做？
+
+**解决方案**：`extern "C" fn` 声明 C ABI 函数，`#[no_mangle]` 标注 Rust 函数导出名；`bindgen` 自动生成声明，`cbindgen` 自动生成 C 头。
+
+**关键参数**：
+- `extern "C" { fn abs(x: i32) -> i32; }` = 声明 C 函数
+- `#[no_mangle] pub extern "C" fn add(a: i32, b: i32) -> i32` = 导出 Rust 函数
+- 类型映射 = C `char*` ↔ Rust `*const c_char` / `CString`
+- bindgen = 从 `.h` 自动生成 Rust 声明
+- cbindgen = 从 Rust 自动生成 `.h`
+
+**最佳实践**：FFI 边界用 `repr(C)` 结构体；C 字符串用 `CString`（带 `\0`）vs `CStr`（借用）；不要在 FFI 边界抛 panic（`catch_unwind` 包一层）。
+
+### 模式 19 · 嵌入式与 no_std 实战
+
+**问题场景**：Rust 想跑 MCU（ARM Cortex-M / RISC-V），无 OS、无堆、标准库不能用——怎么写？
+
+**解决方案**：`no_std` crate（仅依赖 `core`） + `cortex-m-rt` 启动运行时 + `embedded-hal` 硬件抽象 trait + `rtic` 实时框架。
+
+**关键参数**：
+- `#![no_std]` = 禁用 std 链接
+- `core` 仍可用 = 类型、trait、迭代器
+- `heapless::Vec<T, N>` = 栈分配定长 Vec（替代堆）
+- `cortex-m-rt` = 启动代码 + 中断向量表
+- 烧录 = `cargo build --release` → `probe-rs run`
+
+**最佳实践**：嵌入式先写 `no_std` + `heapless`；需要堆时 `embedded-alloc` 配静态内存；用 `defmt` 替代 `println!`（二进制日志、节省 flash）。
+
+### 模式 20 · 7 天复刻 mini-Rust 路线
+
+**问题场景**：想理解 rustc 架构但没空读 200+ crate；想做个 mini-Rust 玩具编译器练手。
+
+**解决方案**：7 天 MVP——Day 1 Parser + AST，Day 2 HIR + 类型，Day 3-4 Borrow Check，Day 5 MIR，Day 6 Codegen LLVM，Day 7 Cargo。
+
+```
+Day 1: Parser + AST（手写递归下降）
+Day 2: HIR + 类型系统（变量绑定、函数签名）
+Day 3-4: Borrow Check（共享/独占借用、NLL）
+Day 5: MIR（控制流图、单态化）
+Day 6: LLVM IR Codegen（用 inkwell crate）
+Day 7: mini-Cargo（解析 toml、依赖图、调用 rustc）
 ```
 
-## 7. 演进历史
+**关键参数**：
+- 核心算法 = 借用检查（NLL 简化版）
+- Codegen 库 = `inkwell`（LLVM 安全的 Rust 绑定）
+- 语法子集 = `fn / let / if / while / & / &mut` 6 种
+- 类型系统 = `i32 / bool / &T` 3 种
+- 输出 = 编译到 .o + 调 `cc` 链接
 
-```mermaid
-gantt
-  title Rust 关键版本
-  dateFormat YYYY-MM
-  section 起源
-  0.1 Mozilla :done, 2012-01, 24m
-  1.0 稳定 :done, 2015-05, 6m
-  1.15 edition2015 :done, 2017-02, 6m
-  section 工业化
-  1.31 async/await :done, 2018-12, 6m
-  1.56 const fn :done, 2020-10, 6m
-  1.65 GATs :done, 2022-11, 6m
-  section 当代
-  1.78 async in trait :done, 2024-05, 6m
-  1.85 edition 2024 :active, 2025-02, 6m
-  1.86 计划中 :2025-09, 6m
-```
+**最佳实践**：先做"能跑通 fibonacci 的 mini-Rust"再谈扩展；Borrow Checker 是最难的部分，建议先看 Polonius 论文再实现。
 
-## 8. 质量保障
+## 项目速查
 
-- **UI 测试**：`tests/ui/` 数万文件，stderr 快照回归
-- **集成测试**：`tests/run-pass/`
-- **性能基准**：`library/core/benches/`
-- **Fuzzing**：自建 `fuzz/` + cargo-fuzz
-- **CI**：rust-lang 自有基础设施 + GitHub Actions
-- **Triage**：每周 triage meeting 处理 issue
-
-## 9. 生态依赖
-
-```mermaid
-flowchart LR
-  R[Rust] --> LLVM
-  R --> libtest
-  R --> libstd
-  R --> libc
-  R --> mimalloc/jemalloc
-  R -.可选.-> openssl
-  R -.可选.-> zlib
-  R -.可选.-> libgit2
-  R -.可选.-> libssh2
-```
-
-## 10. 生产实践
-
-| 能力 | 是否支持 | 备注 |
-|---|---|---|
-| 配置热更新 | N/A | 编译型 |
-| 优雅停服 | 是 | `Drop` trait |
-| 限流 | 是 | `tokio::sync::Semaphore` |
-| 链路追踪 | 是 | `tracing` crate |
-| 健康检查 | 是 | `actix-web` / `axum` |
-| 结构化日志 | 是 | `slog` / `tracing` |
-| 异步 | 是 | tokio / async-std |
-
-## 11. 社区文化
-
-- **治理**：Rust 基金会 + Project 团队（lang/libs/compiler/cargo/dev-tools/infra）
-- **维护者**：~30 个 core team 成员 + 数百 contributor
-- **RFC**：GitHub `rust-lang/rfcs`
-- **沟通**：Zulip + Discord + Discourse
-- **议题活跃**：日均 100+ issue；6 周 release
-
-## 12. 教训总结
-
-### 12.1 必偷 3 件
-
-1. **Borrow Checker 编译期验证**：把"内存安全"从运行时挪到编译期
-2. **core/alloc/std 三层**：让同一套代码跑嵌入式到浏览器
-3. **Cargo + Cargo.lock**：可复现构建是工程化的关键
-
-### 12.2 必避 3 坑
-
-1. **不要 `unwrap()` 滥用**：库代码应返回 `Result`
-2. **不要 `clone()` 解借用冲突**：掩盖真实所有权问题
-3. **不要把 `String` 当 `&str` 用**：堆分配 vs 借用性能差 10 倍
-
-### 12.3 7 天复刻 mini-Rust
-
-```mermaid
-gantt
-  title 7天复刻 mini-Rust
-  dateFormat YYYY-MM-DD
-  section 阶段
-  Day1 Parser + AST :a1, 2026-06-01, 1d
-  Day2 HIR + 类型 :a2, after a1, 1d
-  Day3 Borrow Check :a3, after a2, 2d
-  Day4 MIR :a4, after a3, 1d
-  Day5 Codegen LLVM :a5, after a4, 1d
-  Day6 Cargo :a6, after a5, 1d
-  Day7 std 基础 :a7, after a6, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数 | 评语 |
-|---|---|---|
-| 架构清晰 | 9 | crate 边界极清晰 |
-| 代码可读 | 8 | 类型即文档 |
-| 文档 | 9 | doc.rust-lang.org + The Book |
-| 测试 | 9 | UI 测试 + 性能 |
-| 性能 | 9 | 零成本抽象 |
-| 上手难度 | 3 | ownership 心智模型需 1-2 月 |
-
-## 13. 学习萃取
-
-**一句话价值**：Rust 用 Borrow Checker + 三层 std + Cargo 三件套，把"系统编程"从"小心手写 C"变成"编译期证明安全"。
-
-### 3 核心洞察
-
-1. **Borrow Checker 是核心创新**：编译期证明内存安全
-2. **三层 std 架构让语言普适**：从 MCU 到浏览器
-3. **Cargo + lockfile = 可复现构建**：工程化的关键
-
-### 5 段必读代码
-
-1. `compiler/rustc_borrowck/src/borrow_check/mod.rs` —— 借用检查主算法
-2. `compiler/rustc_mir/src/transform/mod.rs` —— MIR 优化 pass
-3. `library/core/src/iter/mod.rs` —— 迭代器设计
-4. `library/std/src/sync/mutex.rs` —— RAII 锁
-5. `src/tools/cargo/src/cargo/ops/cargo_build.rs` —— Cargo 编译流程
-
-### 1 反模式
-
-- `unwrap()` 滥用：库代码 panic 满天飞
-
-### 1 可复用模式
-
-- **RAII + 借用检查模式**：可移植到任何 C++ 现代编程
-
-### 3 立刻能用
-
-1. `cargo build --release` 默认开 LTO 性能最强
-2. `cargo clippy -- -D warnings` 强制零警告
-3. `#[derive(Debug, Clone, PartialEq, Eq, Hash)]` 必备 trait
-
-## 14. 项目特点速查
-
-- 独特看点：唯一把"内存安全 + 零成本抽象 + 高性能"三者统一的开源语言
-- 同类对比：
-
-```mermaid
-quadrantChart
-  title 系统编程语言对比
-  x-axis 低安全性 --> 高安全性
-  y-axis 低性能 --> 高性能
-  "Rust": [0.95, 0.95]
-  "C++": [0.3, 0.95]
-  "Zig": [0.5, 0.9]
-  "Go": [0.8, 0.6]
-  "Swift": [0.7, 0.7]
-```
-
-## 附：仓库元信息
-
-- 路径：G:\实战案例\GitHub顶尖项目\rust\
+**仓库元信息**：
+- 路径：`G:\实战案例\GitHub顶尖项目\rust\`
 - 大小：~700 MB
 - 总文件：~50000
-- 解析时间：2026-06-02
+- License：MIT + Apache-2.0
+- 状态：1.85 stable（2025-02）
 
-## 一句话总结
+**核心 crate**：
+- 编译器：`rustc_ast` / `rustc_hir` / `rustc_mir` / `rustc_borrowck` / `rustc_llvm` / `rustc_driver`
+- 标准库：`core` / `alloc` / `std` / `proc_macro` / `test` / `stdarch`
+- 工具：`cargo` / `clippy` / `rustfmt` / `rust-analyzer` / `rustup`
+- 测试：`tests/ui/`（数万文件 stderr 快照）+ `tests/run-pass/` + 性能基准
 
-解析 Rust = 读懂 Borrow Checker + 跑通 cargo build + 偷走"编译期证明"思想。
+**3 核心洞察**：
+1. Borrow Checker 编译期证明内存安全 = Rust 唯一性
+2. core/alloc/std 三层让 Rust 从 MCU 跑到浏览器
+3. Cargo + lockfile = 可复现构建 = 工程化关键
+
+**1 反模式**：`unwrap()` 滥用导致库代码 panic 满天飞。
+
+**3 立刻能用**：
+1. `cargo build --release` 默认开 LTO 性能最强
+2. `cargo clippy -- -D warnings` 强制零警告
+3. `#[derive(Debug, Clone, PartialEq, Eq, Hash)]` 必备五件套
