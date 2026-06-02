@@ -15,7 +15,7 @@ set "LOG_FILE=%LOG_DIR%\backup-%date:~0,4%%date:~5,2%%date:~8,2%.log"
 set "START_TIME=%time%"
 set "DATE_STAMP=%date% %time:~0,8%"
 
-echo ==================================== >  "%LOG_FILE%"
+echo ==================================== >> "%LOG_FILE%"
 echo  Obsidian Vault Auto Backup >>       "%LOG_FILE%"
 echo  %DATE_STAMP% >>                      "%LOG_FILE%"
 echo ==================================== >> "%LOG_FILE%"

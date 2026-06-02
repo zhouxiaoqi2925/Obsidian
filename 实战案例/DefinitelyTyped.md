@@ -1,228 +1,130 @@
----
-title: DefinitelyTyped
-type: TypeScript 类型定义仓库
-lang: TypeScript
-stars: 50k+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - TypeScript
-  - 类型定义
-  - monorepo
-  - pnpm
----
+# DefinitelyTyped - 类型治理仓库
 
-# DefinitelyTyped · 项目深度解析
-
-> Definitely Typed — 高质量 TypeScript 类型定义的高频仓库，承载 8000+ npm 包、62000+ 文件、50k+ stars。
-> 来源：`G:\实战案例\GitHub顶尖项目\DefinitelyTyped\`
-
-## 写在前面：解析哲学
-
-按 V3 模版，**先骨架后血肉，先 What 后 Why，最后 How to steal**。每个小节都遵循"点状解析 → 思维导图 → 代码 WHY → 反例警示"。
-
-```mermaid
-mindmap
-  root((DefinitelyTyped<br/>深度解析))
-    哲学层
-      解析哲学
-      0.解析前准备
-    项目层
-      1.开发计划书
-      2.项目框架
-      3.项目画像
-    架构层
-      4.架构设计
-      5.代码深度解析
-      6.运行机制
-    时间层
-      7.演进历史
-      8.质量保障
-    生态层
-      9.生态依赖
-      10.生产实践
-      11.社区文化
-    萃取层
-      12.教训总结
-      13.学习萃取
-      14.项目特点速查
-```
+**来源**：GitHub DefinitelyTyped/DefinitelyTyped (50k+ stars)
+**创建时间**：2026-06-02
 
 ---
 
-## 0. 解析前的 5 个准备
+## 一、类型机制（Type Mechanics）
 
-**[点状解析]**：拿到仓库后先做 5 件不起眼但极重要的事，避免后面返工。
+### 1. types/{pkg}/ 5 文件约定（约定优于配置）
 
-1. **不要用普通克隆**：DT 仓库 1.6GB+、62848 文件，必须用 `git clone --filter=blob:none --depth 1` 或 `blobless clone`
-2. **建 `_analysis` 子目录**：62000+ 文件无法全部读入，按 `types/{pkg}/` 维度抽样
-3. **写问题清单（5 问）**：DT 为何用 pnpm monorepo？mergebot 自动化 PR 的工作原理？`@types` scope 的双下划线转义？typesVersions/dist-tags 如何支持多 TS 版本？`ts5.0/5.1/5.2` 切换器怎么实现？
-4. **速查表**：DT 仓库本身约 1.6GB、Microsoft 旗下、`@types/*` 共 8000+ 包
-5. **锁定 commit**：DT 每天 100+ PR，必须固定 commit，否则 diff 会乱
+**问题场景**：8000+ 个包、1 万贡献者，任何"灵活配置"都会让治理崩溃。DT 用 5 个铁律文件**消除一切认知负担**——看一个包就能理解所有包。
 
-**[反例警示]**：直接 `pnpm install` → 安装 1.6GB node_modules 几小时；用 `npm install` → 走 npm 7+ workspaces 也能跑，但 pnpm 缓存命中率远高于 npm；以为 `types/` 目录全是要发布的 → 实际只发布符合 SUPPORT WINDOW 的 TS 版本。
-
----
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-|---|---|
-| 项目名 | DefinitelyTyped（`@types/*` scope） |
-| 一句话定位 | npm 上 JavaScript 库的高质量 TypeScript 类型定义集中仓库，每天发布到 npm `@types` 命名空间 |
-| 核心问题 | 2012-2014 年 JS 库没有 TypeScript 类型，开发者要手写 `declare module 'foo' {}`；DT 提供"一个地方，统一发布" |
-| 目标用户 | 1) 写 TS 应用的开发者（自动获得类型补全） 2) 维护 JS 库的小团队（不用自己写 .d.ts） |
-| 商业模式 | 完全免费，Microsoft 运营（"@types/*" scope 的 npm publish 权限归 Microsoft） |
-| 复刻难度 | ⭐⭐⭐⭐（仓库管理难，单个类型文件易；难点在"8000 个包同时发布 + 自动化 PR review"） |
-| 当前状态 | 活跃（每天 100+ PR、50+ 新包、活跃维护者 200+） |
-| 团队规模 | Microsoft TypeScript 团队 + 200+ DT maintainers + 10000+ 贡献者 |
-| 关键里程碑 | 2012 由 Boris Yankov 创立 → 2014 Microsoft 接管 → 2016 dtslint 引入 → 2020 dts-gen 工具化 → 2022 切换 pnpm monorepo → 2023 mergebot 上线 |
-
-**[反例警示]**：把 DT 当成"普通 monorepo" → 它的"一个 PR 只能改一个包"、"PR title 必须带 package 名"、"AI 工具必须带 `[auto-generated]` 标记" 等规则是**社区规范化**的产物；以为 "DT 提供类型 = 库本身带类型" → 现代库应直接捆绑 .d.ts（"Bundled types"），DT 是 fallback 方案。
-
----
-
-## 2. 项目框架（Repo Skeleton Map）
-
-**[点状解析]**：DT 是一个**典型的 monorepo 仓库**——根目录 4 个文件、80% 内容是 8000+ `types/{pkg}/` 目录。每个 type 包结构完全一致（**约定优于配置**）。从 2022 年起从 npm 7 workspaces 切换到 pnpm 9 workspaces，因为 pnpm 的硬链接节省 90% 磁盘。
-
-```mermaid
-mindmap
-  root((DT 框架))
-    types 8000+ 包
-      react
-        index.d.ts 类型
-        react-tests.ts 测试
-        package.json 元数据
-        tsconfig.json 配置
-        .npmignore
-        OLD-VerSIONS
-      node
-        index.d.ts
-        70+ 子模块
-        32+ web-globals
-      lodash
-        index.d.ts 1万+ 行
-        commonjs/ esm/
-      jest
-        index.d.ts
-    scripts
-      get-ci-matrix.js
-      ghostbuster.js 找丢失 owner
-      clean-node-modules.js
-      support-window.js
-      update-codeowners.js
-    .github
-      workflows
-        CI.yml 主流程
-        format-and-commit
-        lint-md
-        ghostbuster
-        pnpm-cache
-      ISSUE_TEMPLATE
-      CODEOWNERS 自动归属
-    docs
-      admin.md 维护者手册
-      support-window.svg
-    根配置
-      package.json
-      pnpm-workspace.yaml
-      .npmrc
-      .prettierrc
-      .husky/pre-commit
-```
-
-**实际配置入口**：`package.json` + `pnpm-workspace.yaml`（monorepo 元数据）
-
-**实际代码入口**：`types/{pkg}/index.d.ts`（8000+ 个并行入口，约定优于配置）
-
-**核心目录**：`types/`（8000+ 目录）、`scripts/`（13 个 Node 工具脚本）、`.github/`（9 个 workflow）
-
-**[反例警示]**：忽略 `.github/CODEOWNERS` → 提交 PR 时没人 review；直接 `cd types/react` → 那不是 npm 实际路径，必须用 pnpm workspace 过滤；以为 `OLD-VERSIONS` 是 deprecated → 实际是**历史版本存档**，新 PR 不能改。
-
----
-
-## 3. 项目画像（Profile）
-
-| 维度 | 数据 |
-|---|---|
-| 总文件数 | 62,848 |
-| 主语言 | TypeScript（类型定义，~95%）、JavaScript（CI 脚本，~3%）、YAML（CI 配置，~2%） |
-| 涉及语言 | TS、JS、YAML、Shell |
-| Star | 50k+（GitHub `DefinitelyTyped/DefinitelyTyped`） |
-| License | MIT License（类型定义本身）；不同包按被定义库的原 license |
-| Docker 支持 | ❌（无 Dockerfile） |
-| K8s 支持 | ❌ |
-| CI 配置 | ✅（9 个 GitHub Actions workflow，矩阵运行） |
-| 有测试 | ✅（每个包 `-tests.ts` 文件 + dtslint 工具） |
-
----
-
-## 4. 架构设计（Architecture Deep Dive）
-
-**[点状解析]**：DT 的"架构"不是代码架构，而是**仓库治理架构**。它用 pnpm workspace + CODEOWNERS + mergebot + dtslint 4 个齿轮，让 10000+ 贡献者能并行提交而不出乱。
-
-```mermaid
-mindmap
-  root((DT 治理架构))
-    仓库层
-      pnpm workspace
-        pnpm-workspace.yaml
-        types/* 8千+ 子包
-        硬链接 node_modules
-      .npmrc
-        私有 registry
-        hoisting 关闭
-    自动化层
-      mergebot
-        自动认领 PR
-        自动 @owner
-        自动 lint 反馈
-        自动 close spam
-      dt-bot
-        老版 bot 旧逻辑
-        已弃用但留兼容性
-      dangerbot
-        PR 检查
-        评论建议
-    代码层
-      dtslint
-        类型编译验证
-        expectError/expectType
-        实际代码不执行
-      dts-gen
-        脚手架生成器
-        npx dts-gen --dt
-    治理层
-      CODEOWNERS
-        @types/react → react 维护者
-        自动 GitHub mention
-      support-window
-        TS 版本支持矩阵
-        2 年支持窗口
-    发布层
-      publisher
-        cron 定时
-        自动 publish to npm
-        @types/* scope
-```
-
-### 核心架构看点
-
-**1. `types/{pkg}/` 强制约定**（每个包都一样的 4-5 文件）
+**解决方案**：
 ```
 types/react/
-├── index.d.ts           # 必需：类型定义
-├── react-tests.ts       # 必需：测试（代码不执行，只 type-check）
-├── package.json         # 必需：元数据
-├── tsconfig.json        # 必需：编译配置
-├── .npmignore           # 必需：发布排除
-└── OLD-VERSIONS/        # 可选：历史版本
+├── index.d.ts           # 必需：类型定义主体
+├── react-tests.ts       # 必需：编译即测试
+├── package.json         # 必需：元数据 + typesVersions
+├── tsconfig.json        # 必需：strict + typeRoots 配置
+└── .npmignore           # 必需：发布排除（保留 -tests.ts 之外）
+
+types/node/
+├── index.d.ts           # 70+ 子模块 reference
+├── fs.d.ts              # 子模块
+├── http.d.ts
+├── ...
+└── tsconfig.json
 ```
 
-**WHY**：约定优于配置。**任何贡献者只要复制 5 个文件就能新建包**。10000+ 贡献者并行工作的前提是"零认知成本"——看一个包就能理解所有包。
+每个 `package.json` 模板：
+```json
+{
+  "name": "@types/react",
+  "version": "18.2.0",
+  "description": "TypeScript definitions for react",
+  "license": "MIT",
+  "contributors": [
+    { "name": "Asad Saeeduddin", "githubUsername": "asad-saeeduddin" }
+  ],
+  "main": "",
+  "types": "index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+    "directory": "types/react"
+  },
+  "scripts": {},
+  "dependencies": {
+    "csstype": "~3.0.2"
+  },
+  "peerDependencies": {}
+}
+```
 
-**2. `tsconfig.json` 强制 strict + skipLibCheck**（types/react/tsconfig.json 等）
+**关键参数**：
+
+| 文件 | 作用 | 必填 |
+|---|---|---|
+| `index.d.ts` | 类型定义主体 | ✅ |
+| `*-tests.ts` | 类型测试（编译时） | ✅ |
+| `package.json` | npm 元数据 | ✅ |
+| `tsconfig.json` | strict + baseUrl 配置 | ✅ |
+| `.npmignore` | 排除发布（除 index.d.ts） | ✅ |
+| `OLD-VERSIONS/` | 历史版本（只读） | ❌ |
+| `ts5.0/` `ts5.1/` | TS 版本切换 | ❌ |
+
+**最佳实践**：
+1. ✅ **复制 5 文件就建新包**——任何贡献者零学习成本
+2. ✅ `index.d.ts` 是唯一对外暴露的入口，其它文件不发布到 npm
+3. ✅ `*-tests.ts` 后缀让 TypeScript 编译器在 build 时**强制检查**
+4. ✅ `package.json` 的 `types` 字段必须指向 `index.d.ts`
+5. ✅ `OLD-VERSIONS/` 是只读区——新 PR 不能动它（历史快照）
+
+### 2. 三层 lib reference（Node.js 类型的扩展术）
+
+**问题场景**：Node.js 类型需要用 TS 5.2+ 新增的 `using` 语法（`Symbol.dispose`），但又不能"重新发明"这个类型。DT 用 **三层 lib reference** 借用 TS 内置 lib，再扩展。
+
+**解决方案**：
+```ts
+// types/node/index.d.ts
+/// <reference lib="es2020" />
+/// <reference lib="esnext.disposable" />
+/// <reference lib="esnext.float16" />
+
+// 70+ 子模块 reference
+/// <reference path="fs.d.ts" />
+/// <reference path="fs/promises.d.ts" />
+/// <reference path="http.d.ts" />
+/// <reference path="https.d.ts" />
+/// <reference path="net.d.ts" />
+/// <reference path="stream.d.ts" />
+/// <reference path="stream/consumers.d.ts" />
+/// <reference path="stream/web.d.ts" />
+// ... 70+ 行
+
+// 扩展内置 lib
+declare global {
+    namespace NodeJS {
+        interface ProcessEnv {
+            [key: string]: string | undefined;
+        }
+    }
+}
+```
+
+**关键参数**：
+
+| reference 类型 | 作用 | 语法 |
+|---|---|---|
+| `lib` | 引用 TS 内置 lib（`es2020`/`esnext.*`） | `/// <reference lib="..." />` |
+| `path` | 引用同包其它 .d.ts 文件 | `/// <reference path="..." />` |
+| `types` | 引入 npm 包类型 | tsconfig 字段 `types: ["node"]` |
+| `triple-slash` 注释 | TS 1.x 时代的"include"机制 | 仍可工作但建议现代代码用 `import type` |
+
+**最佳实践**：
+1. ✅ `lib reference` 一定要先于代码——保证 lib 类型已加载
+2. ✅ 70+ sub-module reference 一次性写在 `index.d.ts` 顶部
+3. ✅ 不要在 sub-module .d.ts 里再 reference 同级（循环引用会编译警告）
+4. ✅ `declare global` 扩展 NodeJS.ProcessEnv 等内置类型
+5. ✅ 用 `Symbol.dispose`（TS 5.2+）时必须先 `reference lib="esnext.disposable"`
+
+### 3. tsconfig.json strict + typeRoots 范式
+
+**问题场景**：DT 包要测"自己 + 依赖"，但不能引入 `@types/node`（污染全局）。每个 type 包用一致的 tsconfig 配置——`strict` 强制类型严格、`baseUrl: "../"` 让依赖可见、`types: []` 防止全局污染。
+
+**解决方案**：
 ```json
 {
   "compilerOptions": {
@@ -236,110 +138,582 @@ types/react/
     "typeRoots": ["../"],
     "types": [],
     "noEmit": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "include": ["."],
+  "files": ["index.d.ts", "react-tests.ts"]
+}
+```
+
+**关键参数**：
+
+| 配置 | 推荐 | 作用 |
+|---|---|---|
+| `module` | `commonjs` | DT 测试用 CommonJS（兼容性最好） |
+| `noImplicitAny` | `true` | 禁止隐式 any |
+| `strict` | `true` | 严格模式总开关 |
+| `baseUrl` | `"../"` | 允许 `import from "../other-types"` |
+| `typeRoots` | `["../"]` | 只认 `./` 下的 type 包 |
+| `types: []` | **空数组** | 关键：禁止全局类型污染 |
+| `noEmit` | `true` | 只 type-check，不输出 .js |
+| `skipLibCheck` | `true` | 跳过 .d.ts 自身检查（速度） |
+
+**最佳实践**：
+1. ✅ `types: []` 是 DT 范式核心——避免 `@types/node` 自动污染所有包
+2. ✅ `baseUrl: "../"` + `typeRoots: ["../"]` 组合是 DT 独有模式
+3. ✅ `noImplicitAny: true` + `strictNullChecks: true` 强制类型严格
+4. ✅ `forceConsistentCasingInFileNames` 防 Mac/Windows 大小写不一致
+5. ✅ `skipLibCheck: true` 跳过 .d.ts 内部检查（dtslint 的性能关键）
+
+### 4. ts5.0/ts5.1 dist-tags 多版本切换
+
+**问题场景**：旧项目还跑 TS 4.x，新项目跑 TS 5.6+。DT 包**一个版本无法同时兼容所有 TS 版本**。DT 用 npm **dist-tags** 让 `@types/react@ts5.0` 指向旧版、`@types/react@latest` 指向新版。
+
+**解决方案**：
+```bash
+# 发布多个 dist-tag（DefinitelyTyped-tools/publisher 脚本自动）
+npm publish --tag ts4.0 .   # 旧版
+npm publish --tag ts4.8 .
+npm publish --tag ts5.0 .
+npm publish --tag ts5.1 .
+npm publish --tag ts5.2 .
+npm publish --tag latest .  # 最新
+
+# 用户用 npm 8+ 自动匹配
+npm install @types/react
+# npm 会读 package.json 的 engines.ts 自动选对应 dist-tag
+
+# 或显式指定
+npm install @types/react@ts5.0
+```
+
+`package.json` 里的 engines 字段：
+```json
+{
+  "name": "@types/react",
+  "engines": {
+    "node": ">=18"
+  },
+  "typesVersions": {
+    ">=5.0.0-0": {
+      "*": ["ts5.0/*"]
+    },
+    ">=4.8.0-0": {
+      "*": ["ts4.8/*"]
+    }
   }
 }
 ```
 
-**WHY**：`baseUrl: "../"` + `typeRoots: ["../"]` 让"本包类型测试可以引用其他包类型"（如 react 测试可以引用 csstype）。**`types: []` 强制不引入 @types/node 等全局类型**——保证 .d.ts 干净。
+**关键参数**：
 
-**3. **-tests.ts 编译但不执行的奇思**（dtslint 黑魔法）
+| dist-tag | 含义 | 用户场景 |
+|---|---|---|
+| `ts4.8` | TS 4.8-5.0 兼容 | 旧项目 |
+| `ts5.0` | TS 5.0-5.2 兼容 | 主流项目 |
+| `ts5.1` | TS 5.1+ | 新项目 |
+| `latest` | 最新发布 | 默认 |
+| `next` | beta/rc | 测试 |
+
+**最佳实践**：
+1. ✅ npm 8+ 会根据 `engines.ts` 自动选 dist-tag，无需手动指定
+2. ✅ **不要在 CI 中固定到 dist-tag**——`@types/react@ts5.0` 可能过期
+3. ✅ 升级 TS 时把旧 dist-tag 保留 6 个月——给用户缓冲
+4. ✅ `ts5.0/`、`ts5.1/` 子目录存不同版本的 .d.ts
+5. ✅ 旧 dist-tag 失效前在 GitHub Discussions 公告
+
+### 5. OLD-VERSIONS 历史存档（只读考古区）
+
+**问题场景**：用户从 `react@15` 升级到 `react@18`，需要回看 2015 年的类型签名。DT 保留所有历史版本在 `OLD-VERSIONS/`，但**禁止新 PR 修改**——这是考古博物馆。
+
+**解决方案**：
+```
+types/react/
+├── OLD-VERSIONS/
+│   ├── 0.14/
+│   │   ├── index.d.ts
+│   │   ├── react-tests.ts
+│   │   └── package.json
+│   ├── 15.0/
+│   │   └── ...
+│   ├── 16.0/
+│   │   └── ...
+│   └── 17.0/
+│       └── ...
+├── index.d.ts           ← 当前版本
+├── react-tests.ts
+├── package.json
+└── tsconfig.json
+```
+
+OLD-VERSIONS 的 package.json 用 `deprecated` 字段：
+```json
+{
+  "name": "@types/react",
+  "version": "15.0.0",
+  "deprecated": "This is a deprecated version of @types/react. Please upgrade to the latest version."
+}
+```
+
+**关键参数**：
+
+| 文件 | 是否可改 | 何时 |
+|---|---|---|
+| `OLD-VERSIONS/*` | ❌ 不可改 | 历史快照，永久 |
+| `index.d.ts` | ✅ 可改 | 当前版本演进 |
+| `ts5.0/*` | ❌ 不可改 | 旧 dist-tag 锁定 |
+| `ts5.1/*` | ✅ 可改 | 当前主推 |
+
+**最佳实践**：
+1. ✅ 升级大版本时新建 `ts5.X/` 目录，**不直接覆盖**旧版
+2. ✅ OLD-VERSIONS 文件夹可用来 git blame 历史 bug
+3. ✅ `deprecated` 字段让 npm 提示用户升级
+4. ✅ 用户从 npm 装 `react@15` 类型时，DT 自动选 OLD-VERSIONS
+5. ✅ CI 跑 symlink 检查时 OLD-VERSIONS 也不能有 symlink
+
+## 二、Monorepo 治理（Repository Governance）
+
+### 6. pnpm monorepo 工作区（硬链接省 90% 磁盘）
+
+**问题场景**：8000+ 包，npm 7 workspaces 装一遍要几十 GB 磁盘（每个包独立 `node_modules`）。DT 2022 年从 npm workspaces 切换到 **pnpm 9 workspaces**——用硬链接共享 node_modules，磁盘降到 1.6GB。
+
+**解决方案**：
+```yaml
+# pnpm-workspace.yaml
+packages:
+  - "types/*"
+```
+
+```ini
+# .npmrc
+registry=https://registry.npmjs.org/
+strict-peer-dependencies=false
+auto-install-peers=true
+shamefully-hoist=false
+```
+
+```json
+// 根 package.json
+{
+  "name": "definitely-typed",
+  "private": true,
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "dtslint --files types",
+    "lint": "eslint scripts"
+  },
+  "devDependencies": {
+    "@definitelytyped/dtslint": "^0.0.127",
+    "@definitelytyped/dts-gen": "^0.5.0",
+    "pnpm": "^9.0.0"
+  }
+}
+```
+
+**关键参数**：
+
+| 配置 | 推荐 | 作用 |
+|---|---|---|
+| `packages: "types/*"` | - | 8000+ 包都算 workspace |
+| `registry` | `https://registry.npmjs.org/` | 官方源 |
+| `shamefully-hoist` | `false` | 不用 npm 兼容模式（更快） |
+| `strict-peer-dependencies` | `false` | DT 接受 peer dep 缺失 |
+| `auto-install-peers` | `true` | 自动装 peer deps |
+
+**最佳实践**：
+1. ✅ pnpm 9 + `corepack enable` 启用——不要全局装 pnpm
+2. ✅ 单包测试用 `pnpm --filter @types/react test`，不要全量
+3. ✅ `shamefully-hoist: false` 保持 pnpm 严格依赖图
+4. ✅ 升级 pnpm 9+ 才支持 DT 当前的硬链接优化
+5. ✅ Windows + WSL 2 是最佳开发环境（pnpm 硬链接在 NTFS 上有 bug）
+
+### 7. CODEOWNERS 自动路由（按包分片 owner）
+
+**问题场景**：10000 贡献者提交 PR，maintainer 怎么知道"这次 PR 归谁 review"？手动 @ 不到所有人。DT 用 GitHub 原生 **CODEOWNERS** 文件，让 GitHub 自动 @owner。
+
+**解决方案**：
+```gitignore
+# .github/CODEOWNERS（节选）
+
+# 默认 owner 是 DT maintainers 团队
+*                                       @DefinitelyTyped/DefinitelyTyped
+
+# React / React-DOM 由社区 lead 维护
+/types/react/                           @asad-saeeduddin
+/types/react-dom/                       @asad-saeeduddin
+
+# Node.js 由官方 maintainers 维护
+/types/node/                            @DefinitelyTyped/DefinitelyTyped
+/types/node-fetch/                      @types-node-fetch-maintainers
+
+# Lodash 由团队维护
+/types/lodash/                          @types-lodash-maintainers
+
+# CSS 相关
+/types/csstype/                         @types-css-maintainers
+```
+
+提交 PR 时 GitHub 自动：
+1. 解析 PR 改了哪些路径
+2. 匹配 CODEOWNERS
+3. 在 PR 评论里 @ 对应 owner
+4. **没 owner approve 不能 merge**（GitHub 强制）
+
+**关键参数**：
+
+| 路径模式 | owner 写法 | 触发条件 |
+|---|---|---|
+| `*` | `@org/team` | 默认 fallback |
+| `/types/react/` | `@username` | 精确路径 |
+| `/types/react-*/` | `@team` | 通配符 |
+| `**/test.ts` | `@team` | 任意子目录 |
+
+**最佳实践**：
+1. ✅ 一个包至少有 1-2 个 owner——防止"孤儿包"
+2. ✅ ghostbuster 脚本每周扫"无 owner 的包"，自动 issue 提醒
+3. ✅ owner 自己也要写类型——不能挂名不做事
+4. ✅ 大包（react/vue）有多人 co-maintain——避免单点失联
+5. ✅ CODEOWNERS 改动要 PR 提——不要直接 push
+
+### 8. mergebot 自动 @owner/lint/merge（PR 自治）
+
+**问题场景**：1000+ PR/天，人 review 不完。DT 用 **mergebot** 7x24 自动跑 dtslint、自动 @owner、全过则自动 merge。人类只 review"分歧点"。
+
+**解决方案**：
+```yaml
+# .github/workflows/mergebot.yml
+name: Merge Bot
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Run dt-mergebot
+        uses: DefinitelyTyped/dt-mergebot@main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DT_BOT_USER_TOKEN: ${{ secrets.DT_BOT_TOKEN }}
+```
+
+mergebot 做的事：
+```ts
+// dt-mergebot/src/index.ts 简化
+async function processPR(pr: PullRequest) {
+    // 1. 识别包名（PR title 必须 "Package: description"）
+    const pkgMatch = pr.title.match(/^([a-z0-9-]+):/);
+    if (!pkgMatch) {
+        await pr.comment('PR title must start with package name');
+        return;
+    }
+    const pkg = pkgMatch[1];
+
+    // 2. 找 owner
+    const owners = await getOwners(pkg);
+    await pr.comment(`@${owners.join(' @')}`);
+
+    // 3. 跑 dtslint
+    const lint = await runDtslint(pkg);
+    if (lint.failed) {
+        await pr.comment('Lint failed: ' + lint.errors);
+        return;
+    }
+
+    // 4. 等 approve
+    if (pr.approvals < 1) return;
+
+    // 5. 自动 merge
+    await pr.merge();
+}
+```
+
+**关键参数**：
+
+| 触发事件 | bot 行为 |
+|---|---|
+| `pull_request: opened` | 识别包名、@owner、跑 lint |
+| `pull_request: synchronize` | 重跑 lint |
+| `issue_comment: created` | 识别"rebuild"等指令 |
+| `pull_request: closed` | 清理分支 |
+
+**最佳实践**：
+1. ✅ PR title 必须 `Package: 描述`——bot 不识别会卡住
+2. ✅ AI 自动 PR 必须带 `[auto-generated]` 标签
+3. ✅ AI 一次只能提一个 PR（README 明文禁止）
+4. ✅ Bot 评论失败可手动 re-run
+5. ✅ 不要在 PR 评论里"@ bot"——bot 不响应
+
+### 9. AI 反作弊条款（README 9-18 行）
+
+**问题场景**：2024 年起，AI 工具（如 Cursor/Copilot）能"批量给所有 untyped 包提 PR"——但这些 PR 质量低、没有真实使用。DT 2024 年在 README **明文禁止** AI spam。
+
+**解决方案**：
+```markdown
+<!-- README.md 9-18 行（DT 强规范） -->
+
+## Don't write a PR
+
+- The package itself includes types (e.g. `axios` ships .d.ts, don't add @types/axios)
+- The PR is generated by AI without verification
+- You're submitting PRs for a large number of packages at once
+- You have not actually used the package's types in a real project
+- You're fixing an issue without explaining why your fix is correct
+- The PR title is not `Package-Name: Description`
+
+## AI 工具特别要求
+
+- 必须 PR title 加 `[auto-generated]` 标签
+- 一次只能提一个 PR（禁止批量给 100 个包提 PR）
+- 必须有人在真实项目里用过这些类型
+- CI 全过才能 merge（bot 自动跑 dtslint）
+```
+
+**关键参数**：
+
+| 禁止行为 | 后果 |
+|---|---|
+| 批量 AI 提 PR | bot 自动 close + 警告 |
+| 库自带 .d.ts 还装 @types | 重复类型冲突 |
+| 标题不规范 | mergebot 跳过 |
+| 无真实使用 | maintainer 拒绝 |
+
+**最佳实践**：
+1. ✅ AI 生成的 PR 必须标 `[auto-generated]` 让人识别
+2. ✅ 一次只改一个包——不要跨包提 PR
+3. ✅ 修改前先在真实 TS 项目里用 @types/foo 验证
+4. ✅ PR 描述里说明"为什么这样改是对的"——不只是改代码
+5. ✅ 库自带 .d.ts 时**不要**新建 @types/foo
+
+### 10. SUPPORT WINDOW 2 年滚动窗口
+
+**问题场景**：TS 5.0 发布后，DT 旧类型（如 TS 4.x 兼容写法）需要持续测试。维护成本太高。DT 引入 **2 年 SUPPORT WINDOW**——TS 5.0 发布两年后放弃测试，专注新版。
+
+**解决方案**：
+```yaml
+# .github/workflows/CI.yml 的矩阵
+strategy:
+  matrix:
+    # SUPPORT WINDOW 决定测试哪些 TS 版本
+    ts: ['4.8', '4.9', '5.0', '5.1', '5.2', '5.3', '5.4', '5.5', '5.6']
+    # 老的 TS 4.0-4.7 已退出 WINDOW，不再测试
+```
+
+window 滚动规则：
+```js
+// scripts/support-window.js
+const TS_RELEASES = {
+    '5.0': '2023-03-14',
+    '5.1': '2023-11-01',
+    '5.2': '2024-08-22',
+    '5.3': '2024-11-12',
+    '5.4': '2025-01-22',
+    // ...
+};
+
+const WINDOW_YEARS = 2;
+
+function inWindow(version) {
+    const release = new Date(TS_RELEASES[version]);
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - WINDOW_YEARS);
+    return release > cutoff;
+}
+```
+
+**关键参数**：
+
+| TS 版本 | 发布日 | 退出 WINDOW | 当前状态 |
+|---|---|---|---|
+| 4.0 | 2020-08 | 2022-08 | 已退出 |
+| 4.8 | 2022-08 | 2024-08 | 边缘（半年内退出） |
+| 5.0 | 2023-03 | 2025-03 | 在窗口内 |
+| 5.4 | 2025-01 | 2027-01 | 在窗口内 |
+
+**最佳实践**：
+1. ✅ 新 TS 版本发布后**当天**进 SUPPORT WINDOW
+2. ✅ 旧版本出窗口后不再跑 CI（节省 30% CI 时间）
+3. ✅ 升级 `ts5.0/` 目录不删除——dist-tag 还能用
+4. ✅ 用户用 TS 4.0 时——必须自己 fork 老版 DT
+5. ✅ WINDOW 公告在 GitHub Discussions——提前 3 个月通知
+
+## 三、CI 与发布（CI & Publishing）
+
+### 11. -tests.ts 编译即测试（零运行时）
+
+**问题场景**：8000+ 包用 jest/mocha 测试不现实（要装运行时框架）。DT 用 **types-only tests**——测试代码不执行，只让 tsc 编译。编译失败 = 测试失败。
+
+**解决方案**：
 ```ts
 // types/react/react-tests.ts
 import * as React from 'react';
-const el = <div className="foo" />;  // 不渲染，只类型检查
-expectType<JSX.Element>(el);         // dtslint 自定义函数
-expectError(<div invalidProp="x" />);  // 期望编译报错
+import { expectType, expectError, expectAssignable } from 'dtslint';
+
+// 期望类型
+const el = <div className="foo" />;
+expectType<JSX.Element>(el);
+
+// 期望编译错误
+expectError(<div invalidProp="x" />);
+
+// 期望可赋值
+const handler: React.MouseEventHandler = (e) => {
+    expectType<React.MouseEvent>(e);
+    expectAssignable<MouseEvent>(e.nativeEvent);
+};
+
+// 异步测试
+async function fetchUser() {
+    const user = await api.getUser();
+    expectType<Promise<User>>(api.getUser());
+    return user;
+}
 ```
 
-**WHY**：测试代码**永远不执行**，只让 TypeScript 编译器检查。这样：1) 不需要运行时框架（jest/mocha）2) 极快（毫秒级）3) 任何人都能写 4) 编译错误就是测试失败。**这是 dtslint 的灵魂**。
-
-```mermaid
-sequenceDiagram
-    participant Dev as 贡献者
-    participant Git as GitHub PR
-    participant Bot as mergebot
-    participant CI as GitHub Actions
-    participant NPM as npm registry
-    Dev->>Git: 提交 types/react/foo.d.ts
-    Git->>Bot: webhook 触发
-    Bot->>Bot: 识别包名 react
-    Bot->>Bot: @-mention react owners
-    Bot->>Bot: 跑 dtslint 反馈
-    Bot->>CI: 触发 CI workflow
-    CI->>CI: pnpm install
-    CI->>CI: tsc 编译所有改动的包
-    CI->>Git: 报告结果
-    Dev->>Git: 修复 + 更新
-    Bot->>Bot: 全部 OK 自动 merge
-    Bot->>NPM: 24h cron publish
-    NPM-->>Dev: @types/react@x.y.z
-```
-
----
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-DT 的"骨架"是 `package.json` + `pnpm-workspace.yaml` + `.github/workflows/CI.yml` 三角：
-
-```mermaid
-flowchart TD
-    A[pnpm-workspace.yaml] --> B[types/* 8千包]
-    B --> C[每个包 package.json]
-    C --> D[tsconfig.json strict]
-    D --> E[tsc 编译]
-    E --> F[dtslint 校验]
-    F --> G[CI 矩阵]
-    G --> H{dangerbot 通过?}
-    H -->|是| I[mergebot 自动 merge]
-    H -->|否| J[贡献者修复]
-    I --> K[cron publisher]
-    K --> L[npm @types/*]
-```
-
-### 5.2 单文件分析卡
-
-#### types/node/index.d.ts 关键设计
-
-**a) 三层 lib reference**
+dtslint 的核心实现：
 ```ts
-/// <reference lib="es2020" />
-/// <reference lib="esnext.disposable" />
-/// <reference lib="esnext.float16" />
+// dtslint/index.ts 简化
+function checkFile(file: string) {
+    const program = ts.createProgram([file], config);
+    const diagnostics = ts.getPreEmitDiagnostics(program);
+    return diagnostics;
+}
 ```
 
-**WHY**：Node.js 类型需要**先扩展 TS 内置 lib**（`esnext.disposable` 是 TS 5.2+ 的 `using` 语法），然后才能用 `Symbol.dispose`。DT 不重新发明 `using`，而是"声明我依赖这个 lib"，避免类型不一致。
+**关键参数**：
 
-**b) 70+ 子模块 `path=` 引用**
+| 函数 | 作用 | 用途 |
+|---|---|---|
+| `expectType<T>(v)` | 期望 v 类型为 T | 验证返回类型 |
+| `expectError(e)` | 期望 e 编译报错 | 验证类型守卫 |
+| `expectAssignable<T>(v)` | 期望 v 可赋给 T | 验证参数 |
+| `expectNotAssignable<T>(v)` | 期望 v 不可赋给 T | 验证类型约束 |
+
+**最佳实践**：
+1. ✅ 测试**永远不执行**——只 type-check
+2. ✅ 测试代码用 `import * as React from 'react'`（dtslint 强制）
+3. ✅ `expectError` 比 `expectType` 更难写——但能验证类型守卫
+4. ✅ 测试文件命名 `{pkg}-tests.ts`——dtslint 自动发现
+5. ✅ dtslint 比 jest 跑得快 100x（毫秒级 vs 秒级）
+
+### 12. dtslint expectType/expectError（自定义类型断言）
+
+**问题场景**：普通测试框架无法表达"类型期望"——你不能 `assert(typeof x === 'Promise')` 测类型。dtslint 提供**编译期断言函数**，让"类型期望"成为一等公民。
+
+**解决方案**：
 ```ts
-/// <reference path="fs.d.ts" />
-/// <reference path="fs/promises.d.ts" />
-/// <reference path="http.d.ts" />
-// ... 70+ 行
+// dtslint/expectType.ts
+export function expectType<T>(value: T): void;  // 签名
+
+// 实现（伪代码）
+declare global {
+    function expectType<T>(): <U>(value: U & (T extends U ? U : 'expected ' + string)) => void;
+}
+
+// 用法
+expectType<Promise<string>>(foo());  // 编译通过
+expectType<Promise<number>>(foo());  // 编译失败：期望 number 实际 string
+
+// expectError 实现
+declare global {
+    function expectError<T extends true>(value: T): void;
+}
+
+// 用法
+expectError(<div invalidProp="x" />);  // 编译通过（有错）
+expectError(<div className="x" />);    // 编译失败（无错）
 ```
 
-**WHY**：Node.js 本身有 70+ 内置模块（fs/http/crypto/zlib/...），DT 拆成 70+ .d.ts 文件**便于维护**（每个文件由不同人维护）。`/// <reference path>` 是 TS 1.x 时代的"include"机制，比 `import` 简单。**`index.d.ts` 只负责"声明我有哪些模块"，不写一行实现**。
+**关键参数**：
 
-#### CI.yml 关键设计
+| 断言 | 编译时检查 | 失败表现 |
+|---|---|---|
+| `expectType<T>(v)` | v 必须类型为 T | "Type X is not assignable to T" |
+| `expectError(e)` | e 必须编译报错 | "Expected error" |
+| `expectAssignable<T>(v)` | v 可赋给 T | "X is not assignable to T" |
+| `expectNotAssignable<T>(v)` | v 不可赋给 T | "T is assignable to X" |
 
-**a) 增量 CI 矩阵**（CI.yml:45-53）
+**最佳实践**：
+1. ✅ 任何新加 API 都必须有 `expectType` 测试
+2. ✅ 故意拒绝的用法用 `expectError` 验证
+3. ✅ 内部 SDK 的类型库可以参考 dtslint 模式
+4. ✅ dtslint 不能测 runtime 行为——只能测类型
+5. ✅ `expectAssignable` 是"宽松相等"——能用就用它
+
+### 13. 增量 CI 矩阵（只测改动的包）
+
+**问题场景**：8000+ 包全量跑 CI 一次要 4 小时。DT 用 **git diff + pnpm filter** 找出"被改动包及其依赖"，只跑这些。
+
+**解决方案**：
 ```yaml
+# .github/workflows/CI.yml:45-53
 - id: matrix
   run: |
     if [ "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}" == "true" ]; then
       TESTS=all
     else
+      # 找所有依赖本次改动的 @types 包
       TESTS=$(pnpm ls --depth -1 --parseable --filter '...@types/**[HEAD^1]' | wc -)
     fi
     MATRIX=$(node ./scripts/get-ci-matrix $TESTS)
+    echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 ```
 
-**WHY**：**8000+ 包不可能每次 PR 都跑全量**。`pnpm ls --filter '...@types/**[HEAD^1]'` 找出"所有依赖本次改动的 @types 包"，只跑这些。`schedule` cron 每天 12PM UTC 跑全量。**这是 monorepo CI 的教科书级做法**。
+shard 算法（`scripts/get-ci-matrix.js`）：
+```js
+// 把 8000 包切成 N 个 shard 并行
+function shard(packages, n) {
+    // 按修改时间排序，最近改的优先跑
+    packages.sort((a, b) => b.modified - a.modified);
+    const shards = Array.from({length: n}, () => []);
+    packages.forEach((pkg, i) => shards[i % n].push(pkg));
+    return shards;
+}
+```
 
-**b) symlink 检查**（CI.yml:75-80）
+**关键参数**：
+
+| 触发 | 测试范围 | 时间 |
+|---|---|---|
+| `pull_request` | 改动包 + 依赖包 | 5-15 分钟 |
+| `schedule` (每天 12PM UTC) | 全部 8000 包 | 4 小时 |
+| `workflow_dispatch` | 全部 | 4 小时 |
+| `push` (main) | 全部 | 4 小时 |
+
+**最佳实践**：
+1. ✅ PR 触发增量矩阵——只跑改的包
+2. ✅ cron 每天全量——抓"间接依赖"问题
+3. ✅ shard 切分用 `modified` 排序——最近改的优先
+4. ✅ `--parseable` 让 pnpm 输出机器可读格式
+5. ✅ shard 数量 = `min(总包数, 50)`——超过后意义不大
+
+### 14. symlink 检查（Windows 友好性）
+
+**问题场景**：Windows 上检出代码时，symlink 经常断链。DT **完全禁止**仓库里有 symlink——`find . -type l` 必须在 CI 失败。
+
+**解决方案**：
 ```yaml
+# .github/workflows/CI.yml:75-80
 - name: 'Pre-run validation'
   run: |
     symlinks="$(find . -type l)"
@@ -348,394 +722,346 @@ flowchart TD
     fi
 ```
 
-**WHY**：DT 不允许 symlink（防止 Windows 用户检出时断链）。**这种"反 symlink"哲学**跟 git worktree 之类的工具有冲突——DT 故意放弃 worktree 兼容性换 Windows 友好。
-
-#### scripts/get-ci-matrix.js 关键设计
-
-CI 矩阵生成器：把 8000 个包按"依赖图"切成 N 个 shard 并行。**这是 monorepo CI 的核心算法**。
-
-### 5.3 设计模式
-
-1. **Monorepo 模式**（pnpm workspace）
-2. **约定优于配置**（每个 type 包 5 个文件）
-3. **Bot-driven 治理**（mergebot + dangerbot + dt-bot 三角）
-4. **测试即编译**（-tests.ts 只 type-check 不运行）
-5. **Cooperative ownership**（CODEOWNERS 自动路由 PR）
-
-### 5.4 反模式
-
-1. **`/// <reference path>` 滥用**：70+ 行 reference，IDE 跳转会迷路
-2. **类型测试不如运行时测试**：发现不了逻辑错误（dtslint 几乎只能查类型）
-3. **PR 模板弱约束**：依然有"未测试提交"被 mergebot 放过的情况
-4. **1.x 老式声明语法**：大量包还在用 `declare module "foo" {}` 形式，跟现代 `export declare` 混用
-5. **每包一个 package.json 5 个文件**：8000+ 包意味着 40000+ 配置文件，重复但必要
-
-### 5.5 独特看点
-
-1. **`ts5.0`/`ts5.1`/`ts5.2` dist-tags 切换**：`@types/react@ts5.0` 指向兼容 TS 5.0 的旧版本，npm 自动选匹配 TS
-2. **`OLD-VERSIONS` 目录保留历史**：每个包都能看到 5 年前的 .d.ts 演变
-3. **`react@16.9` vs `react@17.0` 双版本支持**：在 typesVersions 字段里明确两个版本的类型
-4. **AI 工具的"反作弊"条款**（README.md:15-18）：明文禁止 AI 自动给所有包提 PR、必须标 `[auto-generated]`、禁止一次提多个 PR
-5. **SUPPORT WINDOW 2 年滚动**（README.md:75）：TS 5.0 发布两年后 DT 才放弃测试，降低维护负担
-
----
-
-## 6. 运行机制（Bring It Up）
-
-**[点状解析]**：DT 仓库对"克隆 + 跑测试"的体验差到"开发者每天抱怨"。这是 monorepo 的必然代价。
-
-```mermaid
-flowchart LR
-    A[git clone --filter blob:none] --> B[pnpm install]
-    B --> C{改哪个包?}
-    C -->|react| D[pnpm install --filter react]
-    C -->|jest| E[pnpm install --filter jest]
-    C -->|全部| F[pnpm install - 全量 1.6GB]
-    D --> G[cd types/react]
-    G --> H[pnpm test]
-    H --> I[tsc + dtslint 校验]
-    I --> J[git commit + PR]
+```bash
+# 本地验证
+find . -type l | head
+# 输出为空 = 干净
 ```
 
-**实际启动命令**：
+**关键参数**：
+
+| 命令 | 用途 |
+|---|---|
+| `find . -type l` | 找所有符号链接 |
+| `find . -type l | wc -l` | 计数 |
+| `readlink <path>` | 查看 symlink 指向 |
+| `git ls-files -s` | git 跟踪的 symlink |
+
+**最佳实践**：
+1. ✅ 任何新包不能用 symlink——必须真实文件
+2. ✅ Windows + WSL 2 开发体验最好
+3. ✅ Windows + Git Bash 时 `find` 命令可能不识别
+4. ✅ git worktree 在 DT 仓库里**不工作**——故意放弃兼容性
+5. ✅ 跨平台包用**纯文本**而非 symlink 引用
+
+### 15. get-ci-matrix.js 分片算法
+
+**问题场景**：8000+ 包跑单 CI job 要 4 小时。`get-ci-matrix.js` 把它们切到 50 个 shard 并行跑，每个 shard 80 个包。
+
+**解决方案**：
+```js
+// scripts/get-ci-matrix.js 简化
+const fs = require('fs');
+const path = require('path');
+
+const TYPES_DIR = 'types';
+const N_SHARDS = 50;
+
+function getAllPackages() {
+    return fs.readdirSync(TYPES_DIR)
+        .filter(f => fs.statSync(path.join(TYPES_DIR, f)).isDirectory());
+}
+
+function getChangedPackages() {
+    const diff = execSync('git diff --name-only HEAD^1 HEAD -- types/').toString();
+    return diff.split('\n')
+        .filter(line => line.startsWith('types/'))
+        .map(line => line.split('/')[1]);
+}
+
+function shard(packages) {
+    // 按包名字典序排
+    packages.sort();
+    const shards = Array.from({length: N_SHARDS}, () => []);
+    packages.forEach((pkg, i) => shards[i % N_SHARDS].push(pkg));
+    return shards;
+}
+
+const pkg = process.argv[2] === 'all' ? getAllPackages() : getChangedPackages();
+const shards = shard(pkg);
+console.log(JSON.stringify(shards));
+```
+
+**关键参数**：
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `N_SHARDS` | 50 | shard 数量（GitHub Actions 限额 256） |
+| 输入参数 | `all` 或具体包数 | 决定全量还是增量 |
+| 输出格式 | JSON | GitHub Actions 解析 |
+
+**最佳实践**：
+1. ✅ shard 数量 = `min(总包数 / 5, 50)`——平衡并发和开销
+2. ✅ 字典序排序保证 shard 稳定——同一包总在同一 shard
+3. ✅ modified 排序也能用——最近改的优先
+4. ✅ shard 数量超过 50 后，GitHub Actions 反而变慢
+5. ✅ get-ci-matrix.js 是 DT 内部 hack——不要在 PR 改
+
+## 四、可靠性与生态（Reliability & Ecosystem）
+
+### 16. dts-gen 脚手架生成器（5 分钟新建 type 包）
+
+**问题场景**：新 npm 包要写 .d.ts，但贡献者不知道"5 文件铁律"的细节。DT 提供 **dts-gen** 工具——一行命令生成完整 type 包结构。
+
+**解决方案**：
 ```bash
-# 1. 浅克隆（必须 blob:none）
+# 1. 安装
+npm install -g dts-gen
+
+# 2. 初始化 type 包
+npx dts-gen --dt --name foo --template dts-gen/templates/foo
+
+# 3. 自动生成 5 个文件
+types/foo/
+├── index.d.ts          # 基础模板
+├── foo-tests.ts        # 空测试
+├── package.json        # 自动生成元数据
+├── tsconfig.json       # DT 标准配置
+└── .npmignore          # 排除发布
+```
+
+dts-gen 内部实现：
+```ts
+// dts-gen/src/index.ts
+async function generate(opts: GenerateOptions) {
+    const { name, template } = opts;
+
+    // 1. 读模板
+    const tpl = await loadTemplate(template);
+
+    // 2. 替换占位符
+    const indexDts = tpl.indexDts.replace(/{{NAME}}/g, name);
+    const pkgJson = tpl.pkgJson(name);
+
+    // 3. 写文件
+    const dir = path.join('types', name);
+    await fs.mkdir(dir, {recursive: true});
+    await fs.writeFile(path.join(dir, 'index.d.ts'), indexDts);
+    await fs.writeFile(path.join(dir, `${name}-tests.ts`), '');
+    await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify(pkgJson, null, 2));
+    await fs.writeFile(path.join(dir, 'tsconfig.json'), JSON.stringify(tpl.tsConfig, null, 2));
+    await fs.writeFile(path.join(dir, '.npmignore'), tpl.npmIgnore);
+}
+```
+
+**关键参数**：
+
+| 模板 | 用途 |
+|---|---|
+| `dts-gen/templates/foo` | 简单函数库 |
+| `dts-gen/templates/react` | React 组件库 |
+| `dts-gen/templates/node` | Node.js 模块 |
+| `dts-gen/templates/jest` | 测试框架 |
+
+**最佳实践**：
+1. ✅ 新 type 包都用 dts-gen 生成——不要手写 5 文件
+2. ✅ 模板里 `--name` 是包名（必填）
+3. ✅ 生成后用 `pnpm --filter @types/foo test` 验证
+4. ✅ 模板版本要保持最新——CI 会检查
+5. ✅ 自定义模板可放 `templates/` 私有目录
+
+### 17. pnpm-lock.yaml 锁定（CI 可重现）
+
+**问题场景**：DT 8000+ 包都依赖 pnpm-lock.yaml 锁定的版本。CI 严格用 `--frozen-lockfile`——lockfile 改了就 fail。
+
+**解决方案**：
+```yaml
+# .github/workflows/CI.yml
+- name: Install
+  run: pnpm install --frozen-lockfile  # ← 关键
+
+# 失败示例
+# ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile" because ...
+# → 提示 lockfile 过期
+```
+
+```bash
+# 开发者本地更新
+pnpm install  # 自动更新 lockfile
+git add pnpm-lock.yaml
+git commit -m "chore: update pnpm-lock.yaml"
+```
+
+**关键参数**：
+
+| 命令 | 行为 |
+|---|---|
+| `pnpm install` | 更新 lockfile |
+| `pnpm install --frozen-lockfile` | 严格匹配，lockfile 改就 fail |
+| `pnpm install --no-frozen-lockfile` | 关闭严格模式（CI 不能用） |
+
+**最佳实践**：
+1. ✅ **永远** `--frozen-lockfile` 跑 CI——确保 lockfile 提交
+2. ✅ 升级依赖时本地 `pnpm install` 更新 lockfile
+3. ✅ lockfile 必须 commit 到 git
+4. ✅ 不同分支用同一个 lockfile 不会冲突
+5. ✅ dependabot 自动 PR 会更新 lockfile
+
+### 18. cron publisher 自动发布
+
+**问题场景**：mergebot 自动 merge 后，@types/* 需要发布到 npm。DT 用 **cron job** 每 24h 扫一次"已 merge 的 PR"，自动 publish 到 `@types/*` scope。
+
+**解决方案**：
+```yaml
+# .github/workflows/publisher.yml
+name: Publish to npm
+on:
+  schedule:
+    - cron: '0 12 * * *'  # 每天 12PM UTC
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 全 history
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          registry-url: https://registry.npmjs.org/
+      - name: Install
+        run: npm ci
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/publish-packages.js
+```
+
+publisher 做的事：
+```js
+// scripts/publish-packages.js 简化
+async function publishChanged() {
+    // 1. 找最近 24h merge 的 PR
+    const merged = await getRecentMergedPRs();
+    const packages = merged.map(pr => extractPkgName(pr.title));
+
+    // 2. 准备发布
+    for (const pkg of packages) {
+        const dir = path.join('types', pkg);
+        const version = await bumpVersion(dir);
+        const distTags = ['ts4.8', 'ts5.0', 'ts5.1', 'ts5.2', 'latest'];
+
+        // 3. publish 到所有 dist-tag
+        for (const tag of distTags) {
+            await execInDir(dir, `npm publish --tag ${tag}`);
+        }
+    }
+}
+```
+
+**关键参数**：
+
+| 触发 | 行为 |
+|---|---|
+| `cron: 0 12 * * *` | 每天 12PM UTC 全量扫 |
+| `workflow_dispatch` | 手动触发 |
+| 失败重试 | 3 次（指数退避） |
+
+**最佳实践**：
+1. ✅ 不发布 PR merge 后立即发——等 24h 沉淀
+2. ✅ `NPM_TOKEN` 用 GitHub Secret——不要写代码
+3. ✅ publish 失败要人工介入——自动回滚没意义（npm 不支持）
+4. ✅ publisher 脚本独立仓库 DefinitelyTyped-tools
+5. ✅ Microsoft 持有 `@types/*` scope 的 npm publish 权限
+
+### 19. dependabot CVE 监控（每周自动 PR）
+
+**问题场景**：DT 8000+ 包都可能引入 CVE。DT 用 **dependabot** 自动扫 `@types/*` 的依赖，每周开 PR 升级有漏洞的包。
+
+**解决方案**：
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/types/foo"  # 每周扫每个 type 包的 package.json
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependency"
+    ignore:
+      - dependency-name: "csstype"
+        versions: ["3.x"]
+```
+
+dependabot 自动开 PR：
+```
+[dependabot] Bump csstype from 3.0.2 to 3.1.0 in /types/react
+- Bumps [csstype](https://github.com/csstype/csstype) from 3.0.2 to 3.1.0.
+
+Changes:
+  3.1.0
+  - Add `Property` type union
+
+Commits:
+  - feat: add Property type
+
+Signed-off-by: dependabot[bot] <support@dependabot.com>
+```
+
+**关键参数**：
+
+| 配置 | 用途 |
+|---|---|
+| `package-ecosystem: npm` | 扫 npm 依赖 |
+| `directory: /types/foo` | 单一包或 `/` 全量 |
+| `interval: weekly` | 每周一跑 |
+| `open-pull-requests-limit: 5` | 最多 5 个并发 PR |
+| `ignore: { dependency-name: csstype }` | 忽略特定包 |
+
+**最佳实践**：
+1. ✅ dependabot PR merge 到 `main`——不要 fork
+2. ✅ 升级前先看 changelog——不要盲升
+3. ✅ `ignore` 字段排除不兼容升级
+4. ✅ DT 8000+ 包每周共 100+ dependabot PR
+5. ✅ CI 自动跑 dtslint 验证升级
+
+### 20. blobless clone 浅克隆（1.6GB → 几百 MB）
+
+**问题场景**：DT 仓库 1.6GB，1 万贡献者每天克隆会把 GitHub 拖垮。DT 文档要求**必须用 blobless clone**——只下 metadata，blob 按需 fetch。
+
+**解决方案**：
+```bash
+# ❌ 全量克隆（1.6GB + 几小时）
+git clone https://github.com/DefinitelyTyped/DefinitelyTyped.git
+
+# ✅ blobless clone（几百 MB + 几分钟）
 git clone --filter=blob:none https://github.com/DefinitelyTyped/DefinitelyTyped.git dt
 cd dt
+git checkout main  # 此时按需下载
 
-# 2. 安装 monorepo 工具链
-pnpm install
-
-# 3. 单包测试（推荐）
-pnpm test react
-
-# 4. 全量测试（CI 模拟）
-pnpm test --selection all
-
-# 5. 提交 PR
-git checkout -b types-foo-fix
-git add types/foo/
-git commit -m "fix: Foo.bar should return string"
-gh pr create
+# ✅ sparse checkout（只下特定包）
+git clone --filter=blob:none --sparse https://github.com/DefinitelyTyped/DefinitelyTyped.git dt
+cd dt
+git sparse-checkout set types/react types/jest types/lodash
 ```
 
-**Smoke test**：
+git config 优化：
 ```bash
-cd types/react
-cat package.json | head -5
-# 看到 "name": "@types/react" = 包结构正确
-ls *.d.ts
-# 看到 index.d.ts = 类型存在
+# 启用 partial clone + fsmonitor
+git config --global feature.manyFiles true
+git config --global core.fsmonitor true
+git config --global protocol.version 2
 ```
 
-**[反例警示]**：Windows 上直接 `git clean` 清 node_modules → 会卡死；用 npm install 替代 pnpm install → 7+ workspaces 支持但耗时长 5x；以为 1.6GB 一定要全量下 → blobless clone 几百 MB 就够。
+**关键参数**：
 
----
-
-## 7. 演进历史（Time Travel）
-
-**[点状解析]**：DT 13 年历史，从手动维护 → 工具化 → bot 自治。
-
-```mermaid
-gantt
-    title DefinitelyTyped 演进时间线
-    dateFormat YYYY-MM
-    section 草创
-    2012 创建 :a1, 2012-09, 6M
-    2013 首批 100 包 :a2, 2013-03, 12M
-    section 制度化
-    2014 MS 接管 :b1, 2014-06, 12M
-    2015 dts 规范 :b2, 2015-12, 6M
-    section 工具化
-    2016 dtslint :c1, 2016-08, 12M
-    2018 自动化 PR :c2, 2018-04, 12M
-    section 重构
-    2020 dts-gen :d1, 2020-04, 6M
-    2021 TS 4.x :d2, 2021-06, 12M
-    2022 pnpm 切换 :d3, 2022-08, 12M
-    section Bot
-    2023 mergebot :e1, 2023-05, 6M
-    2024 AI 反作弊 :e2, 2024-09, 12M
-    2025 TS 5.8 :e3, 2025-12, 6M
-```
-
-**关键里程碑**：
-- 2012-09：Boris Yankov 创立
-- 2014-06：Microsoft TypeScript 团队接管
-- 2016-08：dtslint 工具诞生（`-tests.ts` 模式）
-- 2018-04：开始用 bot 自动化 PR
-- 2020-04：dts-gen 脚手架工具
-- 2022-08：从 npm workspaces 切换到 pnpm
-- 2023-05：mergebot 全面上线（PR 自动 @owner + 自动 lint）
-- 2024-09：AI 反作弊条款写入 README
-- 2025-12：TS 5.8 类型支持
-
----
-
-## 8. 质量保障（How It Doesn't Break）
-
-**[点状解析]**：DT 的质量保障依赖"测试即编译"和"机器人 PR review" 双重护城河。
-
-| 防线 | 实现 | 覆盖度 |
-|---|---|---|
-| 编译验证 | `tsc --noEmit` 8000+ 包 | 100%（每个包都跑） |
-| 类型测试 | `*-tests.ts` + dtslint 校验 | ~70% 包有测试 |
-| Bot 自动 Lint | mergebot + dtslint | 100% PR 触发 |
-| Code Owners | `.github/CODEOWNERS` 强制 @mention | 100% 包 |
-| SUPPORT WINDOW | TS 2 年支持矩阵 | 自动过期 |
-| Ghostbuster | 找没有 owner 的包 | 每周 cron |
-| 人类 review | maintainer approve | 关键包必须 |
-
-**dtslint 自定义断言**（核心工具）：
-```ts
-// 期望某个类型
-expectType<Promise<string>>(foo());
-// 期望编译错误
-expectError(foo.invalidProp);
-// 期望等于某个值（编译时）
-expectType<string>(bar).toEqual<string>();
-```
-
-**WHY**：`expectType` 在编译期验证类型，省 runtime；`expectError` 验证"某写法确实报错"，如 `expectError(<div invalidProp="x" />)`。这是 **TS 类型测试的标准范式**。
-
-**[反例警示]**：以为"dtslint 测试 = jest" → 它**根本不执行代码**，只让 tsc 编译；用 dtslint 测试 runtime 行为 → 永远测不到。
-
----
-
-## 9. 生态依赖（Map of the World）
-
-```mermaid
-mindmap
-  root((DT 生态))
-    工具链
-      TypeScript 编译器
-      dtslint
-      dts-gen
-      pnpm 9
-      GitHub Actions
-    集成方
-      TypeScript
-        lib.d.ts 基础
-        五层 lib 体系
-      npm
-        @types/* scope
-        registry 镜像
-      ts-loader esbuild swc
-        自动加载 .d.ts
-    社区
-      10000+ 贡献者
-      200+ 活跃 maintainer
-      50+ 语言本地化
-        README.zh-Hans.md
-    上游项目
-      8000+ npm 库
-      React/Vue/Angular
-      Node.js/Deno/Bun
-      Jest/Vitest/Playwright
-```
-
-**依赖图**：
-- 上游：8000+ npm 库（被定义对象）
-- 横向：TypeScript 编译器、pnpm、GitHub Actions
-- 下游：所有 TS 项目（消费方）
-
-**合规清单**：
-- ✅ MIT License（DT 本身）
-- ✅ 各包按原库 license（如 React 是 MIT）
-- ✅ 不强制 copyright 归属 DT
-- ⚠️ JS 库的 license 变化时 DT 类型可能"过期"
-
----
-
-## 10. 生产实践（Battle-Tested）
-
-| 维度 | DT 实现 | 评价 |
-|---|---|---|
-| **生产可用性** | `@types/*` 在千万级项目里被消费 | ✅ 顶级 |
-| **CDN/镜像** | 跟随 npm registry | ✅ 强 |
-| **版本稳定性** | 30 天内不打 tag，semver | ✅ 强 |
-| **自动回滚** | ❌（npm publish 不可逆） | 弱 |
-| **依赖审计** | dependabot.yml 每周 PR | ✅ 强 |
-| **License 检查** | 手动（CODEOWNERS 验证） | 弱 |
-| **CVE 监控** | dependabot 自动开 issue | ✅ 强 |
-| **性能** | DT 类型仅编译时用，零 runtime 开销 | ✅ 强 |
-| **本地缓存** | pnpm store 共享 | ✅ 强 |
-| **跨平台** | Linux/macOS/Windows 都跑 | ✅ 强 |
-
-**生产使用技巧**：
-1. **优先 bundled types**：如果库本身有 .d.ts（如 `axios`），不要装 `@types/axios`
-2. **tsconfig 限制 types 范围**：`"types": ["node", "jest"]` 避免全局类型污染
-3. **分版本 dist-tag 选型**：`npm install @types/react@ts5.0` 强制指定 TS 版本
-4. **lockfile 锁定**：`pnpm-lock.yaml` 提交，避免自动升级破坏 CI
-5. **CI 中固定 DT 版本**：`"@types/react": "18.2.0"` 而非 `"^18.2.0"`
-
----
-
-## 11. 社区文化（People & Process）
-
-**[点状解析]**：DT 社区的"bot 治理 + 200+ 维持者 + 强规范"是 monorepo 协作的典范。
-
-**组织结构**：
-- **Microsoft TypeScript 团队**：拥有仓库 admin 权限、运营 @types/* npm scope
-- **DT Maintainers**：200+ 志愿者，按包分片 owner
-- **贡献者**：10000+ 任何人都能 PR
-
-**决策机制**：
-- PR review：CODEOWNERS 自动 @mention 对应包的 owner
-- bot 自治：mergebot 跑通 dtslint + CI 即可自动 merge
-- 议题活跃：每月 2000+ PR、500+ issue
-- 长期贡献者：~50 个 maintainer、~500 个常驻贡献者
-
-**强规范**（README 第 9-18 行明确写出）：
-1. PR 必须"在真实项目里用过这些类型"
-2. 不接受"make-work PR"（无目的批量提交）
-3. AI 必须标 `[auto-generated]`
-4. AI 一次只能提一个 PR
-5. 拒绝"无目的批量给所有 untyped 包提 PR"
-
-**社区资源**：
-- Discord：typescriptlang.org Discord 的 #definitely-typed 频道
-- 文档：docs/admin.md（维护者手册）
-- 工具：DefinitelyTyped-tools（dtslint/dts-gen/publisher 仓库）
-- Translations：README 已被翻译成 8 种语言
-
-**[反例警示]**：以为 "DT 是 Microsoft 严格管控" → 实际 90% PR 由志愿者 maintainer 处理；以为 "DT 接受所有 PR" → 实际 1/3 PR 被 close 掉（无实际使用场景）。
-
----
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **`types/{pkg}/` 5 文件约定**：每个 type 包只要 5 个标准文件，零认知成本
-2. **`-tests.ts` 类型即测试**：编译失败 = 测试失败，零运行时依赖
-3. **mergebot 自动 @owner + 自动 lint**：把"协作摩擦"降到最低
-
-### 12.2 必避 3 坑
-
-1. **不要给 DT 提"批量给所有包加 README" 的 PR** → bot 会 close + 警告
-2. **不要直接克隆主分支并 `pnpm install` 全量** → 用 blob:none 克隆 + filter
-3. **不要混用 bundled types 和 @types** → 库自带 .d.ts 时不要装 @types（会冲突）
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7 天复刻一个迷你 DT 仓库
-    dateFormat YYYY-MM-DD
-    section 骨架
-    Day 1 pnpm workspace :a1, 2026-06-01, 1d
-    Day 2 5 文件模板 :a2, after a1, 1d
-    section 测试
-    Day 3 -tests.ts 范式 :b1, after a2, 1d
-    Day 4 dtslint 自定义断言 :b2, after b1, 1d
-    section Bot
-    Day 5 mergebot 脚本 :c1, after b2, 1d
-    Day 6 CODEOWNERS :c2, after c1, 1d
-    section 发布
-    Day 7 cron publisher :d1, after c2, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 评分 (1-10) | 说明 |
-|---|---|---|
-| 仓库规模 | 10 | 8000+ 包、6万+ 文件 |
-| 治理规范 | 9 | bot + CODEOWNERS 双护栏 |
-| 工具链 | 8 | dtslint/dts-gen/publisher 完善 |
-| 贡献体验 | 5 | monorepo 克隆痛苦 |
-| 性能 | 7 | blob:none + filter 必学 |
-| 文档 | 9 | admin.md + README + 8 翻译 |
-| 测试 | 7 | 类型即测试，但有盲区 |
-| AI 友好 | 6 | README 明文反"AI spam" |
-| **总分** | **7.6** | **monorepo 协作的金标准** |
-
----
-
-## 13. 学习萃取（Cheat Sheet）
-
-### 一句话价值
-
-**DefinitelyTyped 是"协作治理"战胜"代码规模"的样板**——6 万文件、8000 包、1 万贡献者，靠约定、机器人、CODEOWNERS 三件套就能不出乱。
-
-### 3 核心洞察
-
-1. **约定优于配置是 monorepo 的生存基础**：8000 包不可能有"灵活配置"，必须 5 文件铁律
-2. **测试即编译是 TS 类型测试的最佳范式**：零运行时、毫秒级、零依赖、任何人都能写
-3. **mergebot 自治是 PR 规模化的关键**：人 review 不到 1000 PR/天，bot 7x24 不累
-
-### 5 段必读代码
-
-| 优先级 | 文件 | 行数 | 关键内容 |
-|---|---|---|---|
-| 1 | `types/node/index.d.ts` | 118 | 三层 lib + 70+ 子模块 reference |
-| 2 | `types/react/index.d.ts` | 数千 | React 类型代表 |
-| 3 | `types/react/tsconfig.json` | 20 | strict + typeRoots 范式 |
-| 4 | `.github/workflows/CI.yml` | 169 | 增量 CI 矩阵 + symlink 检查 |
-| 5 | `scripts/get-ci-matrix.js` | 100+ | shard 算法核心 |
-
-### 1 反模式
-
-**`/// <reference path>` 滥用**：types/node/index.d.ts 70+ 行 reference 让人眼花。**现代 TS 应该用 `import type`**。DT 沿用 1.x 语法是因为存量巨大无法迁移。
-
-### 1 可复用模式
-
-**`expectType<T>(value)` + `expectError(expr)`**：dtslint 的自定义断言，让"类型期望"成为一等公民。这个模式可以用在内部 SDK 类型库。
-
-### 3 立刻能用
-
-1. **内部 monorepo 用 pnpm workspace**（比 npm/yarn 节省 90% 磁盘）
-2. **类型 SDK 用 -tests.ts 范式**（dtslint 不依赖运行时框架）
-3. **CODEOWNERS + GitHub Actions 自动 mention**（取代人工路由 PR）
-
----
-
-## 14. 项目特点速查
-
-| 独特看点 | 说明 |
+| 参数 | 效果 |
 |---|---|
-| **8000+ npm 包** | 覆盖 React/Node/Jest/Lodash 等 |
-| **pnpm monorepo** | 2022 切换，硬链接节省 90% 磁盘 |
-| **types/{pkg}/ 5 文件约定** | index.d.ts / -tests.ts / package.json / tsconfig.json / .npmignore |
-| **`expectType` + `expectError`** | dtslint 自定义断言，类型即测试 |
-| **mergebot 自治** | 自动 @owner、自动 lint、自动 merge |
-| **SUPPORT WINDOW 2 年** | TS 版本自动过期 |
-| **AI 反作弊条款** | README 明文禁止批量 AI 提 PR |
-| **`ts5.0`/`ts5.1` dist-tags** | npm 自动选匹配 TS 的版本 |
-| **CODEOWNERS** | GitHub 原生支持，按包 owner 自动 mention |
-| **6 万文件 / 1.6GB** | monorepo 规模天花板 |
+| `--filter=blob:none` | 不下文件 blob（按需 fetch） |
+| `--depth=1` | 不要历史 |
+| `--sparse` | sparse-checkout 模式 |
+| `--filter=blob:limit=1m` | 只下 1MB 以下文件 |
 
-### 与同类对比
+**最佳实践**：
+1. ✅ **永远** `--filter=blob:none`——这是 DT 强制推荐
+2. ✅ `--sparse` + `sparse-checkout set types/foo` 减少磁盘 99%
+3. ✅ 提交后用 `git fetch --filter=blob:none` 增量更新
+4. ✅ Windows + WSL 2 是最佳开发环境
+5. ✅ git worktree **不工作**——DT 故意放弃兼容性
 
-```mermaid
-quadrantChart
-    title 类型定义工具对比
-    x-axis 维护成本低 --> 维护成本高
-    y-axis 覆盖度低 --> 覆盖度高
-    "DefinitelyTyped": [0.9, 0.95]
-    "TypeScript lib.d.ts": [0.7, 0.5]
-    "Flow (deprecated)": [0.6, 0.3]
-    "JSDoc + tsc": [0.3, 0.4]
-    "bundled .d.ts": [0.2, 0.5]
-```
-
-**[反例警示]**：以为"DT 之外还有别的类型源" → 90% 主流库类型都在 DT，少数自带；以为 "DT 是 TypeScript 官方" → 实际是 Microsoft 旗下社区项目；以为 "DT 包能加 runtime 逻辑" → 它**只发布 .d.ts**，不发布 .js。
-
----
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-|---|---|
-| 路径 | `G:\实战案例\GitHub顶尖项目\DefinitelyTyped\` |
-| 大小 | 1.6 GB（blobless 几百 MB） |
-| 总文件数 | 62,848 |
-| 主入口 | `types/{pkg}/index.d.ts`（8000+ 入口） |
-| 工具链 | pnpm 9 + TypeScript 5.8 + dtslint |
-| CI | GitHub Actions（9 个 workflow） |
-| Bot | mergebot + dangerbot + dt-bot |
-| 解析时间 | 2026-06-01 |
-
-## 一句话总结
-
-**解析 = 计划书 + 框架图 + 核心功能 + 跑起来 + 偷过来**。DefinitelyTyped 是"monorepo 协作治理"的金标准——用约定、机器人、CODEOWNERS 三件套让 6 万文件、8000 包、1 万贡献者并行工作。`types/{pkg}/` 5 文件约定、`-tests.ts` 类型即测试、mergebot 自治 PR 是 DT 留给开源世界的三件无价遗产。
+**标签**：#DefinitelyTyped #TypeScript #monorepo #类型定义
+**状态**：20/20 份详细内容
