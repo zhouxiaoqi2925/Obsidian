@@ -1,847 +1,345 @@
-# typescript-fresh
+# typescript-fresh - TypeScript 编译器的五段流水线与不可变 AST 增量构建典范
 
-> TypeScript 6.0 编译器（最后一代 JavaScript 实现）：Scanner/Parser/Binder/Checker/Emitter 五段独立流水线 + 不可变 AST + side-channel 标注 + BuilderProgram 增量构建 + Host/Program/BuilderProgram 三元组抽象。本篇把工业级静态分析器最值得偷的设计哲学拆成 20 个 Pattern，涵盖 4 大主题：核心机制、架构设计、性能优化、工程实践。
+**GitHub**: microsoft/TypeScript
+**Star**: ~100k
+**语言**: TypeScript
+**主题**: 编译器、AST、类型系统、增量构建
+**适用场景**: 静态分析、IDE 智能感知、代码转换、linter 工具
 
-## 核心机制
+## 第一段：基础范式
 
-### 模式 1：Scanner/Parser/Binder/Checker/Emitter 五段独立流水线
+### 模式 1：Scanner/Parser/Binder/Checker/Emitter 五段流水线
 
-**问题场景**：编译器内部阶段耦合会导致"想优化单阶段却牵动全链"。需要清晰划分阶段边界，每段输出 IR，阶段间用 AST 传递。
+**问题场景**：编译器功能复杂（词法/语法/语义/类型/代码生成），如果用单趟 pipeline 难以维护和优化（typecheck vs emit 性能差异 10x）。
 
-**解决方案**：
-
-```ts
-// src/compiler/program.ts
-export function createProgram(rootNames: string[], options: CompilerOptions, host?: CompilerHost): Program {
-    // 1. Scanner: sourceText → Token 流
-    const scanner = createScanner(...);
-    // 2. Parser: Token → SourceFile AST
-    const sourceFile = parseSourceFile(...);
-    // 3. Binder: 符号解析 + 作用域
-    binder.bindSourceFile(sourceFile, ...);
-    // 4. Checker: 类型推断 + 错误诊断
-    const checker = createTypeChecker(...);
-    checker.checkSourceFile(sourceFile);
-    // 5. Emitter: AST → JS/.d.ts/.map
-    const emitResult = emit(sourceFile, ...);
-}
-```
+**解决方案**：TypeScript 拆分为五段独立流水线：
+- **Scanner**：源码 → tokens（保留 trivia 用于错误恢复与 sourcemap）
+- **Parser**：tokens → AST（递归下降）
+- **Binder**：AST → 符号表（scope/identifier 解析）
+- **Checker**：类型检查 + 类型推断（消费 symbol + type）
+- **Emitter**：AST + 类型 → JS 代码
 
 **关键参数**：
+- `Scanner` 流式词法
+- `Parser` 生成 `Node` 树
+- `Binder` 产出 `Symbol`
+- `Checker` 输出 `Diagnostic`
+- `Emitter` 生成 `.js`/`.d.ts`
 
-| 阶段 | 输入 | 输出 |
-|------|------|------|
-| Scanner | 源文本 | Token 流 |
-| Parser | Token 流 | SourceFile AST |
-| Binder | AST | 绑定符号/作用域 |
-| Checker | 绑定 AST | 类型 + 诊断 |
-| Emitter | 类型化 AST | JS/.d.ts/.map |
+**最佳实践**：理解五段边界——`ts.createSourceFile` 只跑 Scanner+Parser；`program.getSemanticDiagnostics` 跑 Binder+Checker；用 `--noEmit` 跳过 Emitter 加快类型检查。
 
-**最佳实践**：
+### 模式 2：不可变 AST（SyntaxKind 枚举 + Node 接口）
 
-- ✅ 阶段之间用 IR（AST）传递——避免阶段间回环
-- ✅ 每阶段可独立替换——优化 checker 不影响 parser
-- ✅ 共享 SourceFile 节点——避免重复解析
-- ✅ Program 编排器串联——阶段顺序可观察
-- ❌ 避免在 Scanner 阶段做语义判断——破坏阶段边界
+**问题场景**：编译器需对 AST 做大量变换（类型擦除、转换器），可变树会引入共享状态 bug；IDE 还要做"语法树 vs 改后树"对比。
 
-### 模式 2：节点不可变 + side-channel 多层标注
-
-**问题场景**：多个 transformer（ES5/ES2020/装饰器）需要顺序处理同一棵 AST。如果直接修改节点，后续 transformer 会看到副作用，互相污染。
-
-**解决方案**：
-
-```ts
-// src/compiler/factory/nodeFactory.ts
-export function createIdentifier(text: string): Identifier {
-    return factory.createIdentifier(text);
-    // 节点一旦创建就不可变
-    // 后续类型推断走 node.type
-    // emit 标记走 getOrCreateEmitNode(node)
-}
-
-// side-channel 挂载
-function getOrCreateEmitNode(node: Node): EmitNode {
-    if (!node.emitNode) node.emitNode = { ... };
-    return node.emitNode;
-}
-```
+**解决方案**：TypeScript AST 是不可变树（`createXxx` 工厂创建新节点，原节点不变）。每个节点带 `kind: SyntaxKind` 枚举、`pos`/`end` 文本位置、`parent` 反向指针。`Node` 接口用访问者模式 `forEachChild`。
 
 **关键参数**：
+- `SyntaxKind` 枚举数百种
+- `Node.kind` 区分类型
+- `Node.pos`/`Node.end` 位置
+- `Node.flags` 标志位
+- `ts.visitNode` 不可变变换
 
-| side-channel | 作用 |
-|--------------|------|
-| `node.type` | 推断出的类型 |
-| `node.symbol` | 绑定的符号 |
-| `node.emitNode` | emit 阶段需要的标记 |
-| `node.flowNode` | 控制流分析标记 |
-| `node.parent` | 父节点指针 |
+**最佳实践**：用 `ts.factory.updateXxx` 创建修改后的节点（保留位置）；用 `ts.transform` 跑转换器链；不要直接修改 `Node` 字段（破坏不可变性）。
 
-**最佳实践**：
+### 模式 3：side-channel 标注（SourceFile 携带辅助信息）
 
-- ✅ 节点创建后不修改——所有副作用走 side-channel
-- ✅ side-channel 字段独立——互不污染
-- ✅ 多 transformer 顺序处理同一棵树——无副作用
-- ✅ 同一份 AST 输出多目标（ES5/ES2020/JSX）——共享基础
-- ❌ 避免 transformer 直接改节点——破坏不可变
+**问题场景**：编译器内部需要补充信息（节点已绑定、文件已解析），但又不能改 AST 本身（IDE 缓存）。
 
-### 模式 3：`createTypeChecker` 工厂 + 单文件 IIFE 闭包
-
-**问题场景**：类型系统是"信息全热"工作集——泛型实例化、符号解析、flow 分析共享大量本地缓存。如果拆模块，cache miss 爆炸。
-
-**解决方案**：
-
-```ts
-// src/compiler/checker.ts（54434 行）
-export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
-    // 内部所有状态通过闭包共享
-    let symbolCount = 0;
-    const symbolPool: Symbol[] = [];
-    const typeInstanceCache = new Map<string, Type>();
-    const flowNodeCache = new Map<Node, FlowNode>();
-
-    return {
-        getTypeOfSymbolAtLocation: (sym, node) => { ... },
-        resolveTypeReference: (ref) => { ... },
-        // ... 几百个方法
-    };
-}
-```
+**解决方案**：用"边车"（side-channel）对象存额外信息：`SourceFile` 自带 `bindDiagnostics`/`parseDiagnostics`；Checker 内部用 `Node` 到 `Symbol`/`Type` 的 map 维护。`Node` 不变，map 单独存。
 
 **关键参数**：
+- `SourceFile.bindDiagnostics` 绑定错误
+- `SourceFile.languageVersion` TS 版本
+- `SourceFile.resolvedModules` 解析缓存
+- 内部 `nodeLinks` map
+- `program.getResolvedModule()` 外部 API
 
-| 字段 | 说明 |
-|------|------|
-| `symbolCount` | 符号 ID 计数器 |
-| `symbolPool` | 符号实例池 |
-| `typeInstanceCache` | 泛型实例化缓存 |
-| `flowNodeCache` | 控制流节点缓存 |
-| `getTypeOfSymbolAtLocation` | 核心 API |
+**最佳实践**：用 `getResolvedModule` 而不是手动解析 import；用 `node.moduleAugmentations` 处理模块增强；side-channel 是"在不破坏不可变性的前提下补充信息"的标准做法。
 
-**最佳实践**：
+### 模式 4：Symbol 符号表与作用域
 
-- ✅ 用闭包共享本地缓存——避免模块边界 cache miss
-- ✅ 工厂返回接口——外部只见 `TypeChecker` 不见实现
-- ✅ 所有方法都走 IIFE 内部函数——共享状态
-- ✅ 避免在闭包内暴露 mutable 引用——用 return 函数封装
-- ❌ 避免"模块化"拆分——会破坏缓存局部性
+**问题场景**：标识符解析（`foo` 是什么？）需要嵌套作用域（全局/模块/函数/block）；同名标识符在不同作用域指向不同实体。
 
-### 模式 4：递归下降 Parser + 手动 error recovery
-
-**问题场景**：TypeScript 要从**部分损坏的源码**继续 parse——checker 需要看到尽可能多的节点以给出有效诊断。parser generator 不允许"软错误恢复"。
-
-**解决方案**：
-
-```ts
-// src/compiler/parser.ts（10823 行）
-function parseFunctionDeclaration(): FunctionDeclaration {
-    // 1. expect 'function' 关键字
-    // 2. parse 标识符
-    if (token === SyntaxKind.OpenParenToken) {
-        parseErrorForMissingName();  // 软错误：不中断
-    }
-    // 3. parse 参数列表
-    // 4. parse 返回类型
-    // 5. parse 函数体
-    return factory.createFunctionDeclaration(/*...*/);
-}
-
-// 软错误恢复：parser 遇到 `function f(:` 仍能继续
-```
+**解决方案**：Binder 把每个 `Identifier` 解析为 `Symbol` 对象（name/flags/declarations）。`Symbol` 通过 `parent` 链形成作用域树，查找时沿作用域链向上找。
 
 **关键参数**：
+- `Symbol.flags`（`Function`/`Variable`/`Class`/`ValueModule` 等）
+- `Symbol.declarations` 所有声明
+- `Symbol.valueDeclaration` 主声明
+- `Symbol.members` 类的成员
+- `symbolTable` 作用域
 
-| 字段 | 说明 |
-|------|------|
-| `parseXxx` | 每个语法一个函数 |
-| `nextToken` | 前进 token |
-| `reScanGreaterToken` | 回退 scanner 状态 |
-| `reScanSlashToken` | 区分除号与正则 |
+**最佳实践**：用 `checker.getSymbolAtLocation(node)` 取符号；用 `symbol.flags & SymbolFlags.Function` 判断类型；用 `symbol.exports` 查模块导出。
 
-**最佳实践**：
+### 模式 5：Type 类型系统与结构化类型
 
-- ✅ 用递归下降 + 手动 error recovery——软错误可继续
-- ✅ `nextToken` / `reScan*Token` 灵活回退——处理歧义
-- ✅ 不用 parser generator——失去错误恢复控制
-- ✅ 给每种语法一个 `parseXxx` 函数——可独立测试
-- ❌ 避免在 error 路径上 `throw`——会丢失后续节点
+**问题场景**：TypeScript 是结构化类型（structural typing）——只要 shape 一样就兼容，与名义类型（Java/C#）相反。
 
-### 模式 5：`CompilerHost` 抽象 + Node/浏览器双实现
-
-**问题场景**：TypeScript 核心要在 CLI（Node）、IDE（Web Worker）、浏览器、test runner 中复用。文件系统 IO 必须可替换。
-
-**解决方案**：
-
-```ts
-// src/compiler/sys.ts
-export interface CompilerHost {
-    fileExists(fileName: string): boolean;
-    readFile(fileName: string): string | undefined;
-    writeFile(fileName: string, data: string): void;
-    getCurrentDirectory(): string;
-    getSourceFile(fileName: string, ...): SourceFile | undefined;
-}
-
-export const sys: System = createSystem();  // 默认 Node 实现
-```
-
-```json
-// package.json
-{
-    "browser": {
-        "fs": false,
-        "os": false,
-        "path": false,
-        "crypto": false,
-        "buffer": false,
-        "inspector": false,
-        "perf_hooks": false
-    }
-}
-```
+**解决方案**：Type 系统把每个类型表示为 `Type` 对象（`flags`/`symbol`/`types`（联合/泛型参数））。`IntrinsicType`（`string`/`number`/`boolean`）是单例。Checker 用 `isAssignableTo(source, target)` 做结构化赋值检查。
 
 **关键参数**：
+- `Type.flags`（`Union`/`Intersection`/`Object`/`TypeParameter` 等）
+- `Type.symbol` 关联的 Symbol
+- `TypeUnion.types` 联合的成员
+- `ObjectType.members` 对象成员
+- `isAssignableTo` 赋值检查
 
-| 字段 | 说明 |
-|------|------|
-| `CompilerHost` | 编译器 IO 抽象 |
-| `sys` | 默认 Node System |
-| `browser` | package.json 屏蔽 Node API |
-| 浏览器安全 | `lib/typescript.js` 在浏览器中运行 |
+**最佳实践**：用 `checker.getTypeAtLocation(node)` 取类型；用 `type.isUnion()`/`type.isIntersection()` 判断；用 `checker.typeToString(type)` 渲染类型字符串。
 
-**最佳实践**：
+## 第二段：扩展范式
 
-- ✅ Host 抽象 IO——同一核心多环境复用
-- ✅ 默认 Node 实现——CLI 即用
-- ✅ `package.json#browser` 屏蔽 Node API——浏览器安全
-- ✅ VSCode / Volar / swc 都复用同一核心——生态共赢
-- ❌ 避免在核心代码中直接 `require('fs')`——破坏浏览器兼容
+### 模式 6：BuilderProgram 增量构建
 
-## 架构设计
+**问题场景**：IDE 边改边保存，传统 `program` 每次都全量重做 typecheck（5-10s），不可接受。
 
-### 模式 6：Host/Program/BuilderProgram 三元组
-
-**问题场景**：CLI、watch、IDE 都需要编译器核心，但要求差异大。CLI 一次性编译、watch 增量、IDE 多项目多用户视图。需要清晰分层。
-
-**解决方案**：
-
-```ts
-// 三元组
-export interface CompilerHost { /* IO */ }
-export interface Program { /* 编排 parse/bind/check/emit */ }
-export interface BuilderProgram extends Program { /* 增量缓存 */ }
-
-// 使用
-const host = createCompilerHost(options);
-const program = createProgram(rootNames, options, host);
-program.getTypeChecker();  // 普通模式
-
-// 增量模式
-const builder = createIncrementalProgram({ rootNames, options, host });
-builder.getSemanticDiagnostics(...);  // 增量
-```
+**解决方案**：`BuilderProgram` 维护文件指纹（mtime + content hash）缓存，文件未变直接复用 `SourceFile` AST。`getSemanticDiagnostics` 只对变更文件重跑 Binder+Checker。`incremental: true` 写到 `.tsbuildinfo`。
 
 **关键参数**：
+- `ts.createIncrementalProgram()` 增量
+- `.tsbuildinfo` 缓存
+- `program.getSemanticDiagnostics()` 复用
+- `createWatchProgram` watch 模式
+- `BuilderProgramBuilder` 内部
 
-| 层 | 关注 |
-|----|------|
-| `CompilerHost` | IO 抽象 |
-| `Program` | 编排类型检查 |
-| `BuilderProgram` | 增量重算 |
+**最佳实践**：CI 必开 `incremental: true`；用 `tsc --watch` 边改边编；用 `projectReferences` 多项目增量；用 `--assumeChangesOnlyAffectDirectDependencies` 加速。
 
-**最佳实践**：
+### 模式 7：Language Service 与 IDE 集成
 
-- ✅ 三元组各管一摊——Host 管 IO、Program 管类型、Builder 管缓存
-- ✅ BuilderProgram 继承 Program——薄封装增量缓存
-- ✅ 复用同一 checker 与 emitter——`--build` 不重写
-- ✅ IDE/CLI 共享核心——减少重复实现
-- ❌ 避免在 BuilderProgram 内重写核心——会偏离主分支
+**问题场景**：编辑器（VS Code）需要快速响应（hover/补全/跳转/重命名），每秒数十次请求，且要支持跨文件。
 
-### 模式 7：BuilderProgram 两层缓存（结构层 + 检查层）
-
-**问题场景**：大型项目（数千文件）重编译要花数十秒。需要"文件没变就复用整个解析结果"。
-
-**解决方案**：
-
-```ts
-// src/compiler/tsbuild.ts
-class BuilderProgram {
-    private parsedFiles: Map<string, SourceFile> = new Map();
-    private checkedFiles: Map<string, SemanticDiagnostics> = new Map();
-
-    getSemanticDiagnostics(file: SourceFile): Diagnostic[] {
-        // 1. 文件 mtime 变了？重新 parse
-        if (this.host.getModifiedTime(file.fileName) > this.parsedFiles.get(file.fileName).mtime) {
-            this.parsedFiles.set(file.fileName, parseSourceFile(...));
-            this.checkedFiles.delete(file.fileName);  // 失效检查缓存
-        }
-        // 2. 检查过？返回缓存
-        if (this.checkedFiles.has(file.fileName)) {
-            return this.checkedFiles.get(file.fileName);
-        }
-        // 3. 重新检查
-        const diagnostics = this.checker.getSemanticDiagnostics(file);
-        this.checkedFiles.set(file.fileName, diagnostics);
-        return diagnostics;
-    }
-}
-```
+**解决方案**：`LanguageService` 是面向 IDE 的高层 API，封装 `Program` + `Host` + 各种 Service。`getCompletionsAtPosition`/`getQuickInfoAtPosition`/`getDefinitionAtPosition` 等接口针对 IDE 优化（增量、单文件、缓存）。
 
 **关键参数**：
+- `ts.createLanguageService(host, documentRegistry)`
+- `getCompletionsAtPosition(fileName, position)`
+- `getDefinitionAtPosition(fileName, position)`
+- `getReferencesAtPosition(fileName, position)`
+- `getRenameInfo(fileName, position, findInComments)`
 
-| 缓存层 | 粒度 | 失效条件 |
-|--------|------|---------|
-| 结构层 | SourceFile | mtime 变化 |
-| 检查层 | SemanticDiagnostics | 文件 mtime + 依赖变化 |
-| `.tsbuildinfo` | 跨进程 | 项目根 mtime |
+**最佳实践**：用 `tsserver` 启动 Language Service；用 `ts-morph` 简化 AST 操作；用 `Project` + `LanguageService` 做 codemod 工具；用 `getSemanticClassifications` 做语义高亮。
 
-**最佳实践**：
+### 模式 8：Program 与 Module Resolution
 
-- ✅ 结构层 + 检查层分离——粒度不同
-- ✅ 文件 mtime 触发结构层失效——精确
-- ✅ `.tsbuildinfo` 跨进程复用——CI 加速
-- ✅ `incremental: true` 自动启用——配置化
-- ❌ 避免基于内容 hash 失效——IO 成本高
+**问题场景**：TS 编译需要找到每个 `import` 指向哪个 `.ts`/`.d.ts`/`.js` 文件——支持 node/node10/classic/bundler 多种解析模式。
 
-### 模式 8：`.tsbuildinfo` 跨进程缓存持久化
-
-**问题场景**：CI 每次跑都从零开始编译。`.tsbuildinfo` 把"哪些文件用什么签名检查过"持久化，下次启动直接复用。
-
-**解决方案**：
-
-```ts
-// 启用 incremental
-{
-    "compilerOptions": {
-        "incremental": true,
-        "tsBuildInfoFile": "./build/.tsbuildinfo"
-    }
-}
-
-// 读取
-const buildInfo = readBuildInfo("./build/.tsbuildinfo");
-if (buildInfo && buildInfo.version === ts.version) {
-    // 复用 cache
-    program = createIncrementalProgram({ ...buildInfo });
-}
-
-// 写入
-const newBuildInfo = getBuildInfo(program);
-writeBuildInfo("./build/.tsbuildinfo", newBuildInfo);
-```
+**解决方案**：`Program` 持 `SourceFile` 集合 + 模块解析缓存。`moduleResolution` 选项决定解析策略（`node16`/`nodenext`/`bundler`/`classic`）。`getResolvedModule` 走 `node_modules` 解析算法。
 
 **关键参数**：
+- `moduleResolution: "node16"` 现代
+- `moduleResolution: "bundler"` Vite/webpack 风格
+- `paths`/`baseUrl` 路径映射
+- `typeRoots` 自动包含 `@types`
+- `getResolvedModule()` 解析
 
-| 字段 | 说明 |
-|------|------|
-| `incremental: true` | 启用 |
-| `tsBuildInfoFile` | 文件路径 |
-| `version` | TS 版本号 |
-| `fileHash` | 单文件 hash |
-| `checkTime` | 检查时间戳 |
+**最佳实践**：用 `bundler` 模式配 Vite/webpack；用 `node16`/`nodenext` 配 Node.js；`paths` 用于 monorepo 包别名；`typeRoots` 自动发现 `@types/*`。
 
-**最佳实践**：
+### 模式 9：Compiler Options 与 tsconfig
 
-- ✅ 默认 `incremental: true`——CI 加速
-- ✅ 把 `.tsbuildinfo` 提交到 cache——跨进程复用
-- ✅ 用版本号作兼容检查——TS 升级失效旧 cache
-- ✅ 大项目用 `composite: true`——多项目引用
-- ❌ 避免在 Dockerfile 中删除 .tsbuildinfo——失去加速
+**问题场景**：TS 编译选项 100+（`target`/`module`/`strict`/`jsx`/`esModuleInterop`...），如何用一份配置让所有 IDE/工具一致？
 
-### 模式 9：Namespace 聚合桶 `_namespaces/ts.ts`
-
-**问题场景**：tsc 由几百个文件组成，但 `import * as ts from "typescript"` 要看到全部 API。如果每个文件都 `export`，d.ts 表面碎成几百个模块。
-
-**解决方案**：
-
-```ts
-// src/compiler/_namespaces/ts.ts
-// 把所有公开符号 re-export 到一个 ts 命名空间
-export { createProgram, createIncrementalProgram, createWatchProgram } from "../program.js";
-export { createTypeChecker, TypeChecker } from "../checker.js";
-export { createScanner, createSourceFile } from "../scanner.js";
-export { Scanner, Parser, CompilerOptions, ... } from "../types.js";
-// ... 几百个 re-export
-
-// 用户
-import * as ts from "typescript";
-const program = ts.createProgram(...);
-```
+**解决方案**：`tsconfig.json` 是 JSON Schema 化的配置中心（`compilerOptions`/`include`/`exclude`/`references`/`extends`）。`extends` 支持配置继承，`references` 支持项目引用（增量构建）。
 
 **关键参数**：
+- `target: "ES2022"` 输出目标
+- `module: "ESNext"` 模块格式
+- `strict: true` 严格模式
+- `extends: "./base.json"` 继承
+- `references` 项目引用
 
-| 字段 | 说明 |
-|------|------|
-| `_namespaces/ts.ts` | 聚合桶 |
-| 公开 API | `ts.createXxx`、`ts.Xxx` |
-| 内部模块 | 直接 `import` 不走聚合 |
+**最佳实践**：用 `@tsconfig/strictest` 起点；用 `extends` 分层（base + node + browser）；`project references` 多 package 增量；`composite: true` 强制项目引用。
 
-**最佳实践**：
+### 模式 10：Diagnostic 与错误恢复
 
-- ✅ 聚合桶给外部用户稳定 API——单 import 入口
-- ✅ 内部代码用直接 import——避免 circular
-- ✅ 名字带下划线前缀——`_namespaces` 表明内部
-- ✅ TypeScript d.ts 友好——单文件 API 表面
-- ❌ 避免所有符号都走聚合——内部代码会慢
+**问题场景**：代码有语法/类型错误，编译器不能停下来——IDE 还要给错误位置，并尽量恢复让后续检查继续。
 
-### 模式 10：`CancellationToken` 贯穿长任务
-
-**问题场景**：IDE 用户改一行代码，编译器跑几秒才发现用户已经改了下一行。需要能取消长任务。
-
-**解决方案**：
-
-```ts
-// src/compiler/types.ts
-export interface CancellationToken {
-    isCancellationRequested(): boolean;
-    throwIfCancellationRequested(): void;
-}
-
-// parser/checker/emit 中检查
-function checkSourceFile(file: SourceFile, token: CancellationToken) {
-    for (const statement of file.statements) {
-        token.throwIfCancellationRequested();  // 周期性检查
-        checkStatement(statement);
-    }
-}
-
-// IDE 取消
-const token = createCancellationToken();
-tsserver.onUserTyping(() => token.cancel());
-```
+**解决方案**：`Diagnostic` 是 `{ file, start, length, messageText, category, code }` 结构。Parser 用错误恢复（panic mode + skip）继续解析；Binder 用 fallback symbol；Checker 用 `any` 类型继续检查（不传染）。
 
 **关键参数**：
+- `DiagnosticCategory` Error/Warning/Message/Suggestion
+- `Diagnostic.code` 错误码（`TS2322` 等）
+- `Diagnostic.start`/`length` 位置
+- `parseDiagnostics` 解析错误
+- `getSuggestionDiagnostics` 建议
 
-| 字段 | 说明 |
-|------|------|
-| `isCancellationRequested` | 状态查询 |
-| `throwIfCancellationRequested` | 抛错中断 |
-| 注入 | 通过 host 传递 |
+**最佳实践**：自定义 Transformer 用 `addDiagnostic` 报错；用 `--pretty` 错误模板；用 `Suggestion` 类别给 fix；`isNoSubstitutionTemplateSpan` 等守卫检查。
 
-**最佳实践**：
+## 第三段：进阶范式
 
-- ✅ 用 CancellationToken 而非 AbortSignal——保持平台无关
-- ✅ 在长循环中周期性检查——不能每行查（开销）
-- ✅ 抛出后立即停止——不留残余状态
-- ✅ IDE 取消时给用户友好提示——不要默默失败
-- ❌ 避免基于"超时"中断——用户体验差
+### 模式 11：Transformer 与 codegen
 
-## 性能优化
+**问题场景**：TS 编译要做代码转换（类型擦除、装饰器、JSX → JS、const enum 展开），需要可组合的转换器链。
 
-### 模式 11：Worker 池并行测试运行器
-
-**问题场景**：TypeScript 几万个测试用例，单进程跑要几小时。需要多进程 worker 池并行。
-
-**解决方案**：
-
-```ts
-// src/testRunner/parallel/host.ts
-class ParallelHost {
-    private workers: Worker[] = [];
-    private queue: Test[] = [];
-
-    async run(tests: Test[]): Promise<TestResult[]> {
-        // 1. 分发测试到 worker
-        // 2. worker 跑完回报
-        // 3. 收集结果
-        for (let i = 0; i < this.workerCount; i++) {
-            const worker = new Worker('./worker.js');
-            this.workers.push(worker);
-            worker.on('message', (result) => this.onResult(result));
-        }
-        for (const test of tests) {
-            this.dispatch(test);
-        }
-    }
-}
-```
+**解决方案**：`TransformerFactory` 是 `(context: TransformationContext) => Transformer`，`Transformer` 访问每个节点决定如何变换。`ts.transform(sourceFile, [transformer1, transformer2])` 串行应用。Compiler 内置 8 个 transformer 链。
 
 **关键参数**：
+- `ts.transform(sourceFile, transformers)`
+- `TransformationContext` 工厂与辅助
+- `ts.visitNode`/`ts.visitEachChild` 访问
+- `ts.factory` 创建节点
+- 8 个内置 transformer
 
-| 字段 | 说明 |
-|------|------|
-| workerCount | CPU 核数 |
-| queue | 待测试队列 |
-| dispatch | 分发到空闲 worker |
+**最佳实践**：用 `ts.factory` 创建新节点（`ts.createSourceFile` 已废弃）；用 `ts.visitEachChild` 递归；用 `context.hoistVariableDeclaration` 等辅助。
 
-**最佳实践**：
+### 模式 12：Decorator 元数据与反射
 
-- ✅ worker 数 = CPU 核数——避免上下文切换
-- ✅ 用 Node Worker 而非 fork——进程开销小
-- ✅ 测试独立无共享状态——才可并行
-- ✅ 失败测试单独重跑——避免 flaky 阻塞
-- ❌ 避免 worker 共享大对象——序列化成本高
+**问题场景**：装饰器（`@Component`/`@Injectable`）需要存储元数据（路由表、依赖图）——`reflect-metadata` polyfill 提供运行时反射能力。
 
-### 模式 12：Fourslash 测试用注释断言 IDE 行为
-
-**问题场景**：IDE 跳转、重构、补全等"基于光标位置"的行为难写测试。Fourslash 用 `//|` 注释直接写 IDE 行为断言。
-
-**解决方案**：
-
-```ts
-// tests/cases/fourslash/quickInfoOnClass.ts
-////class [|Foo|] {
-////    bar: number;
-////}
-////var x = new [|F|]oo();
-////x./*1*/bar;
-
-// 断言：光标在 /*1*/ 时 QuickInfo 应为 number
-verify.quickInfoAt("1", "var bar: number");
-```
+**解决方案**：TS 编译装饰器保留元数据（设置 `emitDecoratorMetadata: true`），在类/方法/属性上注入 `design:type`/`design:paramtypes`/`design:returntype`。运行时库（如 NestJS）用 `Reflect.getMetadata` 读取。
 
 **关键参数**：
+- `emitDecoratorMetadata: true`
+- `experimentalDecorators: true` 旧式
+- `design:type`/`design:paramtypes`/`design:returntype`
+- `Reflect.metadata()` API
+- 5 阶段装饰器（ECMAScript Stage 3）
 
-| 字段 | 说明 |
-|------|------|
-| `////` | 标记测试代码 |
-| `[|...|]` | 标记光标位置 |
-| `/*1*/` | 标记光标 ID |
-| `verify.xxx` | 断言 API |
+**最佳实践**：用新装饰器（Stage 3，无 `experimentalDecorators`）；用 `reflect-metadata` polyfill；不要混用新旧装饰器；用类装饰器 + 反射做 DI 框架。
 
-**最佳实践**：
+### 模式 13：Project References 增量多项目
 
-- ✅ Fourslash 测 IDE 行为——跳转、重构、补全
-- ✅ 注释 + 标记——避免额外 DSL
-- ✅ 每个测试一个文件——可独立运行
-- ✅ 与 Mocha runner 集成——CI 自动跑
-- ❌ 避免在 Fourslash 中写逻辑——只测行为
+**问题场景**：monorepo 多个 `tsconfig.json` 项目，A 依赖 B 的 `.d.ts`——B 改了 A 要重 build，但传统方式全量重做。
 
-### 模式 13：Hereby 构建系统 + esbuild 加速
-
-**问题场景**：TypeScript 自己用 TS 写，编译 TS 要时间。`Herebyfile.mjs` 是 JS 版任务运行器，产物用 esbuild 加速。
-
-**解决方案**：
-
-```js
-// Herebyfile.mjs
-import { task, file, build } from "hereby";
-
-export const buildTypeScript = task({
-    name: "build:typescript",
-    run: () => {
-        // esbuild 编译 src/ → lib/
-        return esbuild.build({
-            entryPoints: ['src/typescript/index.ts'],
-            outfile: 'lib/typescript.js',
-            bundle: true,
-            target: 'es2020',
-        });
-    },
-});
-
-export const build = task({
-    name: "build",
-    dependencies: [buildTypeScript],
-    run: () => console.log("build complete"),
-});
-```
+**解决方案**：`tsconfig.references` 声明项目依赖图，A 配 `references: [{ path: "../B" }]`。B 配 `composite: true` 输出 `.d.ts` + `.tsbuildinfo`。A 改代码只重 build A，B 改触发 A 增量重 build。
 
 **关键参数**：
+- `composite: true` 项目根
+- `references: [{ path: "./B" }]`
+- `tsc --build` 多项目构建
+- `.tsbuildinfo` 文件
+- `outDir` 输出
 
-| 字段 | 说明 |
-|------|------|
-| `Hereby` | 任务运行器 |
-| `esbuild` | 极速 TS→JS 编译 |
-| `task()` | 任务定义 |
-| `dependencies` | 任务依赖图 |
+**最佳实践**：monorepo 必用 project references；B 配 `composite: true` + `declaration: true`；CI 用 `tsc --build` 增量；用 `--verbose` 看构建顺序。
 
-**最佳实践**：
+### 模式 14：Source Map 与声明文件
 
-- ✅ 用 esbuild 而非 tsc——快 10-100x
-- ✅ Hereby 任务图管理——比 Makefile 灵活
-- ✅ 增量构建——只重建改动的任务
-- ✅ dprint 格式化——比 Prettier 快 30x
-- ❌ 避免用 tsc 编译自身——慢
+**问题场景**：编译后的 JS 报错要能映射回 TS 源——需要 source map。库要发布 `.d.ts` 让用户获得类型提示。
 
-### 模式 14：Baseline 测试防止输出漂移
-
-**问题场景**：编译器输出应稳定。`tests/baselines/` 锁定基线，CI 比对。
-
-**解决方案**：
-
-```ts
-// tests/baselines/reference/quickInfoOnClass.js
-// 上次确认的基线
-class Foo {
-    bar: number;
-}
-var x = new Foo();
-x.bar;
-
-// runner.ts 中
-const baseline = readFileSync(`tests/baselines/${testName}.js`);
-const actual = compile(testName);
-if (actual !== baseline) {
-    throw new Error(`Baseline mismatch: ${testName}`);
-}
-```
+**解决方案**：`sourceMap: true` 生成 `.js.map`（含 mappings 编码位置）；`declaration: true` 生成 `.d.ts`（类型擦除后保留类型签名）。`declarationMap: true` 把 `.d.ts` 映射回源 `.ts`。
 
 **关键参数**：
+- `sourceMap: true`/`.js.map`
+- `declaration: true`/`.d.ts`
+- `declarationMap: true` 映射回源
+- `inlineSourceMap` 内嵌
+- `sourceRoot` 路径
 
-| 字段 | 说明 |
-|------|------|
-| `tests/baselines/` | 基线目录 |
-| `localBaseline` | 本地基线 |
-| `refBaseline` | 上游基线 |
-| 差异 | 显式 diff |
+**最佳实践**：库项目必发 `.d.ts`；用 `declarationMap` 让用户"Go to Definition"到源；用 `paths` 配合 `declarationMap`；CI 上传 `.map` 到 Sentry 错误追踪。
 
-**最佳实践**：
+### 模式 15：类型操作工具（infer / template literal / conditional）
 
-- ✅ 基线测试是"快照"——锁定行为
-- ✅ 修改基线要显式 `accept`——避免误改
-- ✅ 用 `refBaseline` 对比上游——防回归
-- ✅ 关键场景（错误信息、emit 输出）必测
-- ❌ 避免全部测试用 baseline——增加维护成本
+**问题场景**：复杂类型编程（`Awaited<T>`/`Partial<T>`/`ReturnType<T>`）需要类型级逻辑——递归条件类型、模板字面量类型、映射类型、infer 推断。
 
-### 模式 15：isolatedDeclarations 并行生成 .d.ts
-
-**问题场景**：单进程生成 .d.ts 慢。`isolatedDeclarations` 让 .d.ts 可并行生成。
-
-**解决方案**：
-
-```json
-// tsconfig.json
-{
-    "compilerOptions": {
-        "declaration": true,
-        "isolatedDeclarations": true  // 5.6+
-    }
-}
-```
-
-```ts
-// 启用后，单个 .ts 文件可独立生成 .d.ts，无需全项目类型信息
-// Compiler 可并行处理
-// file1.ts → file1.d.ts
-// file2.ts → file2.d.ts
-// 并行
-```
+**解决方案**：TS 类型系统是图灵完备的：
+- `infer X` 从泛型位置推断类型
+- `T extends U ? X : Y` 条件类型
+- `` `${T}-${U}` `` 模板字面量类型
+- `{ [K in keyof T]: ... }` 映射类型
+- 递归条件类型实现 `Awaited<T>`
 
 **关键参数**：
+- `infer` 关键字
+- 条件类型 `T extends U ? X : Y`
+- 模板字面量 `` `${Uppercase<T>}` ``
+- 映射类型 `{ [K in keyof T]: ... }`
+- `keyof T`/`typeof T`
 
-| 字段 | 说明 |
-|------|------|
-| `declaration: true` | 生成 .d.ts |
-| `isolatedDeclarations: true` | 单文件可生成 |
-| 限制 | 必须显式标注返回类型 |
+**最佳实践**：用 `Awaited<ReturnType<typeof fn>>` 取异步返回类型；用模板字面量做路由类型；用 `infer` 实现 `Parameters`/`ReturnType`；用 mapped types 做 readonly/optional。
 
-**最佳实践**：
+## 第四段：实战范式
 
-- ✅ 大项目启用 `isolatedDeclarations`——并行加速
-- ✅ 配合 `composite: true`——多项目并行
-- ✅ 公共 API 文件必显式类型——否则编译失败
-- ✅ 5.6+ 项目默认开启——CI 提速明显
-- ❌ 避免给内部文件加——增加维护成本
+### 模式 16：tsc CLI 与 build 模式
 
-## 工程实践
+**问题场景**：CLI 工具（`tsc`/`tsserver`/`ts-node`）的参数与配置文件一致——如何高效使用 `tsc`？
 
-### 模式 16：浏览器安全入口（`package.json#browser`）
-
-**问题场景**：VSCode / swc / esbuild 都要在浏览器或 Web Worker 中用 TypeScript 核心。但 TS 默认 `require('fs')` 浏览器会崩。
-
-**解决方案**：
-
-```json
-// package.json
-{
-    "main": "lib/typescript.js",
-    "browser": {
-        "fs": false,
-        "os": false,
-        "path": false,
-        "crypto": false,
-        "buffer": false,
-        "inspector": false,
-        "perf_hooks": false
-    }
-}
-```
+**解决方案**：`tsc` 直接读 `tsconfig.json`；`tsc --noEmit` 类型检查不输出；`tsc --watch` watch 模式；`tsc --build` 项目引用构建。`tsc -p ./other-tsconfig.json` 选配置。
 
 **关键参数**：
+- `tsc --noEmit` 类型检查
+- `tsc --watch` watch
+- `tsc --build` 项目引用
+- `tsc -p` 指定配置
+- `tsc --listFiles` 列出文件
 
-| Node API | 浏览器替代 |
-|----------|----------|
-| `fs` | `false`（屏蔽） |
-| `os` | `false` |
-| `path` | `false`（host 抽象替代） |
-| `crypto` | 浏览器 `crypto.subtle` |
-| `buffer` | 浏览器 `Uint8Array` |
+**最佳实践**：CI 用 `tsc --noEmit` 快速检查；开发用 `tsc --watch`；monorepo 用 `tsc --build`；用 `--listFiles | grep node_modules` 查未排除文件。
 
-**最佳实践**：
+### 模式 17：ts-node / tsx / swc-node 开发体验
 
-- ✅ 用 `browser: false` 屏蔽 Node-only API——核心代码不直接 `require`
-- ✅ Host 抽象替代文件系统——核心不变
-- ✅ 浏览器中 `Buffer` 替换为 `Uint8Array`
-- ✅ VSCode / swc / esbuild 都能复用——生态共赢
-- ❌ 避免在核心 `import * as fs from 'fs'`——破坏浏览器
-
-### 模式 17：`AGENTS.md` AI 编码助手规范
-
-**问题场景**：2025 年起大量 AI 助手自动提 PR。TypeScript 维护模式期间，要拒绝无意义 PR。
+**问题场景**：`tsc` 编译慢（10s+）——开发时运行 `node` 跑 TS 怎么加速？
 
 **解决方案**：
-
-```markdown
-# AGENTS.md
-> 给 AI 编码助手的强制规范
-
-1. **本仓库已处于维护模式**，只接受 critical / security / language service crash 修复
-2. 提交 PR 前请确认用户已接受维护模式条款
-3. **拒绝批量 AI 自动化 PR**——单次 PR 解决一个明确问题
-4. PR 描述必须包含"问题描述 + 解决方案 + 复现步骤"
-5. 重大变更需要先在 discussions/rfcs 发起
-```
+- `ts-node`：TS 编译器即时转译（`ts-node-dev` 监听）
+- `tsx`/`tsm`：基于 esbuild 的极速 TS 运行器（冷启动 < 100ms）
+- `swc-node`：基于 swc（Rust）的转译（比 esbuild 略慢但支持类型检查）
+- `ts-node --transpile-only` 跳过类型检查加速
 
 **关键参数**：
+- `ts-node --transpile-only` 跳过类型检查
+- `tsx watch` 监听模式
+- `swc-node` swc 后端
+- `--esm` ESM 模式
+- `TS_NODE_PROJECT` 配置
 
-| 字段 | 说明 |
-|------|------|
-| 维护模式 | 6.0 之后只修 critical |
-| 拒绝批量 | 单 PR 一个问题 |
-| 强制 RFC | 重大变更先讨论 |
+**最佳实践**：开发用 `tsx`（最快）；CI 必跑 `tsc --noEmit`（类型检查）；库发布前 `tsc` 全量编；`ts-node` 适合一次性脚本。
 
-**最佳实践**：
+### 模式 18：ESLint / Prettier 集成
 
-- ✅ `AGENTS.md` 给 AI 助手明确规则——减少无效 PR
-- ✅ `CONTRIBUTING.md` 同步更新——人机共知
-- ✅ 维护模式期间显式拒绝"非必要 PR"
-- ✅ 用 GitHub Actions 模板强制填写——提高 PR 质量
-- ❌ 避免"默许 AI 助手提 PR"——会被淹没
+**问题场景**：TS 代码既要类型检查又要 lint——两个工具不同步会冲突。
 
-### 模式 18：本地 npm 包 link 跨项目测试
+**解决方案**：`@typescript-eslint/parser` 解析 TS AST 给 ESLint；`@typescript-eslint/eslint-plugin` 提供规则；`typescript-eslint` monorepo 统一。Prettier 做格式化与 ESLint 互补（不重叠规则）。
 
-**问题场景**：TypeScript 主仓库在 5.9 分支开发，但 VSCode 用 5.5 稳定版。VSCode 测试要用本地 TypeScript。
+**关键参数**：
+- `@typescript-eslint/parser`
+- `@typescript-eslint/eslint-plugin`
+- `parserOptions.project: "./tsconfig.json"`
+- `eslint --fix` 自动修
+- `prettier --check` 格式校验
+
+**最佳实践**：用 `typescript-eslint` v6+（扁平配置）；`project: true` 让 lint 知道类型；用 `eslint --fix` + `prettier --write` 自动化；CI 跑 `tsc --noEmit && eslint . && prettier --check .`。
+
+### 模式 19：路径映射与 monorepo
+
+**问题场景**：monorepo 多个包（`@org/ui`/`@org/utils`）需要互相引用，TS 不能解析 workspace 协议（`workspace:*`）。
+
+**解决方案**：`tsconfig.paths` 配置路径映射：`"@org/*": ["packages/*"]`；用 `tsc-alias`/`tsconfig-paths` 在运行时解析（Node.js 实际加载）。`project references` 是更彻底的方案。
+
+**关键参数**：
+- `paths: { "@org/*": ["packages/*"] }`
+- `baseUrl: "."`
+- `tsc-alias` 运行时解析
+- `project references` 多 tsconfig
+- `tsconfig-paths/register`
+
+**最佳实践**：用 project references 而非 paths（更彻底）；用 `tsc-alias` 在构建时把 paths 转相对路径；运行时用 `tsconfig-paths/register`；用 `pnpm` 配 workspace 协议。
+
+### 模式 20：性能优化（skipLibCheck / isolatedModules）
+
+**问题场景**：TS 类型检查慢（>30s），CI 跑不完——需要优化。
 
 **解决方案**：
-
-```bash
-# TypeScript 仓库
-cd G:\实战案例\GitHub顶尖项目\typescript-fresh
-npm run build
-npm link  # 创建全局 link
-
-# VSCode 仓库
-cd G:\vscode\src\vscode
-npm link typescript  # 链接到本地 TS
-```
-
-```json
-// vscode/package.json
-{
-    "dependencies": {
-        "typescript": "file:../typescript-fresh"  // 或 5.5
-    }
-}
-```
+- `skipLibCheck: true` 跳过 `.d.ts` 检查（10x 加速）
+- `isolatedModules: true` 限制单文件独立编译（与 esbuild/swac 兼容）
+- `incremental: true` 增量（重复构建 5x 加速）
+- `tsBuildInfoFile` 缓存
+- 减少 `paths`/`project references`
 
 **关键参数**：
+- `skipLibCheck: true` 加速
+- `isolatedModules: true` esbuild 兼容
+- `incremental: true` 缓存
+- `noEmitOnError: false` 错误也输出
+- `assumeChangesOnlyAffectDirectDependencies: true`
 
-| 字段 | 说明 |
-|------|------|
-| `npm link` | 全局 link |
-| `file:` | 本地文件依赖 |
-| `npm pack` | 打本地 tarball |
-
-**最佳实践**：
-
-- ✅ `npm link` 跨项目测试——避免发版
-- ✅ `file:../` 显式本地依赖——npm/yarn/pnpm 都支持
-- ✅ `npm pack` 打 tarball 测安装路径
-- ✅ CI 用 GitHub Actions cache 跨 PR 复用
-- ❌ 避免 `npm install -g typescript@latest`——会污染全局
-
-### 模式 19：CI 多矩阵（OS × Node 版本）
-
-**问题场景**：TypeScript 在 Linux/macOS/Windows × Node 18/20/22 都要能跑。CI 需要矩阵。
-
-**解决方案**：
-
-```yaml
-# .github/workflows/ci.yml
-name: CI
-on: [push, pull_request]
-jobs:
-    test:
-        strategy:
-            matrix:
-                os: [ubuntu-latest, macos-latest, windows-latest]
-                node: [18.x, 20.x, 22.x]
-                exclude:
-                    - os: windows-latest
-                      node: 18.x  # Windows 不支持老 Node
-        runs-on: ${{ matrix.os }}
-        steps:
-            - uses: actions/checkout@v4
-            - uses: actions/setup-node@v4
-              with:
-                  node-version: ${{ matrix.node }}
-            - run: npm ci
-            - run: npm test
-            - run: npm run lint
-```
-
-**关键参数**：
-
-| 维度 | 取值 |
-|------|------|
-| OS | ubuntu / macos / windows |
-| Node | 18 / 20 / 22 |
-| 排除 | 已知不兼容组合 |
-
-**最佳实践**：
-
-- ✅ OS × Node 双维度矩阵——兼容性全覆盖
-- ✅ `exclude` 排除已知不兼容——节省 CI 时间
-- ✅ Lint、TypeCheck、Test 三个 job 并行——反馈快
-- ✅ 缓存 `~/.npm` + `node_modules`——加速 CI
-- ❌ 避免仅测单一平台——bug 漏网
-
-### 模式 20：Go 重写（typescript-go）作为长期演进
-
-**问题场景**：TypeScript checker 5.4 万行单文件 IIFE 是历史包袱。JavaScript 单线程闭包无法用多核，并行能力受限。性能遇到天花板。
-
-**解决方案**：
-
-```go
-// microsoft/typescript-go (7.0)
-// API 100% 兼容 TypeScript 5.x
-// 性能目标：启动 10x，内存 1/10
-// 用 Go 替代 JS：原生并发（goroutine）、编译型、AOT 优化
-
-// 用户无需改代码
-import * as ts from "typescript";
-const program = ts.createProgram(...);  // 7.0 由 Go 实现
-```
-
-**关键参数**：
-
-| 维度 | JS 版本 | Go 版本 |
-|------|---------|---------|
-| 启动 | 1x | 10x |
-| 内存 | 1x | 1/10 |
-| 并行 | 受限 | 充分利用多核 |
-| API 兼容 | 100% | 100% |
-
-**最佳实践**：
-
-- ✅ 性能瓶颈成体验瓶颈时——换底层语言
-- ✅ API 100% 兼容——用户无感
-- ✅ 行为对齐测试（BAT）——保证 5.x → 7.x 行为一致
-- ✅ `microsoft/typescript-go` 单独仓库——渐进迁移
-- ❌ 避免"边升级边重写"——会破坏兼容性
+**最佳实践**：必开 `skipLibCheck`（无副作用）；用 `isolatedModules` 配 esbuild；`incremental: true` 配合 `.gitignore .tsbuildinfo`；用 `tsc --diagnostics` 看瓶颈。
 
 ## 附：仓库元信息
 
 | 字段 | 值 |
 |------|----|
 | 路径 | `G:\实战案例\GitHub顶尖项目\typescript-fresh\` |
-| 主语言 | TypeScript（自举） |
-| License | Apache-2.0 |
-| 总文件 | 4904 |
-| 核心代码 | `src/compiler/` 743 文件 |
-| 关键文件 | `checker.ts`（5.4万行）、`parser.ts`（10823行）、`program.ts`（5201行） |
-
-## 一句话总结
-
-TypeScript 的精髓在不可变 AST + side-channel 标注（多 transformer 复用） + Host 抽象（CLI/Worker/IDE 复用） + BuilderProgram 两层缓存（增量编译） + single-file IIFE 闭包（信息全热场景的最优解）五件套——任何"工业级静态分析器 + 复杂流水线 + 跨环境复用"项目都适用。Node/浏览器双入口（`package.json#browser`）+ `tsbuildinfo` 跨进程缓存 + 行为对齐测试（Go 重写兼容）三件基础设施可直接复用到任何"重型 CLI 工具"。
+| 主语言 | TypeScript |
+| License | Apache 2.0 |
+| 解析时间 | 2026-06-02 |
+| 核心模块 | `src/compiler/`、`src/services/`、`src/tsc.ts` |
+| 关键基础设施 | TypeScript Compiler API、tsserver、Language Service、Project References |

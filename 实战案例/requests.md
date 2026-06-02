@@ -1,195 +1,267 @@
----
-title: requests
-type: HTTP 客户端库
-lang: Python
-stars: 53000
-date: 2026-06-02
-tags:
-  - 开源项目
-  - HTTP
-  - Python
-  - 网络库
+# requests - "HTTP for Humans" 的 Python 生态标杆 HTTP 客户端
+
+**GitHub**: psf/requests
+**Star**: 53k+
+**语言**: Python
+**主题**: HTTP 客户端 / urllib3 包装 / Adapter 可插拔
+**适用场景**: Python 同步阻塞 HTTP 调用、爬虫/自动化/SDK 二次封装、AI 平台后端；非并发场景
+
 ---
 
-# requests · 项目深度解析
+## 第一段：核心抽象与 API 设计
 
-> "HTTP for Humans" — 让 Python 程序员不再被 urllib 的 query string、form-encode、auth header 折磨的极简 HTTP 库，被 4,000,000+ 仓库依赖，每周下载量约 3 亿。
-> 来源：G:\实战案例\GitHub顶尖项目\requests\
+### 模式 1：模块函数 + Session 双层 API
 
-## 写在前面：解析哲学
+**问题场景**：Python 标准库 `urllib` / `urllib2` 难用——query string 拼接、form 编码、cookie 管理、auth header 拼接全要手写；新手写"调一个 GET"要 30 行。
 
-**先骨架后血肉，先 What 后 Why，最后 How to steal**。本笔记先描述项目定位和源码地图（骨架），再钻进 `sessions.py / adapters.py / models.py / auth.py` 抽取 5 段必读代码的设计哲学（血肉），最后给出 7 天可复刻路径（偷过来）。整个 requests 项目核心代码不足 5000 行，但它在 urllib3 之上盖了一层"人类 API"——这是它能统治 Python 生态十几年的根因。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone -c fetch.fsck.badTimezone=ignore https://github.com/psf/requests`（历史 commit 时区有错）
-2. **分类**：网络库 / 客户端 SDK / 同步阻塞 I/O
-3. **问题清单**：HTTP 库常见难点 → 连接池、重定向、cookie jar、auth、流式响应、SSL、proxy、SOCKS
-4. **速查表**：`requests.api.request()` → `Session.request()` → `HTTPAdapter.send()` → `urllib3.PoolManager.urlopen()`
-5. **锁定 commit**：当前 v2.34.2（2026-05-14），下一版 v3.0 计划删除 Python 2 兼容与非 str/bytes 的 username/password
-
-## 1. 开发计划书（Project Charter）
-
-| 维度 | 内容 |
-|------|------|
-| 项目名 | requests |
-| 定位 | "HTTP for Humans" — 同步、阻塞、易用的 Python HTTP 客户端 |
-| 核心问题 | Python 标准库 `urllib` / `urllib2` 难用，需要把 query string 拼接、form 编码、cookie 管理、auth 头拼接从手写变成一行调用 |
-| 目标用户 | 调用 REST API 的 Python 工程师（爬虫、自动化、SDK 二次封装、AI 平台后端） |
-| 商业模式 | 不商业化 — Python Software Foundation（PSF）托管，Apache 2.0 |
-| 复刻难度 | ★★☆☆☆（核心 4 文件 ~3500 行，但与 urllib3 的契约吃透需要经验） |
-| 状态 | 成熟期（v2.34.2，53000+ star，CHANGELOG 2000+ 行） |
-| 团队 | 创始人 Kenneth Reitz；现维护者 Ian Stapleton Cordasco + Nate Prewitt + 800+ 贡献者 |
-| 里程碑 | 2011 v0.x → 2013 v1.0 → 2015 v2.0 (PEP 466 加密) → 2023 v2.31 安全加固 → 2026 v2.34 内联类型（替换 typeshed） |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-`src/requests/` 是单一 Python 包，结构高度扁平，每个文件 200~1200 行：
-
-```mermaid
-mindmap
-  root((requests 仓库))
-    用户面
-      __init__.py  依赖检查 + re-export
-      api.py  7 个动词函数（get/post/...）
-    核心对象
-      sessions.py  Session + SessionRedirectMixin
-      models.py  Request/PreparedRequest/Response
-      adapters.py  HTTPAdapter（urllib3 包装）
-      auth.py  AuthBase/HTTPBasicAuth/HTTPDigestAuth
-      cookies.py  MockRequest/RequestsCookieJar
-    支撑层
-      utils.py  1100+ 行小函数集合
-      hooks.py  事件回调分发
-      exceptions.py  异常体系
-      status_codes.py  codes LookupDict
-      structures.py  CaseInsensitiveDict/LookupDict
-      _types.py  协议类型 + 公共 TypedDict
-      _internal_utils.py  内部小工具
-      compat.py  兼容垫片（chardet/charset_normalizer 探测）
-    配置
-      pyproject.toml  setuptools + ruff + pyright
-      src-layout  包代码在 src/requests/
-    测试
-      tests/  11 个 test_*.py + certs/ + testserver/
-      pytest-httpbin + trustme 自签证书
-      pyright strict typecheck
-    文档
-      docs/  Sphinx RST 文档（user/ + dev/ + community/）
-```
-
-**实际目录树（核心 130 文件中的 src 部分）**：
-
-```
-G:\实战案例\GitHub顶尖项目\requests\
-├── src/requests/
-│   ├── __init__.py     依赖检查 + 顶层 re-export
-│   ├── api.py          requests.get/post 入口（181 行）
-│   ├── sessions.py     Session 类（921 行，最复杂）
-│   ├── adapters.py     HTTPAdapter（749 行，urllib3 适配器）
-│   ├── models.py       Request/PreparedRequest/Response（1181 行）
-│   ├── auth.py         HTTPBasicAuth/HTTPDigestAuth（355 行）
-│   ├── cookies.py      MockRequest 包装 http.cookiejar（626 行）
-│   ├── utils.py        1100+ 行工具集
-│   ├── hooks.py        事件钩子（49 行）
-│   ├── exceptions.py   异常树
-│   ├── status_codes.py codes 字典（含 '\o/' = 200 这种小彩蛋）
-│   ├── structures.py   CaseInsensitiveDict
-│   ├── compat.py       兼容垫片
-│   └── _types.py       协议类型 + TypedDict
-├── tests/              pytest + 自签证书（certs/expired + certs/mtls）
-├── docs/               Sphinx
-├── pyproject.toml      ruff + pyright strict
-└── Makefile
-```
-
-**代码入口**：`import requests` → `requests.get()` → `src/requests/api.py:request()` → `Session().request()` → `Session.send()` → `HTTPAdapter.send()` → `urllib3.PoolManager.urlopen()`。
-
-## 3. 项目画像（Profile）
-
-| 指标 | 值 |
-|------|-----|
-| 总文件数 | 130 |
-| 主语言 | Python 100% |
-| 涉及语言 | Python + RST（文档）+ YAML（CI）|
-| Star | 53k+ |
-| License | Apache 2.0 |
-| Python 支持 | 3.10 ~ 3.15（含 free-threaded 3.14t） |
-| Docker | 无（库，不是服务） |
-| K8s | 无 |
-| CI | GitHub Actions（lint / typecheck / run-tests / zizmor / publish）|
-| 测试 | pytest + pytest-httpbin + pytest-xdist + trustme + certs 目录 |
-| 类型 | pyright strict + 内联类型（v2.34 起从 typeshed 切到 inline） |
-| 依赖（运行）| urllib3 / charset_normalizer / idna / certifi |
-| 依赖（可选）| PySocks（SOCKS）/ chardet（chardet 兼容回退） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-requests 的核心是 **三层抽象 + 一个策略模式**：
-
-1. **API 层**（`api.py`）— 7 个动词函数（`get/post/put/...`），本质都是 `with sessions.Session() as s: return s.request(method, url, **kwargs)`。注意 `head()` 强制 `allow_redirects=False`，这是 RFC 建议。
-2. **Session 层**（`sessions.py`）— 状态容器，合并 `Request` 字段与 `Session` 默认值，调度 Adapter 处理重定向。
-3. **Adapter 层**（`adapters.py`）— `BaseAdapter` 抽象 + `HTTPAdapter`（urllib3 实现）+ `SOCKSProxyManager`（可选依赖注入）。**`Session.get_adapter(url)` 通过最长前缀匹配把 URL 路由到对应 Adapter**（`for prefix, adapter in self.adapters.items(): if url.lower().startswith(prefix.lower())`）— 这是 requests 实现"挂载自定义 transport"的关键钩子。
-4. **策略模式** — `AuthBase.__call__(r)`、`hooks.dispatch_hook()`、`HTTPDigestAuth` 的 `response` 钩子，让用户把"加签名""做重试""打指标"塞进请求生命周期。
-
-```mermaid
-flowchart TD
-    A[requests.get post put...] --> B[api.request]
-    B --> C[with sessions.Session]
-    C --> D[Session.request]
-    D --> E[Session.prepare_request]
-    E --> F[PreparedRequest.prepare]
-    F --> F1[prepare_method]
-    F --> F2[prepare_url IDNA+requote]
-    F --> F3[prepare_headers CaseInsensitiveDict]
-    F --> F4[prepare_cookies]
-    F --> F5[prepare_body data/json/files]
-    F --> F6[prepare_auth]
-    F --> F7[prepare_hooks]
-    D --> G[Session.send]
-    G --> H[get_adapter url 前缀匹配]
-    H --> I[HTTPAdapter.send]
-    I --> J[urllib3.PoolManager.urlopen]
-    J --> K[build_response]
-    K --> L[Response + iter_content]
-    G --> M[resolve_redirects 生成器]
-    M --> N[最大 30 次]
-    G --> O[dispatch_hook response]
-    G --> P[extract_cookies_to_jar]
-```
-
-**核心架构看点（3 条具体设计决策）**：
-
-1. **`Session.get_adapter()` 用最长前缀匹配替代了"按 scheme 分发"**（`adapters.py:870`）：`for prefix, adapter in self.adapters.items()` 顺序遍历 `OrderedDict`，第一个 `url.lower().startswith(prefix.lower())` 命中即返回。这让 `s.mount('https://api.github.com/', MyAdapter())` 这样的局部覆写成为可能——这正是 requests 比 aiohttp"更灵活"的根基。代价是如果用户先 mount `'http://'` 再 mount `'http://api.'`，后者能覆盖前者。
-2. **重定向递归改成 `Generator[Response]` + `yield_requests` 模式**（`sessions.py:186`）：用 `yield` 而不是 for 循环递归，避免一次性吃光 30 个响应；通过 `yield_requests=True` 切换"吐 Response"和"吐 PreparedRequest"两种模式——`Session.send()` 在末尾用 `next(self.resolve_redirects(..., yield_requests=True))` 只取第一个，作为 `Response._next` 暴露给 `r.next()`（一个很少被用但很精巧的 API）。
-3. **依赖 urllib3 而不是自己实现 socket 层**：`HTTPAdapter` 通过 `urllib3.PoolManager` 复用连接、retry、TLS。requests 只负责"拼 URL/headers/cookies"和"暴露好用的 Session"，把"线程安全 + 连接池 + TLS 上下文"全推给 urllib3。这种"上层 API + 下层成熟库"的两段式架构，让 v2.x 十几年里几乎不用重写传输层——所有 TLS/QUIC/HTTP/2 改进都是 urllib3 受益，requests 自动继承。
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-5 个必读文件 + 行数：
-
-- `src/requests/api.py`（181）— 7 个动词的最薄封装
-- `src/requests/sessions.py`（921）— Session + 重定向逻辑
-- `src/requests/models.py`（1181）— Request/Response 数据结构
-- `src/requests/adapters.py`（749）— urllib3 适配器
-- `src/requests/auth.py`（355）— Auth 体系（重点看 HTTPDigestAuth）
-
-### 5.2 单文件分析卡（WHY）
-
-**`api.py:67-71`** — 为什么用 `with sessions.Session() as s:` 包裹？
+**解决方案**：requests 提供 7 个动词函数（`get/post/put/delete/...`）做"开箱即用"的薄封装，底层走 `Session` 复用连接池。
 
 ```python
-with sessions.Session() as session:
-    return session.request(method=method, url=url, **kwargs)
+import requests
+# 模块级函数：临时用，不复用连接
+r = requests.get('https://api.github.com/user', auth=('u', 'p'))
+
+# Session：复用连接池/headers/cookies/hooks
+with requests.Session() as s:
+    s.headers['Authorization'] = 'Bearer ...'
+    for url in urls:
+        r = s.get(url)  # 同一 TCP 连接复用
 ```
 
-**WHY**：模块级 `requests.get()` 每次都新建 Session，意味着连接池**不复用**。但 `__enter__/__exit__` 让 `Session.close()` 必然执行——避免泄露 socket。注释写得很直白："By using the 'with' statement we are sure the session is closed, thus we avoid leaving sockets open which can trigger a ResourceWarning"。这是"易用性优先"的代价：模块函数开销大，生产代码必须显式 `s = requests.Session()` 复用。
+**关键参数**：
+- 7 个动词：`get/post/put/patch/delete/head/options`
+- `head()` 强制 `allow_redirects=False`（RFC 建议）
+- 模块函数内部用 `with sessions.Session() as s:` 包裹（确保 socket 关闭）
+- Session 是状态容器（headers/cookies/auth/hooks/adapters 跨请求复用）
 
-**`sessions.py:76-105` `merge_setting`** — 三层设置合并的精髓
+**最佳实践**：生产代码必须 `s = requests.Session()` 复用连接；模块级 `requests.get()` 性能是 Session 的 1/3；`with Session() as s:` 保证 socket 释放。
+
+### 模式 2：三段式对象（Request → PreparedRequest → Response）
+
+**问题场景**：直接传一个 dict 跑全程，URL/headers/body 准备过程不可见、不可重放、不可测试。
+
+**解决方案**：requests 把请求生命周期拆成 3 个值对象：
+- `Request`：用户输入（method/url/headers/data）
+- `PreparedRequest`：即将发送的快照（cookie 合并、auth 注入、body 编码完）
+- `Response`：服务端返回
 
 ```python
+req = requests.Request('POST', 'https://api.example.com/users',
+                       json={'name': 'Alice'}, headers={'X-Trace': 'abc'})
+prepared = s.prepare_request(req)   # 用户输入 → 准备发送的快照
+print(prepared.headers)              # 看到最终 headers（含 auth/cookies/UA）
+print(prepared.body)                 # 看到最终 body（json 编码完）
+r = s.send(prepared)                 # 真正发出去
+print(r.history)                     # 重定向历史
+```
+
+**关键参数**：
+- `Request(method, url, **kwargs)` 仅用户意图
+- `prepare_request()` 合并 session defaults（headers/cookies/auth）
+- `PreparedRequest.prepare()` 内部走 `prepare_method/url/headers/cookies/body/auth/hooks` 7 步
+- `Response` 含 `history` / `elapsed` / `request`（反向引用）
+
+**最佳实践**：测试时 mock `PreparedRequest` 而非 `Request`（最接近真实发送）；用 `s.prepare_request(req)` 调试 headers 合并逻辑。
+
+### 模式 3：URL 预处理的 7 道防线
+
+**问题场景**：用户传脏 URL（中文域名、缺 scheme、`*.example.com` 通配符、空格未编码）直接抛 `LocationParseError` 或发送出错。
+
+**解决方案**：`PreparedRequest.prepare_url` 7 道防线：放行 `mailto:` / 拒绝缺 scheme / 拒绝空 host / IDNA 编码中文域名 / 拒绝通配符 / 拼 netloc / 补裸域 `/` / `requote_uri` 重编码。
+
+```python
+# models.py:481-561 prepare_url 简化
+if ":" in url and not url.lower().startswith("http"):
+    self.url = url; return  # 1. 放过非 HTTP 协议
+scheme, auth, host, port, path, query, fragment = parse_url(url)
+if not scheme: raise MissingSchema(...)        # 2. 缺 scheme 不替你猜
+if not host: raise InvalidURL(...)
+if not unicode_is_ascii(host):
+    host = self._get_idna_encoded_host(host)   # 3. 中文域名 IDNA
+elif host.startswith(("*", ".")):
+    raise InvalidURL("URL has an invalid label.")  # 4. 通配符非法
+```
+
+**关键参数**：
+- `parse_url` 来自 urllib3（复用 RFC 3986 解析器比自己写安全）
+- IDNA 编码：`中文.cn` → `xn--fiqs8s.cn`
+- `requote_uri` 防止 `GET /a b` 把空格发出去
+- 通配符只在 SNI/Host 头合法，不能在 URL
+
+**最佳实践**：所有 URL 验证让 requests 去做（防御性编程）；不要在调用方拼 URL 后再"清洗"——直接传原始 URL 让 `prepare_url` 处理。
+
+### 模式 4：Adapter 前缀挂载
+
+**问题场景**：aiohttp 只能走 asyncio，httpx 切换 transport 要重写代码；如何在同一 Session 混用不同 transport（`http://` / `https://` / `s3://` / `mock://`）？
+
+**解决方案**：`Session.get_adapter(url)` 用**最长前缀匹配**把 URL 路由到对应 Adapter。`s.mount('https://api.', MyAdapter())` 局部覆写，无需 if-else。
+
+```python
+from requests.adapters import HTTPAdapter
+class MyRetryAdapter(HTTPAdapter):
+    def send(self, request, **kwargs):
+        return super().send(request, timeout=60, **kwargs)
+s = requests.Session()
+s.mount('https://api.github.com/', MyRetryAdapter(pool_connections=10))
+s.mount('https://', HTTPAdapter(max_retries=3))
+# 任何 https:// 开头的请求 → MyRetryAdapter
+# 其他 https:// → HTTPAdapter(max_retries=3)
+```
+
+**关键参数**：
+- `BaseAdapter` 抽象（`send(request) -> Response`）
+- `HTTPAdapter`（urllib3 实现）+ `SOCKSProxyManager`（可选）
+- `mount(prefix, adapter)` 注册路由
+- `get_adapter` 用 `for prefix, adapter in self.adapters.items(): if url.lower().startswith(prefix.lower()): return adapter`
+
+**最佳实践**：长前缀 mount 必须在短前缀之后（顺序依赖）；测试时用 `s.mount('http://', MockAdapter())` 拦截所有请求；不要在 production 混用 `s.mount('https://', ...)` 和 `s.mount('https://api.', ...)` 顺序错乱。
+
+### 模式 5：异常重翻译（urllib3 → requests 领域异常）
+
+**问题场景**：urllib3 把所有错误塞进 `MaxRetryError`，用户必须 `except urllib3.MaxRetryError as e: if isinstance(e.reason, ConnectTimeoutError): ...`，层级深、API 不友好。
+
+**解决方案**：`HTTPAdapter.send` 用 `isinstance(e.reason, ...)` 把扁平异常重新分类成 requests 领域异常（`ConnectionError` / `ConnectTimeout` / `ProxyError` / `SSLError`），并挂上 `request=request` 字段。
+
+```python
+# adapters.py:710-746
+try:
+    resp = conn.urlopen(method=..., url=..., body=..., headers=...,
+        redirect=False, assert_same_host=False, preload_content=False,
+        decode_content=False, retries=self.max_retries, timeout=..., chunked=...)
+except (ProtocolError, OSError) as err:
+    raise ConnectionError(err, request=request)
+except MaxRetryError as e:
+    if isinstance(e.reason, ConnectTimeoutError): raise ConnectTimeout(e, request=request)
+    if isinstance(e.reason, _ProxyError): raise ProxyError(e, request=request)
+    if isinstance(e.reason, _SSLError): raise SSLError(e, request=request)
+    raise ConnectionError(e, request=request)
+```
+
+**关键参数**：
+- 异常树根：`RequestException` → `IOError` / `ConnectionError` / `Timeout` / `HTTPError` / `TooManyRedirects`
+- `preload_content=False` + `decode_content=False` 让 `iter_content()` 流式工作
+- 每个异常携带 `request=request` 字段（`e.request.url` 可读）
+
+**最佳实践**：用户代码 `except requests.exceptions.ConnectionError` 而非 `except urllib3.MaxRetryError`；`preload_content=False` 是流式下载的前提（关闭后内容不会全量加载）。
+
+---
+
+## 第二段：鉴权、Cookie 与扩展点
+
+### 模式 6：HTTPBasicAuth 简单鉴权
+
+**问题场景**：REST API 用 Basic Auth（`Authorization: Basic base64(user:pass)`），手写 base64 + header 拼接烦，且拼错容易泄露密码。
+
+**解决方案**：`HTTPBasicAuth(username, password)` 实现 `AuthBase.__call__(r)`：在 `prepare_auth` 阶段自动注入 `Authorization` header。
+
+```python
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
+# 方式 1：元组（内部等价）
+r = requests.get('https://api.example.com', auth=('user', 'pass'))
+# 方式 2：显式类（可继承自定义）
+r = requests.get('https://api.example.com', auth=HTTPBasicAuth('user', 'pass'))
+# 方式 3：Session 默认
+s = requests.Session(); s.auth = HTTPBasicAuth('user', 'pass')
+```
+
+**关键参数**：
+- `AuthBase` 抽象基类，定义 `__call__(r) -> r` 接口
+- `HTTPBasicAuth`：base64 编码 `user:pass`
+- `HTTPDigestAuth`：MD5/SHA-256 摘要握手（状态机）
+- Session 的 `auth` 字段是 default，request 的 `auth` 字段会覆盖
+
+**最佳实践**：HTTPS + Basic 才安全（HTTP 上 Basic 等于明文）；自定义鉴权继承 `AuthBase` 实现 `__call__`；不要在 URL 里塞 `user:pass@`（requests 会报 InvalidURL）。
+
+### 模式 7：HTTPDigestAuth 状态机（threading.local）
+
+**问题场景**：HTTP Digest 鉴权有状态——服务器发 nonce，客户端回 `nc=00000001`，nonce 用过就废；多线程下 nonce 计数器要独立。
+
+**解决方案**：`HTTPDigestAuth` 把 `last_nonce` / `nonce_count` / `chal` / `num_401_calls` 存到 `threading.local()`，每线程独立。401 后 `seek()` body 位置 + 复用连接重发。
+
+```python
+# auth.py:124-355
+self._thread_local = threading.local()
+def init_per_thread_state(self):
+    if not hasattr(self._thread_local, "init"):
+        self._thread_local.init = True
+        self._thread_local.last_nonce = ""
+        self._thread_local.nonce_count = 0
+        self._thread_local.num_401_calls = 1
+def handle_401(self, r, **kwargs):
+    if not 400 <= r.status_code < 500: return r  # 仅 401 重试
+    if (seek := getattr(r.request.body, "seek", None)) is not None:
+        seek(self._thread_local.pos)            # 流式 body seek 回原位
+    r.content                                     # 消费响应 → 释放连接到池
+    prep = r.request.copy()
+    prep.headers["Authorization"] = self.build_digest_header(...)
+    _r = r.connection.send(prep, **kwargs)       # 复用连接
+    _r.history.append(r)
+    return _r
+```
+
+**关键参数**：
+- `threading.local()` 解决多线程 nonce 计数独立
+- `seek(self._thread_local.pos)` 流式 body 必备（文件上传 401 后重发）
+- `r.content` 消费 socket → 释放到连接池（省一次 TCP 握手）
+- `num_401_calls` 限制重试次数（防 nonce 永续循环）
+
+**最佳实践**：支持重试的 HTTP 客户端**必须**在发送前 `body.tell()` 记位置，401 后 `body.seek()` 回原位；用 `r.connection.send(prep)` 复用连接而非 `s.send(prep)`。
+
+### 模式 8：Cookie Jar（http.cookiejar 包装）
+
+**问题场景**：浏览器 Set-Cookie 头要自动存、下次请求自动带；跨域名 cookie 隔离；JSESSIONID 这种服务端 session cookie 怎么管理？
+
+**解决方案**：`RequestsCookieJar` 包装 stdlib `http.cookiejar.CookieJar`，每个 Session 实例挂一个。请求前 `merge_cookies` 把 jar 里的 cookie 合并到 headers，响应后 `extract_cookies_to_jar` 把 Set-Cookie 写回。
+
+```python
+s = requests.Session()
+s.cookies.set('pref', 'dark_mode', domain='example.com', path='/')
+r = s.get('https://example.com/')           # 自动带 Cookie: pref=dark_mode
+print(s.cookies.get('pref'))                # 'dark_mode'（服务器可能追加其他 cookie）
+# 跨域：每个 host 独立 jar（http.cookiejar 默认行为）
+```
+
+**关键参数**：
+- `RequestsCookieJar` = `http.cookiejar.CookieJar` 扩展（支持 dict-like 访问）
+- `extract_cookies_to_jar(jar, request, response)` 解析 Set-Cookie
+- `merge_cookies(jar_cookies, request)` 注入到 request headers
+- cookie 持久化：自己 pickle `s.cookies` 或用 `requests.cookies.RequestsCookieJar()`
+
+**最佳实践**：用 `s.cookies.set(name, value, domain=..., path=...)` 而非 `s.headers['Cookie']`（自动处理多 cookie 拼接）；跨域登录用 `s.cookies.update(jar_from_other_session)`。
+
+### 模式 9：Hooks 事件分发
+
+**问题场景**：想给所有响应加指标（Prometheus counter）、结构化日志、慢请求警告，复制粘贴到每个调用点违反 DRY。
+
+**解决方案**：`Session.hooks` 是 dict，key 是事件名（`response`），value 是 callback 列表。`dispatch_hook('response', hooks, response, request=...)` 在 `send` 末尾调用。
+
+```python
+def log_resp(response, *args, **kwargs):
+    print(f'[{response.status_code}] {response.request.url} {response.elapsed.total_seconds():.3f}s')
+    return response   # 必须 return（可替换为新 response）
+s = requests.Session()
+s.hooks['response'].append(log_resp)
+# 多个 hook 按顺序执行
+s.hooks['response'].append(prom_counter_inc)  # 指标
+s.hooks['response'].append(slow_request_warn)  # 慢请求告警
+```
+
+**关键参数**：
+- hook 签名：`hook(response, *args, **kwargs)` 或 `hook(request, **kwargs)`
+- `dispatch_hook(key, hooks, hook_data, **kwargs)` 内部实现
+- hook 可修改/替换 hook_data（return 新对象）
+- 错误不影响其他 hook（try/catch 包裹）
+
+**最佳实践**：用 `response.elapsed.total_seconds()` 算耗时；hook 里抛错不会中断主流程；用 `requests-requests_logger` / 自定义 hook 做结构化日志。
+
+### 模式 10：Merge Setting（None = 删除）
+
+**问题场景**：Session 默认有 `X-Auth: abc`，单次请求想"临时去掉"（传 `headers=None` 会让某 key 消失），如何表达"删除"语义？
+
+**解决方案**：`merge_setting` 三层合并（request 覆盖 session，非 dict 取 request，None 当删除）。`merged` 里 value 是 `None` 的 key 直接 `del`。
+
+```python
+# sessions.py:76-105
 def merge_setting(request_setting, session_setting, dict_class=OrderedDict):
     if session_setting is None: return request_setting
     if request_setting is None: return session_setting
@@ -200,351 +272,319 @@ def merge_setting(request_setting, session_setting, dict_class=OrderedDict):
     none_keys = [k for (k, v) in merged.items() if v is None]
     for key in none_keys: del merged[key]
     return merged
+# 用法
+s.headers['X-Auth'] = 'abc'
+s.get(url, headers={'X-Auth': None})  # 单次请求不带 X-Auth
 ```
 
-**WHY**：当用户写 `s.headers['X-Foo'] = None` 时，requests 用"先合后删 None"模式把它当作"删除该键"，从而让**单次请求**的 `headers=None` 能擦掉**Session 默认**的某个头。这种"用 None 表示删除"是 Python web 框架常见 trick（werkzeug / fastapi 也用），学习点是：**None 不是缺失，是信号**。
+**关键参数**：
+- `None` 不是缺失，是"删除信号"
+- `dict` 类型走 merge，非 dict（如 `verify=True`）直接 request 覆盖
+- 用 `OrderedDict` 保持 header 顺序（HTTP/1.1 性能）
+- 三个参数：`request_setting` / `session_setting` / `dict_class`
 
-**`sessions.py:870-879` `get_adapter`** — 7 行完成 transport 路由
+**最佳实践**：用 `headers={'X-Auth': None}` 而非 `del s.headers['X-Auth']`（后者影响后续请求）；`None = 删除` 是 werkzeug/fastapi 通用约定。
+
+---
+
+## 第三段：传输层与连接管理
+
+### 模式 11：HTTPAdapter 包装 urllib3
+
+**问题场景**：自己实现 socket 层要写 TLS、连接池、retry、SOCKS——重复造轮子且安全审计噩梦。
+
+**解决方案**：`HTTPAdapter` 持有 `urllib3.PoolManager`，把 requests 的 `Request` 翻译成 urllib3 的 `urlopen(method, url, body, headers, ...)` 调用，把 urllib3 的 `HTTPResponse` 翻译回 `requests.Response`。
 
 ```python
-def get_adapter(self, url):
-    for prefix, adapter in self.adapters.items():
-        if url.lower().startswith(prefix.lower()):
-            return adapter
+# adapters.py 核心逻辑
+class HTTPAdapter(BaseAdapter):
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize, block=block, **pool_kwargs)
+    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+        conn = self.get_connection(request.url, proxies)   # urllib3 proxy-aware connection
+        resp = conn.urlopen(method=..., body=..., headers=..., retries=self.max_retries, timeout=..., ...)
+        return self.build_response(request, resp)
 ```
 
-**WHY**：循环 + startswith 而不是 dict 精确查找——支持 `https://`（scheme）、`http://api.example.com/`（host）两种粒度。`OrderedDict` 保证用户后 mount 的"长前缀"先被遍历到（前提是 mount 时已经存在），不然后 mount 的前缀会被先 mount 的 `'https://'` 抢走。这是一个**顺序依赖的隐性约定**，新手常踩坑。
+**关键参数**：
+- `poolmanager = PoolManager(num_pools=N, maxsize=M)` 连接池
+- `block=True` 连接池满时阻塞（默认 False 抛 `ConnectionError`）
+- `HTTPAdapter` 默认 `pool_connections=10` / `pool_maxsize=10`
+- 自定义 SSLContext 通过 `pool_kwargs['ssl_context']` 传入
 
-**`adapters.py:634-748` `HTTPAdapter.send`** — 错误翻译的艺术
+**最佳实践**：用 `HTTPAdapter(pool_connections=100, pool_maxsize=100)` 给高并发场景；不要自己实现 TLS，依赖 urllib3/certifi 更新；HTTPS 证书校验失败用 `verify='/path/to/ca-bundle'` 自定义 CA。
+
+### 模式 12：重定向（Generator + yield_requests）
+
+**问题场景**：30 次重定向链如果用 for 循环递归会一次性吃光 30 个响应；用户想 `r.history` 看到全部中间响应；如何既流式又可控？
+
+**解决方案**：`Session.resolve_redirects` 是生成器，`yield` 每个 `Response`；`yield_requests=True` 时 yield `PreparedRequest`（让 `r.next()` 拿到下一个 prep），否则 yield `Response`。
 
 ```python
-try:
-    resp = conn.urlopen(method=..., url=..., body=..., headers=...,
-        redirect=False, assert_same_host=False, preload_content=False,
-        decode_content=False, retries=self.max_retries, timeout=..., chunked=...)
-except (ProtocolError, OSError) as err: raise ConnectionError(err, request=request)
-except MaxRetryError as e:
-    if isinstance(e.reason, ConnectTimeoutError):
-        if not isinstance(e.reason, NewConnectionError):
-            raise ConnectTimeout(e, request=request)
-    if isinstance(e.reason, _ProxyError): raise ProxyError(e, request=request)
-    if isinstance(e.reason, _SSLError): raise SSLError(e, request=request)
-    raise ConnectionError(e, request=request)
+# sessions.py:186
+def resolve_redirects(self, resp, req, stream=False, timeout=None, verify=True, cert=None, proxies=None, yield_requests=False, **adapter_kwargs):
+    gen = self.resolve_redirects(..., yield_requests=True)
+    history = [resp for resp in gen]    # 收集所有
+# r.next() 内部
+def next(self):
+    return next(self._content.__iter__()) if self._content_consumed else None
+# 实际是：r._next = next(self.resolve_redirects(..., yield_requests=True))
 ```
 
-**WHY**：requests 的"**用户友好异常**"哲学全在这一段。urllib3 把所有错误塞进 `MaxRetryError`，requests 用 `isinstance(e.reason, ...)` 把它们重新分类成 `ConnectionError / ConnectTimeout / ProxyError / SSLError`，再挂上 `request=request` 字段，让 `except ConnectionError as e: print(e.request.url)` 成为可能。还有一行 TODO `# TODO: Remove this in 3.0.0: see #2811`——保留对 urllib3 老版本的兼容分支，新版本该分支永不进入。**注意 `preload_content=False` + `decode_content=False`** — 这两行让 Response 支持 `iter_content(8192)` 流式读取，关闭后内容会全量加载到内存。
+**关键参数**：
+- 最大重定向次数：30（`MAX_REDIRECTS` 常量）
+- 重定向保留 method：301/302 + POST 默认变 GET（RFC 7231）
+- cookie 跨域：`extract_cookies_to_jar` 在每次 redirect 时执行
+- `allow_redirects=False` 跳过（HEAD 强制）
 
-**`models.py:481-561` `PreparedRequest.prepare_url`** — URL 准备的 7 个坑
+**最佳实践**：用 `r.history` 看重定向链（每步 Response）；登录后 follow redirect 拿最终页面；不要手动实现 follow redirect（边界条件太多）。
+
+### 模式 13：urllib3 Retry 错误重试
+
+**问题场景**：网络瞬断（DNS 抖动、TCP RST）导致一次失败，业务想要 3 次重试 + 指数退避；requests 默认不重试。
+
+**解决方案**：`HTTPAdapter(max_retries=Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503]))` 把 urllib3 的 `Retry` 传给 `urlopen` 的 `retries` 参数。
 
 ```python
-if ":" in url and not url.lower().startswith("http"):
-    self.url = url; return  # 1. 放过 mailto:/data: 等非 HTTP 协议
-scheme, auth, host, port, path, query, fragment = parse_url(url)
-if not scheme: raise MissingSchema(...)  # 2. 没 scheme 不替你猜
-if not host: raise InvalidURL(...)
-if not unicode_is_ascii(host):
-    host = self._get_idna_encoded_host(host)  # 3. 中文域名 IDNA
-elif host.startswith(("*", ".")):
-    raise InvalidURL("URL has an invalid label.")  # 4. 通配符非法
-# 5. 拼回 netloc
-# 6. 裸域补 /
-# 7. query 合并 + requote_uri
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+retry = Retry(
+    total=3,                        # 总次数
+    backoff_factor=0.5,             # 退避：{0, 0.5, 1, 2, 4, 8...} 秒
+    status_forcelist=[500, 502, 503, 504],  # 这些状态码触发重试
+    allowed_methods=['GET', 'POST'],  # 允许重试的方法
+    raise_on_status=False,
+)
+s = requests.Session()
+s.mount('https://', HTTPAdapter(max_retries=retry))
 ```
 
-**WHY**：每个分支对应一个真实 CVE 或 issue。中文域名必须 IDNA 编码（否则 urllib3 报 LocationParseError）、`*.example.com` 不能出现在 URL（通配符只在 SNI/Host 头合法）、`requote_uri` 防止 `GET /a b` 把空格没编码就发出去——这都是给"用户传脏 URL"留的最后一道闸门。`parse_url` 来自 urllib3，所以 requests 不自己写 RFC 3986 解析器，**复用第三方库比自己实现安全**。
+**关键参数**：
+- `total`：总重试次数
+- `backoff_factor`：指数退避基数（0 → 0.5s, 1 → 1s, 2 → 2s）
+- `status_forcelist`：哪些 HTTP 状态码触发重试
+- `allowed_methods`：默认 `['HEAD', 'GET', 'OPTIONS']`（POST 不安全）
+- `respect_retry_after_header`：是否遵守服务端 `Retry-After`
 
-**`auth.py:124-355` `HTTPDigestAuth`** — 状态机藏在 `threading.local()`
+**最佳实践**：GET 重试 3 次 + 指数退避；POST 默认不重试（防重复扣款）；读 `Retry-After` header（避免被服务器限流）。
+
+### 模式 14：代理与 SOCKS
+
+**问题场景**：内网穿透要 HTTP 代理；科学上网要 SOCKS5；不同 URL 走不同代理。
+
+**解决方案**：`proxies={'http': 'http://proxy:8080', 'https': 'socks5://user:pass@proxy:1080'}` 字典。SOCKS5 需要 `pip install requests[socks]`（PySocks 是可选依赖，v2.32 拆分）。
 
 ```python
-self._thread_local = threading.local()  # 每个线程独立 nonce/counter
-def init_per_thread_state(self):
-    if not hasattr(self._thread_local, "init"):
-        self._thread_local.init = True
-        self._thread_local.last_nonce = ""
-        self._thread_local.nonce_count = 0
-        self._thread_local.chal = {}
-        self._thread_local.pos = None
-        self._thread_local.num_401_calls = 1
-def handle_401(self, r, **kwargs):
-    # 401 才进 digest 重试；其他 4xx/5xx 跳过
-    if not 400 <= r.status_code < 500: return r
-    # 重发前必须 seek() 回原始 body 位置（流式 body 不能丢）
-    if (seek := getattr(r.request.body, "seek", None)) is not None:
-        seek(self._thread_local.pos)
-    r.content  # 消费原响应 → 释放连接
-    r.close()
-    prep = r.request.copy()
-    prep.prepare_cookies(cookie_jar)
-    prep.headers["Authorization"] = self.build_digest_header(...)
-    _r = r.connection.send(prep, **kwargs)  # 复用连接重发
-    _r.history.append(r); _r.request = prep
-    return _r
+# HTTP 代理
+r = requests.get(url, proxies={'http': 'http://proxy:8080', 'https': 'http://proxy:8080'})
+# SOCKS5
+r = requests.get(url, proxies={'https': 'socks5://user:pass@proxy:1080'})
+# Session 默认
+s = requests.Session()
+s.proxies = {'http': 'http://proxy:8080'}
+# 环境变量
+# HTTP_PROXY=http://proxy:8080 HTTPS_PROXY=http://proxy:8080 python script.py
 ```
 
-**WHY**：HTTP Digest 是**有状态**的——服务器发 nonce，客户端回 nc=00000001，nonce 用了就废。`threading.local()` 让同一 Session 在多线程下各自维护计数器（requests 自身 Session 线程安全有限，但 DigestAuth 单独处理了）。`seek(self._thread_local.pos)` 关键：流式 body（文件上传）发出后**不能 reload**，必须先 `tell()` 记位置、401 后 `seek()` 回去。`r.content` 一行是为了**消费 socket → 释放到连接池**——同一连接能重发，比新开 TCP 省一次握手。`_r.history.append(r)` 是把第一次 401 的响应塞进 history，访问 `_r.history[-1].status_code == 401` 就能拿到挑战信息。
+**关键参数**：
+- 4 个 env：`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（逗号分隔列表）
+- `NO_PROXY=localhost,127.0.0.1,.internal.com` 排除列表
+- SOCKS5 比 HTTP 代理快（不需要 CONNECT 隧道）
+- v2.32 起 PySocks 是可选依赖（`pip install requests[socks]`）
 
-### 5.3 设计模式
+**最佳实践**：用 env var 而非硬编码代理（CI/dev/prod 切换）；SOCKS5 配 `user:pass` 走认证；`NO_PROXY` 必须包含 `localhost`。
 
-- **Adapter**（适配器）：`BaseAdapter` 抽象 → `HTTPAdapter` / 用户自定义 `MyS3Adapter`（`s.mount('s3://', MyS3Adapter())`）
-- **Strategy**（策略）：`AuthBase.__call__(r)` + `hooks['response']` 让鉴权/重试/埋点都能注入
-- **Mixin**：`SessionRedirectMixin`、`RequestEncodingMixin`、`RequestHooksMixin`、`ResponseMockMixin`——多继承组合避免单一类爆炸
-- **DTO/值对象**：`Request`（用户输入）→ `PreparedRequest`（即将发送的快照）→ `Response`（结果）三段式，避免在传输过程中对象被修改
+### 模式 15：流式下载 + chunked transfer
 
-### 5.4 反模式（不要照抄）
+**问题场景**：下载 1GB 文件，全量加载到内存 OOM；想边下载边写盘；如何获取传输进度？
 
-- **模块级 `requests.get()` 不复用连接**：性能是 `s.get()` 的 1/3，生产代码必须 `Session()`
-- **没有 async API**：requests 3.0 仍未原生 asyncio（虽然有 `requests-async` 第三方包），如要并发请用 httpx/aiohttp
-- **`merge_setting` 里 `del merged_setting[key]` 在迭代中修改**：先 `none_keys = [k for ...]` 收集，再二次循环删——这点做对了，但很多早期 PR 没做对
-- **大量 `cast()`**（如 `cast(str, self.url)`）——因为很多字段是 `__init__` 时设 `None`、运行时才填，类型系统不友好
+**解决方案**：`stream=True` 让 `urllib3` 用 `preload_content=False`；`r.iter_content(chunk_size=8192)` 是生成器，每次 yield 一个 chunk。
 
-### 5.5 独特看点
+```python
+r = requests.get('https://example.com/big.zip', stream=True)
+r.raise_for_status()
+with open('big.zip', 'wb') as f:
+    for chunk in r.iter_content(chunk_size=8192):
+        if chunk:                # filter out keep-alive newlines
+            f.write(chunk)
+            # 进度：print(f'\r{f.tell() / 1024 / 1024:.1f} MB', end='')
+# iter_lines() 按行迭代（文本流）
+# r.raw 是 urllib3 HTTPResponse（流式 socket）
+```
 
-- **`status_codes.codes['\o/'] == 200`** 这种小幽默（`status_codes.py:30`）——让 API 写起来更有人味
-- **`encodings.idna` 显式 import**（`models.py:15`）——注释解释：嵌入式 Python 把 stdlib 打成 ZIP 时，`encodings.idna` 隐式 import 可能在多线程下 LookupError；显式 import 一次解决。这是给打包工具（PyInstaller / cx_Freeze）用户的补丁
-- **`HTTPDigestAuth.handle_redirect` 重置 num_401_calls = 1**（`auth.py:268-271`）——避免重定向到新 host 后被旧 nonce 状态污染
+**关键参数**：
+- `stream=True`：只下载 headers，不下载 body
+- `iter_content(chunk_size=8192)`：byte 流
+- `iter_lines()`：行流（文本）
+- `r.raw`：原始 urllib3 响应（`r.raw.read(8192)`）
+- 完成后必须 `r.close()` 释放连接回池
 
-## 6. 运行机制（Bring It Up）
+**最佳实践**：所有大文件下载必加 `stream=True`；用 `chunk_size=8192`（HTTP 推荐值）；下载完后 `r.close()` 或 `with requests.get(..., stream=True) as r:`。
+
+---
+
+## 第四段：生产实践与生态
+
+### 模式 16：超时（connect vs read tuple）
+
+**问题场景**：网络慢/服务端 hang，请求卡死；想区分"连接超时"和"读超时"分别报警。
+
+**解决方案**：`timeout=(3.05, 27)` 元组第一个是 connect timeout，第二个是 read timeout。`None` 表示无限等待（**绝不推荐**）。
+
+```python
+# 单值（connect 和 read 同）
+r = requests.get(url, timeout=5)             # 5 秒
+# tuple（分开）
+r = requests.get(url, timeout=(3.05, 27))    # connect 3.05s, read 27s
+# None（绝不推荐——会无限等）
+r = requests.get(url, timeout=None)
+```
+
+**关键参数**：
+- `timeout` 影响 `urllib3.urlopen(timeout=...)`
+- 推荐 connect timeout > 1s（防 DNS 抖动假阳性）
+- read timeout 视业务（API 调用 5-30s，大文件 300s+）
+- 抛 `requests.exceptions.Timeout`（继承自 `RequestException`）
+
+**最佳实践**：生产代码 timeout **必填**（不要 None）；`connect=3.05s, read=27s` 是 Twilio 推荐值（3.05 略大于 3 秒的 TCP 重传窗口）；加 hook 在 timeout 时记录 `request.url` 方便排查。
+
+### 模式 17：Session 配置热更新
+
+**问题场景**：登录后拿到 token，要"之后所有请求都带 Authorization"；业务想"运行时换 baseURL"。
+
+**解决方案**：`Session.headers` / `Session.cookies` / `Session.auth` 都是可变 dict/list，运行时改下次请求生效（`merge_setting` 重新跑一遍）。
+
+```python
+s = requests.Session()
+s.headers.update({'User-Agent': 'my-app/1.0'})
+# 登录后注入 token
+s.headers['Authorization'] = f'Bearer {token}'
+# 改 baseURL
+s.headers['Host'] = 'api.v2.example.com'
+# 临时去 auth（None = 删除）
+s.get(url, headers={'Authorization': None})
+# 关 SSL 校验（仅 dev）
+s.verify = False
+```
+
+**关键参数**：
+- `Session.headers`：`CaseInsensitiveDict`（HTTP header 大小写不敏感）
+- `Session.cookies`：`RequestsCookieJar`（跨请求持久）
+- `Session.verify`：SSL 证书校验（默认 `True`）
+- `Session.cert`：客户端证书路径（mTLS）
+
+**最佳实践**：登录后用 `s.headers['Authorization'] = ...` 而非每个请求都传；dev 环境 `s.verify = False` 配警告忽略；用 `s.headers.update({...})` 一次性加多个。
+
+### 模式 18：测试体系（pytest + httpbin + trustme）
+
+**问题场景**：测试 HTTP 客户端要 mock server、生成自签证书、覆盖 TLS 过期/mTLS/正常三种场景。
+
+**解决方案**：requests 仓库用 pytest + pytest-httpbin（httpbin 集成）+ trustme（自签证书）+ certs/ 目录（expired/mtls/valid 三套）。每个 PR 跑多 Python 版本 + pyright strict + ruff。
 
 ```bash
-# 装包
-pip install requests
-
-# 装开发版（含测试、SOCKS、typecheck）
-pip install -e .[socks]
+# 装测试依赖
+pip install -e ".[socks]"
 pip install -r requirements-dev.txt
-
-# 跑测试（自带自签证书 + pytest-httpbin + trustme）
+# 跑测试
 pytest tests/ -x -v
-
-# 跑测试 + 覆盖率
 pytest --cov=requests
-
 # typecheck（pyright strict）
 pyright src/requests
-
-# 启动一个临时本地服务做 smoke test
-python -c "import requests; r = requests.get('https://httpbin.org/get'); print(r.status_code, r.json())"
+# lint
+ruff check .
+# 文档 doctest
+pytest --doctest-modules src/requests
 ```
 
-**Smoke test 5 步**：
-1. `python -c "import requests; print(requests.__version__)"` → 应输出 `2.34.x`
-2. `requests.get('https://httpbin.org/get').status_code` → 200
-3. `requests.get('https://httpbin.org/redirect/2').history` → `[301, 302]` 两次
-4. `s = requests.Session(); s.get('http://httpbin.org/cookies/set/foo/bar'); s.cookies['foo']` → `'bar'`
-5. `requests.get('https://httpbin.org/basic-auth/u/p', auth=('u','p')).status_code` → 200
+**关键参数**：
+- pytest + pytest-xdist（并行）
+- pytest-httpbin：httpbin 集成
+- trustme：自签证书生成
+- certs/ 目录：expired / mtls / valid 三套
+- pyright strict：v2.34 起所有 public API 有 inline 类型
+- CI matrix：lint（ruff）/ typecheck（pyright）/ run-tests / zizmor（GitHub Actions 安全扫描）/ publish
 
-## 7. 演进历史（Time Travel）
+**最佳实践**：mock 用 `responses` / `requests-mock`（不是 unittest.mock patch）；自签证书用 trustme 生成（不写死）；CI 跑多个 Python 版本（3.10 ~ 3.15）。
 
-```mermaid
-gantt
-    title requests 关键里程碑（基于 HISTORY.md）
-    dateFormat YYYY-MM
-    section 早期
-    v0.x 诞生 Kenneth Reitz      :done, 2011-01, 24M
-    v1.0 GA                       :done, 2012-12, 1M
-    section 2.x 成熟期
-    v2.0 PEP 466 加密加固         :done, 2015-04, 1M
-    v2.18 安全：urllib3 1.24      :done, 2018-06, 1M
-    v2.31 CVE-2023-32681 Proxy    :done, 2023-05, 1M
-    section 现代化
-    v2.32 SOCKS 拆分              :done, 2024-01, 1M
-    v2.34 内联类型（弃用 typeshed）:done, 2026-05, 1M
-    v3.0 计划：移除 Py2/老 urllib3  :active, 2026-12, 12M
+### 模式 19：mock 与录播（responses / vcrpy）
+
+**问题场景**：单元测试不想真发 HTTP（CI 跑慢、依赖外网、不可重复）；集成测试想"用真实 server 跑一次，录制下来回放"。
+
+**解决方案**：
+- **responses**：装饰器模式 mock 任意 URL，DSL 简单
+- **vcrpy**：录制真实 HTTP 流量到 YAML（cassette），下次从 cassette 读
+- **requests-mock**：pytest fixture 风格
+
+```python
+# responses 写法
+import responses, requests
+@responses.activate
+def test_user():
+    responses.add(responses.GET, 'https://api.github.com/user',
+                  json={'login': 'octocat'}, status=200)
+    r = requests.get('https://api.github.com/user')
+    assert r.json()['login'] == 'octocat'
+
+# vcrpy 写法（先录后放）
+import vcr
+@vcr.use_cassette('fixtures/user.yaml')
+def test_user():
+    r = requests.get('https://api.example.com/user')  # 首次走网络，之后走 cassette
+    assert r.status_code == 200
 ```
 
-关键时间线（来自 HISTORY.md / git log 推断）：
+**关键参数**：
+- `responses.activate` 装饰器：拦截 requests 发出的所有请求
+- `vcr.use_cassette(path)`：录到 YAML/JSON
+- `match_querystring` / `match_headers`：精确匹配
+- 重放模式：`record_mode='none'`（仅重放）/`'once'`（录一次）
 
-- **2011-02 v0.x**：Kenneth Reitz 写第一版，源 `from __future__ import` 兼容 Py2/Py3
-- **2013-12 v1.0**：稳定 API，`requests.get/post` 成为事实标准
-- **2015-04 v2.0**：PEP 466 强制 HTTPS（urllib3 升级带来安全收益）
-- **2023-05 v2.31**：修复 CVE-2023-32681 Proxy-Authorization 跨域泄露
-- **2024-01 v2.32**：`PySocks` 拆为可选依赖（`pip install requests[socks]`）
-- **2026-05 v2.34**：内联类型替换 typeshed——这是历史性变更，从此 mypy/pyright 不再依赖外部 .pyi
-- **2026-12 v3.0（计划）**：删 `unicode_internal` / `basestring` 兼容层，强制 username/password 为 str/bytes
+**最佳实践**：单元测试用 `responses`（DSL 简单）；集成测试用 `vcrpy`（真实流量录制）；CI 用 `record_mode='none'` 强制不联网。
 
-## 8. 质量保障（How It Doesn't Break）
+### 模式 20：同类对比与选型（urllib / httpx / aiohttp）
 
-**4 道防线**：
+**问题场景**：requests / httpx / aiohttp / urllib3 选谁？同步 vs 异步怎么权衡？
 
-1. **pytest + pytest-xdist**：11 个 `test_*.py` 文件，~4000 个测试；`pytest --doctest-modules` 顺便把文档字符串里的 `>>>` 当 doctest 跑
-2. **trustme + certs/**：自带 expired / mtls / valid 三套自签证书，覆盖证书过期、客户端证书双向认证、正常链路三种场景
-3. **pyright strict**（`pyproject.toml:117`）：`typeCheckingMode = "strict"`，v2.34 起所有 public API 有 inline 类型
-4. **CI 多 matrix**（`.github/workflows/`）：lint（ruff）/ typecheck（pyright）/ run-tests（多 Python 版本）/ zizmor（GitHub Actions 安全扫描）/ publish
+**解决方案**：
+- **urllib (stdlib)**：能跑但难用（query string、auth、cookie 全手写），99% 场景不要用
+- **requests**：同步、阻塞、易用，统治 Python 生态 15 年；非并发场景默认选
+- **httpx**：sync + async 同一 API（基于 httpcore）；新项目默认
+- **aiohttp**：仅 async，并发性能好；复杂但生态强
+- **urllib3**：底层库，requests 依赖它；不直接用
 
-**预提交钩子**（`.pre-commit-config.yaml`）保证提交前 ruff/format 已经过。
-
-## 9. 生态依赖（Map of the World）
-
-```mermaid
-mindmap
-  root((requests 依赖网))
-    运行时硬依赖
-      urllib3 1.26+ 连接池/重试
-      charset_normalizer 2-4 编码探测
-      idna 2.5+ 中文域名
-      certifi 2023.5.7+ CA bundle
-    可选依赖
-      PySocks 1.5.6+ SOCKS 代理
-      chardet 3-8 旧版编码兼容
-    测试依赖
-      pytest 6.2+
-      pytest-httpbin 2.1 httpbin 集成
-      httpbin 0.10 测试服务
-      pytest-mock / pytest-cov / pytest-xdist
-      trustme 自签证书生成
-    周边生态
-      requests-oauthlib OAuth1/2
-      requests-toolbelt MultipartEncoder/SSLAdapter
-      requests-ntlm NTLM 鉴权
-      requests-async 第三方 async 包装
-      responses 第三方 mock
-      vcrpy 把请求录制成 YAML
-    反向依赖
-      4,000,000+ GitHub 仓库
-      所有 Python REST SDK 间接依赖
+```python
+# requests 同步（默认）
+r = requests.get(url)
+# httpx sync（同 API，可平滑迁移）
+r = httpx.get(url)
+# httpx async
+async with httpx.AsyncClient() as client:
+    r = await client.get(url)
+# aiohttp（async-only）
+async with aiohttp.ClientSession() as session:
+    async with session.get(url) as r:
+        text = await r.text()
 ```
 
-**合规检查清单**：
-- Apache 2.0，可商用、可闭源
-- urllib3/charset_normalizer 都是 PSF 项目，license 干净
-- certifi 内含 Mozilla CA bundle，遵循 MPL 2.0（兼容 Apache 2.0）
-- 无 GPL/LGPL 传染风险
+**关键参数**：
+- requests：同步阻塞，session 复用，API ★★★★★
+- httpx：sync + async 双模，HTTP/2 支持，API ★★★★☆
+- aiohttp：仅 async，并发性能 ★★★★★，API ★★★☆☆
+- 性能（并发）：aiohttp/httpx > requests
+- 生态：requests > httpx > aiohttp
 
-## 10. 生产实践（Battle-Tested）
+**最佳实践**：脚本/SDK 二次封装用 requests（生态好）；新项目考虑 httpx（async-ready）；高并发爬虫用 aiohttp；不要混用（一个项目只一个 HTTP 客户端）。
 
-| 维度 | 实现 | 文件位置 |
-|------|------|----------|
-| 配置热更新 | `Session.headers` / `Session.cookies` 都是可变 dict，运行时改下次请求生效 | `sessions.py:442-503` |
-| 优雅停服 | `Session.close()` 关闭所有 adapter 的连接池；推荐 `with Session() as s:` | `sessions.py:555` + `adapters.py:555-563` |
-| 限流 | 无内建——需在 hooks 或外层 asyncio semaphore | 需自实现 |
-| 链路追踪 | 无 trace context——可在 `hooks['response']` 注入 OTel span | 需自实现 |
-| 健康检查 | `HEAD` 走 `allow_redirects=False` 默认 | `api.py:113` |
-| 结构化日志 | 第三方 `requests-requests_logger` / `python-json-logger` + hooks | 需自实现 |
-| 错误重试 | `urllib3.Retry` 传给 `HTTPAdapter(max_retries=Retry(...))` | `adapters.py:158-200` |
-| 监控指标 | 在 hooks 里 `prometheus_client.Counter(...).inc()` | 需自实现 |
-| 优雅 timeout | `(connect, read)` tuple；`None` 表示无限等待 | `adapters.py:681-693` |
-| 内存保护 | `iter_content(chunk_size=8192)` + `stream=True` 流式 | `models.py:912` |
+---
 
-## 11. 社区文化（People & Process）
+## 附录：5 段必读代码
 
-- **治理**：GitHub `psf/requests` 仓库；2 位核心维护者（Ian Stapleton Cordasco + Nate Prewitt）+ 800+ 贡献者
-- **决策流程**：GitHub PR + 维护者 review + CI 全绿；无 RFC 流程（"没有时间"）——这是它的痛点也是它的速度
-- **沟通渠道**：GitHub Issues / Discussions（无 Discord/Slack）；.github/ISSUE_TEMPLATE/ 提供 Bug / Custom / Feature 三种模板
-- **议题活跃**：每月 ~50 issues 关闭，~10 PR 合并（2024-2025 数据估算）；PR 平均 review 周期 5-15 天
-- **AI Policy**（`.github/AI_POLICY.md`）：明确允许 AI 辅助提交，但要求作者完全理解并能维护代码
-- **关闭策略**：`.github/workflows/close-issues.yml` + `lock-issues.yml` 自动关闭 stale 议题，避免维护者 burnout
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **"模块函数 + 显式 Session" 双层 API**（`api.py`）：用户既能 `requests.get()` 临时用，也能 `with Session() as s:` 复用连接池。门槛低、上限高，是所有 Python 客户端 SDK 的黄金模板。
-2. **Adapter + 前缀挂载机制**（`get_adapter`）：让 transport 层可插拔——同一 Session 能在 `http://` 走 urllib3，在 `file://` 走本地读，在 `mock://` 走测试桩。"**长前缀覆盖**"是教科书级的可扩展点设计。
-3. **状态机 + 异常重翻译**（`HTTPAdapter.send` 里的 `isinstance(e.reason, ...)`）：把第三方库的扁平异常重新分类成领域异常，让用户能精确捕获（`except ConnectTimeout` 而非 `except urllib3.MaxRetryError`）。
-
-### 12.2 必避 3 坑
-
-1. **别在库级别做模块级缓存**：requests 的 `requests.get()` 不复用连接，新手写 `for url in urls: requests.get(url)` 会建立 N 个 TCP 连接。SDK 要么强制 `Session`，要么文档写红字。
-2. **别让 typeshed 接管你的类型**：`typeshed` 滞后于代码，requests v2.34 切到 inline 是迟早的事。新项目直接 inline + pyright strict。
-3. **别把流式 body 的 `seek()` 当自动**：文件上传重试（`HTTPDigestAuth` 401）必须 `tell()→seek()` 回原位。**任何支持重试的 HTTP 客户端都要在发送前记下 body 位置**。
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7 天复刻 requests-mini
-    dateFormat YYYY-MM-DD
-    section 骨架
-    Day 1 models.Request/PreparedRequest/Response    :a1, 2026-06-03, 1d
-    section 传输
-    Day 2 adapters.HTTPAdapter 包装 urllib3          :a2, after a1, 1d
-    Day 3 sessions.Session 合并+重定向               :a3, after a2, 1d
-    section 易用面
-    Day 4 api.get/post + auth.HTTPBasicAuth           :a4, after a3, 1d
-    Day 5 cookies.RequestsCookieJar 包装               :a5, after a4, 1d
-    section 打磨
-    Day 6 hooks + 异常重翻译 + timeout tuple          :a6, after a5, 1d
-    Day 7 pytest 矩阵 + certs/ + readthedocs           :a7, after a6, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数 | 评语 |
-|------|------|------|
-| 代码质量 | ★★★★★ | 命名、注释、抽象层次堪称 Python 典范 |
-| 文档质量 | ★★★★★ | docstring + Sphinx + 社区 FAQ 三件套 |
-| 健壮性 | ★★★★☆ | 200+ release 的沉淀，CVE 响应快 |
-| 性能 | ★★★☆☆ | 同步阻塞，无连接复用时慢，async 缺失 |
-| 现代化 | ★★★★☆ | inline 类型 / pyright strict / free-threaded 支持 |
-| 易用性 | ★★★★★ | "HTTP for Humans" 二十年不变 |
-| 维护活跃 | ★★★☆☆ | 节奏放缓，v3.0 推迟多次 |
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：用 ~3500 行核心代码 + urllib3 抽象，把"Python 调 HTTP"变成 7 个动词函数 + 一个 `Session` 状态机，统治 Python 生态 15 年。
-
-**3 个核心洞察**：
-1. **抽象分层**：`API 层（动词）→ Session 层（状态）→ Adapter 层（传输）→ urllib3（连接）`。每一层只做一件事，可独立替换。
-2. **前缀挂载**：`s.mount('https://', MyAdapter())` 取代 if-else 分发，让"局部覆写"成为可能。
-3. **异常重翻译**：把底层库的扁平异常重新分类，让用户写 `except ConnectTimeout` 而不是 `except urllib3.MaxRetryError`。
-
-**5 段必读代码**：
-1. `src/requests/api.py:67-71` — `with sessions.Session() as s:` 包裹模块函数的精妙（连接管理 + 易用性）
-2. `src/requests/sessions.py:870-879` — `get_adapter()` 前缀循环，传输路由 7 行
-3. `src/requests/adapters.py:710-746` — `HTTPAdapter.send` 的 `isinstance(e.reason, ...)` 异常重翻译
+1. `src/requests/api.py:67-71` — `with sessions.Session() as s:` 包裹模块函数（连接管理 + 易用性）
+2. `src/requests/sessions.py:870-879` — `get_adapter()` 前缀循环（传输路由 7 行）
+3. `src/requests/adapters.py:710-746` — `HTTPAdapter.send` 异常重翻译（`isinstance(e.reason, ...)`）
 4. `src/requests/models.py:481-561` — `PreparedRequest.prepare_url` 7 道 URL 防线
-5. `src/requests/auth.py:273-319` — `HTTPDigestAuth.handle_401` 的 `seek()/content/copy()/send()` 状态机
-
-**1 个反模式**：`requests.get()` 模块函数不复用连接——生产代码必须用 `Session()`。
-
-**1 个可复用模式**：`AuthBase` + `register_hook('response', self.handle_401)` 让你能用 30 行代码给任意 SDK 注入"401→换 token→重试"。
-
-**3 个立刻能用**：
-- 流式下载：`r = requests.get(url, stream=True); for chunk in r.iter_content(8192): f.write(chunk)`
-- 鉴权：`auth=HTTPBasicAuth('u', 'p')` 或 `auth=('u', 'p')`（后者内部等价）
-- 重试：`s = requests.Session(); s.mount('https://', HTTPAdapter(max_retries=Retry(3, backoff_factor=0.5)))`
-
-## 14. 项目特点速查
-
-**独特看点**：
-- 全网唯一在 README 第一行用 ASCII art 表达 logo 的 Python 库
-- `status_codes.codes['\o/'] == 200` 这种小彩蛋
-- `encodings.idna` 显式 import 给打包工具的补丁
-- `HTTPDigestAuth` 是 Python 标准库里唯一 threading.local 化的 HTTP 鉴权
-- `encodings.idna` 注释里点出 Embedded Python + ZIP stdlib 的 LookupError 隐患
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title HTTP 客户端对比
-    x-axis 难用 --> 易用
-    y-axis 同步 --> 异步友好
-    "urllib (stdlib)": [0.1, 0.1]
-    "requests": [0.95, 0.2]
-    "httpx": [0.85, 0.85]
-    "aiohttp": [0.5, 0.95]
-    "urllib3": [0.3, 0.4]
-```
-
-| 维度 | requests | httpx | aiohttp |
-|------|----------|-------|---------|
-| 同步/异步 | 仅同步 | sync + async | 仅 async |
-| API 易用性 | ★★★★★ | ★★★★☆ | ★★★☆☆ |
-| 性能（并发）| ★★☆☆☆ | ★★★★★ | ★★★★★ |
-| 生态 | ★★★★★ | ★★★☆☆ | ★★★★☆ |
-| 学习曲线 | 极低 | 低 | 中 |
-
-## 附：仓库元信息
-
-| 项 | 值 |
-|---|---|
-| 路径 | `G:\实战案例\GitHub顶尖项目\requests\` |
-| 大小 | ~5 MB（含 docs + tests + certs） |
-| 核心 src 行数 | ~4500 行（`src/requests/*.py`） |
-| 解析时间 | 2026-06-02 |
-| 锁定版本 | v2.34.2（2026-05-14）|
+5. `src/requests/auth.py:273-319` — `HTTPDigestAuth.handle_401` 状态机（`seek()/content/copy()/send()`）
 
 ## 一句话总结
 
-requests 教会我们：**好的 SDK 不重新发明轮子，而是在成熟库（urllib3）之上盖一层"人类可读"的 API**；好的设计不在于功能多，而在于 `Session`/`Adapter`/`hooks` 这三个扩展点让用户能在不修改源码的前提下解决 90% 的真实问题。
+requests = 模块函数 + Session 双层 API + Adapter 前缀路由 + 异常重翻译，3500 行核心 + urllib3 抽象，把"Python 调 HTTP"变成 7 个动词 + 一个 Session 状态机；200+ release 的沉淀让它成为 Python 生态事实标准，新项目可考虑 httpx（async-ready），但 requests 的 `Session/Adapter/Hooks` 三扩展点设计是所有 HTTP SDK 必偷的范式。

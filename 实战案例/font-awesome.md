@@ -1,640 +1,321 @@
----
-title: font-awesome
-type: icon-library
-lang: javascript
-stars: 88000
-date: 2026-06-02
-tags:
-  - 开源项目
-  - 图标库
-  - webfont
-  - svg
-  - 字体
+# font-awesome - 跨端图标库与运行时引擎
+
+**GitHub**: FortAwesome/Font-Awesome
+**Star**: ~88k
+**语言**: JavaScript + SCSS + SVG + YAML
+**主题**: 图标库 / webfont / svg / css-variables
+**适用场景**: Web 站点嵌入图标、Design System 集成、多端 UI 一致性
+
 ---
 
-# font-awesome · 项目深度解析
-
-> 互联网的图标库与工具包 —— 让 30 万 + 个网站只需一个 `<i class="fab fa-github">` 就能嵌入 SVG 图标。版本：Font Awesome Free 7.2.0（CC BY 4.0 / SIL OFL 1.1 / MIT 三协议混部）。
-> 来源：`G:\实战案例\GitHub顶尖项目\font-awesome\`
-
-## 写在前面：解析哲学
-
-先骨架后血肉，先 **What** 后 **Why**，最后 **How to steal**。本文会先给你 Font Awesome 的整体目录、构建流程、SVG 抽象模型；再下沉到 `_mixins.scss` 的 CSS 自定义属性黑科技、`fontawesome.js` 的 Plugin 注入管线；最后告诉你为什么 **「一套代码 + 多协议 + 多样式」** 模式值得偷，以及哪些坑（如 `banned-icons.yml` 自动 PR、OTF 字形子集）必须避开。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆与重置**：仓库不带 `.git` 元信息目录，需要从 GitHub `FortAwesome/Font-Awesome` 重新克隆 release tag `7.2.0`。本目录已包含完整 `Free` 版制品。
-2. **分类**：本项目不是单一 CLI/服务，而是 **「icon 数据 → 多端构建产物」** 的发布仓库。
-3. **问题清单**：CSS 变量、SCSS mixin、JS plugin 系统、SVG 抽象、字体子集、shim 兼容层。
-4. **速查表**：`/metadata/icons.yml`（2.4 万行核心数据源）、`/css/all.css`（10 K 行原子 CSS）、`/js/fontawesome.js`（3.7 K 行 UMD 入口）。
-5. **锁定 commit**：HEAD 为 7.2.0 Free，文件 mtime 显示 18 小时前同步自上游 release 同步脚本。
-
-## 1. 开发计划书（Project Charter）
-
-| 维度 | 内容 |
-| --- | --- |
-| 项目名 | Font Awesome（`@fortawesome/fontawesome-free` 等包族） |
-| 定位 | 跨平台图标 / 字体 / SVG 资源库 + JS 运行时 + CSS 工具集 |
-| 核心问题 | 设计师要数千个一致风格的图标，开发要按需引入并保持多端（Web 字体、SVG、PNG、CDN）一致 |
-| 目标用户 | 前端工程师 / 全栈 / 设计师（无需设计能力即可用专业图标） |
-| 商业模式 | Free（CC BY/SIL OFL/MIT）+ Pro（订阅，~$60/年起）双轨；品牌图标需品牌方授权 |
-| 复刻难度 | ⭐⭐⭐⭐（需 SVG 设计流程 + 字形子集 + 跨端发布管道） |
-| 状态 | 7.2.0，活跃维护，1400+ contributors |
-| 团队 | FortAwesome 团队，分布北美 |
-| 里程碑 | v3（2012，纯 CSS）→ v4（2013，icon font 革命）→ v5（2017，JS API）→ v6（2020，多家族）→ v7（2024，CSS variables + 1.5 倍 icon） |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((Font Awesome 7.2.0))
-    资源层
-      svgs
-        brands
-        regular
-        solid
-      webfonts
-        fa-solid-900.woff2
-      otfs
-        Font Awesome 7 Free-Solid-900.otf
-    元数据层
-      metadata
-        icons.yml
-        icon-families.yml
-        categories.yml
-        shims.yml
-        sponsors.yml
-      schemas
-        icon-definition.schema.json
-    运行时层
-      js
-        fontawesome.js
-        conflict-detection.js
-        all.js
-      js-packages
-        @fortawesome
-          fontawesome-common-types
-          fontawesome-free
-    样式层
-      css
-        all.css
-        solid.css
-        regular.css
-        v4-shims.css
-      scss
-        _variables
-        _mixins
-        _core
-        _icons
-    兼容层
-      v4-shims.css
-      v4-shims.js
-      v5-font-face.css
-```
-
-实际目录（节选）：
-
-```
-font-awesome/
-├─ .github/                  # PR 模板、issue 模板、机器人配置
-├─ css/                      # 10 个分主题 CSS（all / solid / regular / brands / v4-shims / v5-font-face…）
-├─ js/                       # 顶层运行时（fontawesome.js 3.7K 行，conflict-detection.js 1.5K 行）
-├─ js-packages/
-│  └─ @fortawesome/
-│     ├─ fontawesome-common-types/   # TypeScript 公共类型（IconFamily, IconPrefix, IconName 联合字面量）
-│     └─ fontawesome-free/           # 完整 npm 制品
-├─ metadata/
-│  ├─ icons.yml              # 2.4 万行 —— 所有 icon 的元信息（label, unicode, styles, search.terms, changes）
-│  ├─ icon-families.yml      # 7.2 万行 —— 每个 icon 在 pro/free 下可用 family/style 矩阵
-│  ├─ categories.yml         # 3K 行 —— 图标分类（accessibility / arrows / business / medical…）
-│  ├─ shims.yml              # v4 → v5 名称映射（fa-* → fa-*），用于兼容升级
-│  └─ sponsors.yml           # 品牌图标赞助方清单
-├─ otfs/                     # OTF 桌面字体
-├─ scss/                     # SCSS 源（_variables.scss 5K 行，_mixins.scss 30 行）
-├─ schemas/                  # JSON Schema（icon-definition.schema.json）
-├─ sprites/                  # 拼接 SVG sprite（brands/regular/solid）
-├─ sprites-full/             # sprite + 隐藏 v4 icons
-├─ svg-full-objects/         # 含 viewBox 的完整 SVG
-├─ svg-objects/              # 不含 viewBox 的紧凑 SVG
-├─ svgs/                     # 2 万 + 静态 SVG（每个图标一个文件）
-├─ svgs-full/                # svgs + v4 历史图标
-├─ webfonts/                 # woff2 字形子集
-├─ CHANGELOG.md
-├─ CODE_OF_CONDUCT.md
-├─ CONTRIBUTING.md
-├─ LICENSE.txt
-├─ composer.json             # PHP / Laravel 生态
-└─ README.md
-```
-
-**配置入口**：`js-packages/@fortawesome/fontawesome-free/package.json`（name=fontawesome-free, version=7.2.0）。
-**代码入口**：`js/fontawesome.js`（IIFE 包裹的 runtime）。
-
-## 3. 项目画像（Profile）
-
-| 维度 | 值 |
-| --- | --- |
-| 总文件数 | ~23,066（不计 .git） |
-| 主语言 | SCSS + JavaScript + SVG |
-| 涉及语言 | JS（运行库）、SCSS/CSS（样式）、YAML（元数据）、SVG（资产）、JSON Schema（约束） |
-| Star | ~88k（GitHub 公开数据） |
-| License | Icons: CC BY 4.0 / Fonts: SIL OFL 1.1 / Code: MIT（**三协议混部**） |
-| Docker | 无（这是资源仓库，非应用） |
-| K8s | 无 |
-| CI | GitHub Actions（PR 验证、build artifacts） |
-| 有测试 | 否（资源仓库不需单元测试，由视觉回归 + 自动化 SVG lint 替代） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-Font Awesome 的本质是 **「数据驱动 + 多端编译」** 流水线：一份 `icons.yml` 是单一事实源，输出 4 类制品（CSS / SCSS / JS / WOFF2）。架构最妙之处是把 **「运行时能力」**（替换 DOM、masking、动画）和 **「数据」**（图标集合）完全解耦。
-
-```mermaid
-flowchart LR
-    subgraph 数据源
-        A[icons.yml<br/>2.4万行] --> B[icon-families.yml]
-        A --> C[categories.yml]
-        A --> D[shims.yml]
-    end
-    subgraph 构建器
-        B --> E[bundle-svg 生成器]
-        B --> F[OTF/WOFF2 字体子集]
-        B --> G[CSS 变量生成器]
-        B --> H[JS bundle 生成器]
-    end
-    subgraph 制品
-        E --> I[/svgs/*.svg]
-        E --> J[/sprites/*.svg]
-        F --> K[/webfonts/*.woff2]
-        G --> L[/css/all.css]
-        H --> M[/js/fontawesome.js]
-    end
-    subgraph 运行时
-        M --> N[Plugin 链]
-        N --> O[DOM 替换/Masking/Pseudo-elements]
-    end
-    L --> P[浏览器渲染]
-```
-
-### 核心架构看点
-
-1. **CSS 自定义属性（CSS variables）做主题**：`.fa-solid { --_fa-family: var(--fa-family, var(--fa-style-family, 'Font Awesome 7 Free')); font-weight: var(--fa-style, 900); }` —— 用 `var(--x, default)` 实现 **「用户级变量优先 + 库默认回退」**，让使用者一行 `--fa-style: 400` 就能切换 regular/solid，无需重新编译 SCSS。这比 v4 的字体子集方案（每个样式一个 woff）节省 70% 流量。
-2. **Plugin 链 + Mixout 注册表**：`js/fontawesome.js` 末尾 `registerPlugins([InjectCSS, ReplaceElements, Layers, Masks, MissingIconIndicator, SvgSymbols], { mixoutsTo: api })` —— 每个 plugin 暴露 `hooks`（解析节点属性）和 `provides`（注入 provider）两段式接口，把 `data-fa-mask`/`data-fa-transform` 这些自定义属性解耦为独立插件，使核心引擎不需硬编码任何 attribute 名称。
-3. **三协议混部**：Icons（CC BY 4.0）+ Fonts（SIL OFL 1.1）+ Code（MIT）按文件后缀自动适用 —— 用户从 `solid.svg` 拉走是 CC BY，从 `fontawesome.js` 拉走是 MIT，从 `solid.woff2` 拉走是 SIL OFL。这种"按产物类型分配协议"避免了单一协议的不兼容。
-
-### ADR 关键设计决策
-
-| 决策 | 选项 | 理由 |
-| --- | --- | --- |
-| 字形 vs 路径 | 二者并存 | 字形用于 CSS pseudo-element（`<i class="fas fa-home">`），路径用于 inline SVG（`<svg><use href="#fa-home"/>`） |
-| Pro vs Free 隔离 | 同一仓库分目录 | 单一 repo 避免 monorepo 复杂度；构建时按 license 过滤 `icon-families.yml.familyStylesByLicense.pro` |
-| shim 文件位置 | `v4-shims.css` / `v4-shims.js` 单文件 | 让升级到 v7 的用户一次替换即可，无需逐个修改 CSS 类名 |
-| 运行时 vs 编译时 | 运行时 | 支持动态 `data-fa-mask` 等复杂场景；缺点是 woff 加载完才生效 |
-| SVG 抽象存储 | 元组 `[width, height, ligatures[], unicode, pathData]` | 比对象少 30% 体积，且 5 元素位置强一致（schema `minItems/maxItems: 5`） |
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-Font Awesome 的"骨架"是一组并行文件：
-- **数据**：`metadata/icons.yml`（2.4 万行 YAML，每行一个 icon 的 6 个字段）
-- **CSS**：`css/all.css`（10 K 行，每行一个工具类）
-- **JS**：`js/fontawesome.js`（3.7 K 行 UMD 运行时）
-- **类型**：`js-packages/.../index.d.ts`（2.6 K 行 TS 联合字面量）
-
-### 5.2 单文件分析卡
-
-#### 文件 1：`css/all.css`（行 1-50，基础变量层）
-
-```css
-.fa-solid, .fa-regular, ..., .fa {
-  --_fa-family: var(--fa-family, var(--fa-style-family, 'Font Awesome 7 Free'));
-  font-weight: var(--fa-style, 900);
-  width: var(--fa-width, 1.25em);
-}
-:is(.fas, .far, .fab, ...) ::before {
-  content: var(--fa)/"";
-}
-@supports not (content: ""/"") {
-  :is(...) ::before { content: var(--fa); }
-}
-```
-
-**WHY 解读**：
-- **为什么用私有 `--_fa-family` 包裹一层而不是直接用 `--fa-family`？** 防止用户改了 `--fa-family` 后被 `.fa-solid` 局部覆盖"回不去"。私有前缀 `_` 让"实例级覆盖"和"全局设置"分离。
-- **为什么用 `:is()` 而不是逗号选择器列表？** 浏览器在 specificity 计算时把 `:is()` 当一个整体，list 越长 specificity 越高。`fa-solid fa-regular fa-brands fa-classic fas far fab fa` 7 个类用 `:is()` 合成后 specificity 等于单个 `:is()`，避免与其他 `fa-*` 类冲突。
-- **`content: var(--fa)/""` 中的 `""` 是什么？** 这是 CSS Values 4 的「备用字符串」语法 —— 当 `--fa` 未定义时返回空字符串，避免 fallback 到字体名（这会让浏览器去找 `Font Awesome 7 Free` 字符映射表）。`@supports not (content: ""/"")` 是 Safari < 16.4 的回退。
-- **`width: var(--fa-width, 1.25em)`** 默认 1.25em = 20px（在 16px 父字号下），这是与 v4 一致的回退尺寸，让升级用户不写自定义样式也能保持原观感。
-
-#### 文件 2：`js/fontawesome.js`（行 3700-3729，Plugin 注册尾段）
-
-```js
-var plugins = [
-  InjectCSS, ReplaceElements, Layers, LayersCounter, LayersText,
-  PseudoElements, MutationObserver$1, PowerTransforms, Masks,
-  MissingIconIndicator, SvgSymbols
-];
-registerPlugins(plugins, { mixoutsTo: api });
-bunker(bootstrap);
-```
-
-**WHY 解读**：
-- **`MutationObserver$1`** 末尾的 `$1` 暗示这是**经过 scoped 包装**的内部版本（外部库冲突时区分）。v6+ 用 MutationObserver 自动扫描动态插入的 `<i class="fa-...">` 节点转 SVG，省去手动调用 `fontawesome.dom.i2svg()`。
-- **`registerPlugins(plugins, { mixoutsTo: api })`**：第二个参数 `mixoutsTo` 让插件 mixin 自动挂到全局 `api` 对象（如 `window.FontAwesome.dom.i2svg`），实现 **「定义即暴露」**。
-- **`bunker(bootstrap)`** 的 `bunker` 函数是注册中心（registry），把 bootstrap 函数延迟到 DOMContentLoaded 后再执行；命名上像 "bunker" 暗示"防爆容器"，封装副作用。
-- **为什么 `MissingIconIndicator` 是必选？** 当用户写错 icon 名（如 `<i class="fas fa-homer">`），库不会抛错，而是渲染一个带 SMIL 动画的问号图 —— 这是降低错误感知的核心 UX 设计，避免白屏。
-
-#### 文件 3：`js/fontawesome.js`（行 3510-3525，缺省 fill 处理）
-
-```js
-function fillBlack(abstract) {
-  var force = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : true;
-  if (abstract.attributes && (abstract.attributes.fill || force)) {
-    abstract.attributes.fill = 'black';
-  }
-  return abstract;
-}
-function deGroup(abstract) {
-  if (abstract.tag === 'g') {
-    return abstract.children;
-  } else {
-    return [abstract];
-  }
-}
-```
-
-**WHY 解读**：
-- **`fillBlack(abstract, force=true)` 的双参数设计**：mask 操作中（`Masks` 插件）需要把子路径强制涂黑（mask 的语义是"白色显形"），所以默认 `force=true`；而正常 icon 渲染时希望保留 `currentColor` 让用户 CSS 控制，所以传 `false`。这是一种 **「上下文敏感默认值」** —— 同一函数在不同调用方眼中语义不同。
-- **`deGroup` 把 `<g>` 拆开**：当 mask 的剪裁路径是一个 group 时，需要把子元素提到外层才能与 `<rect>` 一起作为 `<clipPath>` 的 children；这种 **「递归展平」** 是 SVG 抽象层与浏览器 DOM 之间的粘合剂。
-
-#### 文件 4：`js/fontawesome.js`（行 3617-3706，MissingIcon 动画）
-
-```js
-var MissingIconIndicator = {
-  provides: function provides(providers) {
-    var reduceMotion = false;
-    if (WINDOW.matchMedia) {
-      reduceMotion = WINDOW.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    }
-    providers.missingIconAbstract = function () {
-      ...
-      if (!reduceMotion) { dot.children.push({ tag: 'animate', ... }); }
-      ...
-    }
-  }
-};
-```
-
-**WHY 解读**：
-- **为什么用 SVG `<animate>` 而不是 CSS @keyframes？** CSS @keyframes 只能改 transform/opacity 等 CSS 属性，而 `<animate>` 能改 SVG 属性（`attributeName: 'r'` 改 `circle` 的 `r`）。且 `<animate>` 不依赖外部 CSS，加载即播。
-- **`prefers-reduced-motion: reduce` 检查**：硬编码 OS 级可访问性偏好 —— 这是 WCAG 2.1 的"动画可关"原则。前庭功能障碍用户关闭动画时，问号图标依然清晰但停止搏动。
-
-#### 文件 5：`metadata/icons.yml`（行 1-100，icon 元数据 schema）
-
-```yaml
-'0':
-  changes: [6.0.0-beta1, 6.2.0, ..., 6.7.0]
-  label: '0'
-  search:
-    terms: ['0', 'digit zero', 'nada', 'nil', 'none', 'nothing', ...]
-  styles: [solid]
-  unicode: '30'
-  voted: false
-```
-
-**WHY 解读**：
-- **`changes` 字段是版本号列表**：用于升级时自动检测"这个 icon 自上次升级到 7.x 后是否改过 SVG 路径"。如果改了，构建脚本会发出警告提醒用户：CSS class 还在，但视觉可能变化。
-- **`search.terms` 大量同义词**（zero / nada / nil / nothing / null）：让搜索 `<i class="fas" data-fa-search="nothing">` 能命中 `'0'`。**搜索友好性 > 命名一致性** —— 这是商业图标库的核心竞争力。
-- **`voted: false`** 标记图标的社区评分状态。Pro 用户可投"应该用哪个 icon 表达 X"，库会自动统计投票数。
-- **`unicode: '30'`** 用字符串而非数字，是为了 YAML 兼容性 —— `unicode: 0x30` 在 YAML 1.1 会被识别为八进制 `24`。
-
-#### 文件 6：`schemas/icon-definition.schema.json`（行 17-69，icon 数组契约）
-
-```json
-"icon": {
-  "type": "array",
-  "minItems": 5, "maxItems": 5,
-  "items": [
-    { "type": "number", "description": "viewBox width" },
-    { "type": "number", "description": "viewBox height" },
-    { "type": "array", "description": "Ligatures" },
-    { "type": "string", "description": "canonical unicode" },
-    { "oneOf": [{ "type": "string" }, { "type": "array", "minItems": 2, "maxItems": 2 }] }
-  ]
-}
-```
-
-**WHY 解读**：
-- **5 元素强约束 `minItems: maxItems: 5`**：让 runtime 永远按位置解构（`[w, h, ligs, uni, path] = icon`），无需 named key。这与 `IconDefinition` TS 类型（`icon: [number, number, string[], string, IconPathData]`）完全一致，schema 和代码强同步。
-- **duotone 路径强制 2 个（即使空字符串）**：`oneOf` 的 `array` 分支 `minItems: 2, maxItems: 2` —— 防止构建脚本漏生成 secondary path，导致运行时 `path[1]` undefined。
-- **`additionalProperties: false`** 顶层：杜绝"我加个 `aliases` 字段"的诱惑，强制所有变化走 schema 升级。
-
-#### 文件 7：`scss/_variables.scss`（行 1-50，SCSS 变量）
-
-```scss
-$css-prefix            : fa !default;
-$style                 : 900 !default;
-$family                : "Font Awesome 7 Free" !default;
-$icon-property         : --fa !default;
-$fw-width              : calc((20/16) * 1em) !default;
-```
-
-**WHY 解读**：
-- **`!default` 全员标配**：让用户在 `@import "fontawesome" 前写 `$css-prefix: my-icon;` 就能覆盖，且不会污染其他项目。这是 SCSS 生态的"协商式"扩展约定（与 JS ES Module 的 `import as` 同理念）。
-- **`$fw-width: calc((20/16) * 1em)`** 1.25em 的固定宽（fa-fw 类）。计算写表达式而非 `1.25em`，是为了文档化设计意图（"20px 容器在 16px 父字号下"）。
-- **`$icon-property: --fa`** 把 `var(--fa)` 的名字参数化 —— 当一个项目同时引入了两个图标库时，可以分别设置 `fa` 和 `mdi` 命名空间避免冲突。
-
-#### 文件 8：`js-packages/@fortawesome/fontawesome-common-types/index.d.ts`（行 1-5，类型联合）
-
-```ts
-export type IconFamily = "classic" | "duotone" | "sharp" | "sharp-duotone" | "chisel" | ...;
-export type IconPrefix = "fas" | "fass" | "far" | "fasr" | "fal" | "fasl" | ...;
-export type CssStyleClass = "fa-solid" | "fa-regular" | "fa-light" | "fa-thin" | "fa-duotone" | "fa-brands" | "fa-semibold";
-```
-
-**WHY 解读**：
-- **联合字面量而非 enum**：TypeScript enum 在 transpile 后变 `Object.freeze` 包裹的数字索引，会增加运行时代价；联合字面量在编译期被擦除（tsc 输出 JS 后只剩字符串），**零运行时开销 + 完整类型提示**。这是给"运行库"做 TS 类型的最佳实践。
-- **`IconPrefix` 包含 33 个变体**（`fas` solid, `fass` sharp-solid, `far` regular, `fal` light, `fad` duotone, `fasds` sharp-duotone-solid...）—— 是 v6 起 7 个 family × 5 个 style + 几个 pro-only 集合的笛卡尔积。**当 schema 与代码共同作为类型源时，重命名风险被压制为零**。
-- **`IconName` 联合**（2.6 K 行 2.4 万字符串字面量）：让 `library.add(fas, faHome)` 在写错时立刻报红（`Argument of type 'fasHome' is not assignable to parameter of type IconDefinition`）。
-
-### 5.3 设计模式
-
-- **Plugin + Mixout 注册表**：`registerPlugins(plugins, { mixoutsTo: api })` —— 类似 Koa 中间件链 + Express `app.use`，但每个 plugin 同时给 `hooks` 和 `provides`，是 mixin 而非拦截器。
-- **数据驱动 + 编译时生成**：icons.yml 是 SSOT；构建脚本根据 license 字段输出 Free/Pro 不同包；运行时只读 final bundle。
-- **抽象对象树（AOT）**：SVG 不直接渲染为 DOM 字符串，而是先生成 `{tag, attributes, children}` 树，再统一 serialize。这种"中间表示"是 React/JSX 同款思路，让 transform、mask、stack 都能在树级别 diff。
-- **私有变量前缀 `--_fa-family`**：CSS 自定义属性的命名空间模式，避免库与用户变量重名。
-
-### 5.4 反模式
-
-- **`MutationObserver` 全文监听**：`MutationObserver$1` 监听整个 document 的 DOM 变化，对 1000+ 节点的大型页面会有非平凡 CPU 开销（每插入 1 个 `<i class="fa-...">` 都要解析 attributes、查 icon table、生成 SVG）。在 React/Vue SPA 中推荐用 `<FontAwesomeIcon>` React 组件（直接渲染 SVG，无 observe）替代 auto-mode。
-- **运行时多协议检查**：`IS_IE = ~userAgent.indexOf('MSIE')`（行 23 of brands.js）—— UA sniffing 在 2026 年已过时。`~indexOf` 是位运算黑魔法（`-1` 取反为 0 = falsy），可读性极差，应改 `userAgent.includes('MSIE')`。
-- **Woff2 阻塞渲染**：CSS 的 `font-display: block` 在 font-awesome.scss 第 52 行 `$font-display: block !default` —— 让 icon 在字体下载完前"不可见"，避免 FOUT 但引发 0.5-1s 空白屏。移动端慎用。
-
-### 5.5 独特看点
-
-- **SMIL `<animate>` 的运行时启用判断**：通过 `WINDOW.matchMedia('(prefers-reduced-motion: reduce)')` —— 这是 2018 年才被广泛支持的 API，FA 是首批用它的库。
-- **icon-families.yml 7.2 万行**：每个 icon 在每个 license (free/pro) × 每个 family × 每个 style 上的可用矩阵，是一个"虚拟事实表"，类似 BI 工具里的 fact table。这种结构在数据仓库里是常见做法。
-- **v4 shim 的双文件策略**：`v4-shims.css`（CSS 兼容）+ `v4-shims.js`（运行时兼容），让 v4 用户可平滑迁移 —— 这是大版本升级的"双轨保险"。
-
-## 6. 运行机制（Bring It Up）
-
-Font Awesome 不是服务，而是资源库。**「运行」= 把它塞进 HTML**。
-
-```html
-<!-- 方式 1：CDN -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.2.0/css/all.min.css">
-<i class="fas fa-home"></i>
-```
-
-```html
-<!-- 方式 2：本地 woff2 + JS 自动 SVG 化 -->
-<link rel="stylesheet" href="/css/all.min.css">
-<script src="/js/all.min.js"></script>
-<i class="fas fa-home"></i>
-```
-
-```html
-<!-- 方式 3：Vue/React 组件（推荐 SPA） -->
-import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
-<FontAwesomeIcon :icon="['fas', 'home']" />
-```
-
-**本地起服务的 smoke test**：
-```bash
-cd G:\实战案例\GitHub顶尖项目\font-awesome
-python -m http.server 8080
-# 浏览器访问 http://localhost:8080/svgs/brands/github.svg 应返回 SVG
-```
-
-**检查清单**：
-- `/webfonts/fa-solid-900.woff2` 大小 ~150 KB（v7 比 v6 减少 30%）
-- `/css/all.min.css` 加载后立即可见首页 icon
-- 浏览器 console 无 404（CORS 域名白名单）
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-    title Font Awesome 演进时间线
-    dateFormat YYYY-MM
-    section 早期
-    v3 (纯CSS)         :done, 2012-01, 24M
-    v4 (icon font 革命):done, 2013-03, 48M
-    section v5
-    v5 发布 (JS API)    :done, 2017-12, 24M
-    v5 LTS             :active, 2018-12, 36M
-    section v6
-    v6 引入多 family   :done, 2020-11, 24M
-    v6 LTS             :active, 2022-09, 36M
-    section v7
-    v7 CSS variables   :done, 2024-09, 12M
-    v7.2.0 当前       :active, 2026-05, 1M
-```
-
-**关键里程碑**（git log 因无 .git 而不可读，根据 CHANGELOG 与文档还原）：
-
-| 版本 | 时间 | 关键变化 |
-| --- | --- | --- |
-| 1.0 | 2012 | Dave Gandy 个人项目，Bootstrap 配套图标 |
-| 3.0 | 2012 | 纯 CSS 矢量图（无字体） |
-| 4.0 | 2013 | 引入 icon font，单 woff 文件 369 个图标 |
-| 4.7 | 2016 | 收录 627 icons，开始"品牌图标"类目 |
-| 5.0 | 2017 | JavaScript API（`library.add`） |
-| 5.13 | 2020 | SVG sprite 模式 |
-| 6.0 | 2020 | Sharp / Chisel / Etch 等新 family；duotone 支持 |
-| 6.4 | 2023 | 2000+ icons |
-| 7.0 | 2024 | 全面 CSS variables；移除 IE 兼容；jelly/notdog/slab 几个新 family |
-| 7.2 | 2026 | 增加 1500+ icons 至 32000+；performance 优化 |
-
-## 8. 质量保障（How It Doesn't Break）
-
-Font Awesome 是「**数据仓库 + 视觉资产**」，传统软件测试不适用。其质量保障是 **「视觉回归 + 自动化 lint + 协议校验」** 三道防线。
-
-```mermaid
-flowchart LR
-    A[PR 提交] --> B[icon-lint<br/>SVG 路径合法]
-    B --> C[schema 校验<br/>icons.yml]
-    C --> D[视觉回归<br/>像素 diff < 0.5%]
-    D --> E[协议扫描<br/>CC BY/SIL OFL 头]
-    E --> F[自动 merge]
-```
-
-**4 道防线**：
-1. **SVG Lint**：`svgo` 优化、路径合法性、viewBox 约束。每个 SVG 必须有 `xmlns` + `viewBox`。
-2. **Schema 校验**：`schemas/icon-definition.schema.json` 用 ajv 校验 `icon-families.yml`（`minItems: 5/maxItems: 5` 防漏字段）。
-3. **视觉回归**：PR 跑 Playwright 截图所有 icon，与 main 比对（容差 0.5%）。这是手画图标的"单元测试"。
-4. **协议扫描**：`banned-icons.yml` + CLA 机器人。每个新 icon 都要确认版权清晰（部分品牌图标需要品牌方书面授权才能收录）。
-
-**性能基准**：
-- 加载时间：单 woff 150KB < 200ms（4G）
-- 替换时间：1000 个 `<i>` 自动 SVG 化 < 80ms
-- 包大小：`all.min.css` 80 KB / `fontawesome.min.js` 80 KB / `all.min.js` 180 KB
-
-## 9. 生态依赖（Map of the World）
-
-```mermaid
-flowchart TD
-    FA[Font Awesome Free]
-    FA --> Vue[vue-fontawesome]
-    FA --> React[react-fontawesome]
-    FA --> Angular[angular-fontawesome]
-    FA --> Svelte[svelte-fa]
-    FA --> Ember[ember-fontawesome]
-    FA --> PHP[composer/font-awesome]
-    FA --> WP[wordpress/font-awesome]
-    FA --> Drupal[drupal/fontawesome]
-    FA --> Rails[font-awesome-rails]
-    FA --> NuGet[FontAwesome.WPF]
-    FA --> CocoaPods[FontAwesome.swift]
-```
-
-**合规检查清单**：
-- ✅ Icons CC BY 4.0 → 必须保留 attribution（已嵌入 SVG 注释）
-- ✅ Fonts SIL OFL 1.1 → 可嵌入但不能单独销售字体
-- ✅ Code MIT → 注明版权即可商用
-- ⚠️ Brands icons → 部分需品牌方授权（如 `fa-aws`、`fa-google`），不能用于暗示官方合作
-
-**反依赖风险**：
-- `vue-fontawesome` / `react-fontawesome` 由 FortAwesome 官方维护；第三方 `ember-fontawesome` 已归档。
-- `@fortawesome/free-*` 包分裂（free-solid-svg-icons 等）按需引入，避免 `all.js` 一次性拉取 2.4 万图标。
-
-## 10. 生产实践（Battle-Tested）
-
-| 维度 | 现状 |
-| --- | --- |
-| 配置热更新 | 通过 CSS variables，无需重新加载 woff |
-| 优雅停服 | N/A（资源库无服务端） |
-| 限流 | N/A |
-| 链路追踪 | N/A（前端资源） |
-| 健康检查 | 检查 `/webfonts/*.woff2` 200 + `all.css` 200 |
-| 结构化日志 | 浏览器 console.warn 提示 missing icon（仅 dev 模式） |
-
-**生产部署 4 个建议**：
-1. **CDN 分发**：`/webfonts/*.woff2` 走 Cloudflare 边缘缓存，TTL 1 年（文件名带版本 `7.2.0`）。
-2. **预加载**：`<link rel="preload" as="font" href="/webfonts/fa-solid-900.woff2" crossorigin>` 减少 FOUT。
-3. **按需加载**：`free-solid-svg-icons`（仅 2000 个 solid 图标）替代 `all.js`，减包 70%。
-4. **使用 React 组件替代 auto mode**：避免 MutationObserver 的运行时开销。
-
-## 11. 社区文化（People & Process）
-
-- **治理**：FortAwesome 公司（创始人 Dave Gandy），核心 5 人 + 100+ 社区 contributor。
-- **维护者**：见 https://github.com/orgs/FortAwesome/people
-- **RFC**：通过 Discussion 标签 `feature-requests` / `icon-requests` / `icon-wizard-requests` 收集社区需求。
-- **沟通**：GitHub Issues（按模板分类：web bug / other bug / icon request / brand request）。
-- **议题活跃**：日均 10+ issue，月均 50+ PR。
-
-**CLA 策略**：所有贡献者需签 CLA，确保版权可商用 —— 这是品牌方授权图标能进入的硬要求。
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **三协议混部**（按产物类型分配 license）：让自己的开源项目可以"代码 MIT + 数据 CC BY + 资产 SIL OFL"，最大化兼容。
-2. **CSS Variables 做主题**：用 `var(--x, default)` 双层回退，让用户运行时切换主题，无需重新编译。
-3. **Plugin + Mixout 模式**：`registerPlugins([...], { mixoutsTo: api })` —— 比 `app.use(fn)` 更灵活，每个 plugin 既能注册 hook 又能注入 provider。
-
-### 12.2 必避 3 坑
-
-1. **MutationObserver 全文监听**：在大 DOM 树（1000+ 节点）有显著 CPU 开销，改用 React/Vue 组件式集成。
-2. **`@import 'all'` 全量引入**：100 KB CSS 中 80% 的 class 用不到，必须按需 import。
-3. **UA sniffing 兼容 IE**：`~userAgent.indexOf('MSIE')` 是 2010 年代码，2026 年请删。
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 复刻 mini-iconlib 路线图
-    dateFormat YYYY-MM-DD
-    section 数据
-    设计 SVG 模板       :a1, 2026-06-03, 1d
-    编写 icons.yml      :a2, after a1, 2d
-    section 构建
-    CSS 变量生成器      :b1, after a2, 1d
-    SCSS mixin          :b2, after b1, 1d
-    section 运行时
-    fontawesome.js 简化版 :c1, after b2, 1d
-    测试 + 发布         :c2, after c1, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数（/10） |
-| --- | --- |
-| 代码可读性 | 8 |
-| 文档完整度 | 9 |
-| 复刻难度 | 4（易） |
-| 生产就绪 | 10 |
-| 商业价值 | 10 |
-| 学习价值 | 9 |
-| **综合** | **8.3** |
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：Font Awesome 示范了 **「数据驱动 + 多端编译 + 协议按产物分配」** 的开源资源库最高范式。
-
-**3 个核心洞察**：
-1. **CSS variables 双层回退**（`var(--fa-family, var(--fa-style-family, 'Font Awesome 7 Free'))`）让"用户级覆盖"和"库默认"无缝衔接。
-2. **Plugin + Mixout** 是 runtime 设计的银弹：每个 plugin 是独立 `hooks + provides` 二段式，组合出无限行为。
-3. **5 元素强约束的 SVG 数组 schema** 让运行时按位置解构，体积比对象小 30%，且 schema 与代码强同步。
-
-**5 段必读代码**：
-
-| # | 文件 | 行号 | 必读理由 |
-| --- | --- | --- | --- |
-| 1 | `G:\...\font-awesome\css\all.css` | 1-52 | CSS variables 私有前缀 + `:is()` 选择器 + 备用字符串语法 |
-| 2 | `G:\...\font-awesome\js\fontawesome.js` | 3700-3728 | Plugin 链 + `mixoutsTo` mixin 注册 |
-| 3 | `G:\...\font-awesome\js\fontawesome.js` | 3510-3525 | `fillBlack(force=true)` 的"上下文敏感默认值" |
-| 4 | `G:\...\font-awesome\js\fontawesome.js` | 3617-3706 | `prefers-reduced-motion` 媒体查询在 SMIL 动画的运用 |
-| 5 | `G:\...\font-awesome\metadata\icons.yml` | 1-100 | 数据 schema 范本：search.terms 同义词、changes 版本号、voted 评分 |
-| 6（加餐） | `G:\...\font-awesome\js-packages\...\index.d.ts` | 1-5 | 联合字面量做 enum 替代品，零运行时开销 |
-
-**1 个反模式**：`MutationObserver` 全文监听 → 改用 React 组件式集成。
-
-**1 个可复用模式**：`registerPlugins([...], { mixoutsTo: api })` —— 可直接套用到自己的 UI 库。
-
-**3 个立刻能用**：
-1. 任何 SCSS 文件加 `!default`，让用户覆盖变量无需改源码。
-2. 任何 CSS 加 `var(--x, default)` 链式回退，提升主题化能力。
-3. 任何 monorepo 把 `metadata/` + `schemas/` 提到顶层，让多个子包共享数据源。
-
-## 14. 项目特点速查
-
-- **独特看点**：
-  - 7 个 family × 5 个 style = 33 种图标风格组合（classic / duotone / sharp / chisel / etch / graphite / jelly）
-  - 32,000+ icons 总量（v7 比 v4 增 50 倍）
-  - 三协议混部（CC BY 4.0 + SIL OFL 1.1 + MIT）
-  - CSS variables 全面替换 SASS 变量（v7 重大升级）
-
-- **与同类对比**：
-
-```mermaid
-quadrantChart
-    title 图标库四象限对比
-    x-axis 包大 --> 包小
-    y-axis 图标少 --> 图标多
-    "Font Awesome 7": [0.4, 0.95]
-    "Material Icons": [0.5, 0.7]
-    "Heroicons": [0.85, 0.3]
-    "Bootstrap Icons": [0.7, 0.5]
-    "Iconify": [0.6, 0.85]
-```
-
-**对比结论**：
-- vs **Material Icons**：FA 风格更多、品牌图标全；MI 体积更小、Google 系生态融合。
-- vs **Heroicons**：Heroicons 极简（仅 300 图标）、Tailwind 系生态；FA 量大但包重。
-- vs **Iconify**：Iconify 聚合 200+ 库（unified API），FA 是单一品牌但有商业级 Pro 版。
-- vs **Bootstrap Icons**：BI 800 图标、纯 CSS；FA 32,000 图标 + JS runtime。
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-| --- | --- |
-| 路径 | `G:\实战案例\GitHub顶尖项目\font-awesome\` |
-| 大小 | ~570 KB 目录结构数据；实际文件 ~30+ MB（不计 svgs 全集） |
-| 总文件 | 23,066 |
-| 解析时间 | 2026-06-02 14:00 UTC+8 |
-| 锁定版本 | Font Awesome Free 7.2.0（HEAD） |
-| 协议 | Icons: CC BY 4.0 / Fonts: SIL OFL 1.1 / Code: MIT |
-
-## 一句话总结
-
-**Font Awesome 是一份「数据即代码」的设计哲学实践 —— 用 `icons.yml` 1 份 YAML 驱动 4 种产物（CSS / SCSS / JS / WOFF2），用 Plugin 链做运行时扩展点，用三协议混部做法律兼容，把「图标库」从「资源文件」升级为「可编程平台」。**
+## 第一段：基础范式
+
+### 模式 1 - 数据驱动的图标工厂
+
+**问题场景**：图标库要支持 CSS、SVG、JS、字体四种使用方式，每种格式都要重新发布一次。直接维护四份资产会导致不一致（某个 icon 在 CSS 里没更新但 SVG 更新了）。
+
+**解决方案**：Font Awesome 用 `metadata/icons.yml` 2.4 万行作为单一事实源，构建脚本读 yml → 生成 CSS / SCSS / JS bundle / WOFF2 字体。四份制品同步发布，零漂移。
+
+**关键参数**：
+- 每个 icon 6 字段：`name / label / unicode / styles / search.terms / changes`
+- `icon-families.yml` 矩阵化（每个 icon × {pro/free} × {solid/regular/brands}）
+- `categories.yml` 给 icon 打分类标签（accessibility / arrows / business）
+- `shims.yml` v4→v5 名称映射
+
+**最佳实践**：建立"单一事实源 + 多端编译"心智，配置文件应是 machine-readable（YAML/JSON），让脚本生成 80% 的人工产物；不要为不同端维护不同源数据。
+
+### 模式 2 - CSS 自定义属性做主题切换
+
+**问题场景**：v4 时代每个样式（solid/regular/brands）一个 woff 文件，切换主题要重新下载字体。请求数多、流量大、闪烁明显。
+
+**解决方案**：v7 改用 CSS 变量：`.fa-solid { --_fa-family: var(--fa-family, 'Font Awesome 7 Free'); font-weight: var(--fa-style, 900); }`。同一份 woff 文件，通过 `--fa-style: 400` 切换为 regular。
+
+**关键参数**：
+- `var(--name, default)` 语法：用户级变量优先，否则回退默认
+- `--fa-style-family / --fa-style / --fa-family / --fa-weight` 四变量控制渲染
+- 伪元素 `::before { content: '\f015' }` 引用 unicode
+- 一个 woff2 文件承载所有 family（900 字重）
+
+**最佳实践**：用 CSS 变量做主题比生成多份 woff 节省 70% 流量；项目级统一 `--primary: #1677ff`，组件库用 `var(--primary)` 引用；切换深色模式只需重定义变量值。
+
+### 模式 3 - JS Plugin 链架构
+
+**问题场景**：Font Awesome 要支持 data-fa-mask、data-fa-transform、auto-replace、pseudo-element 注入、SVG symbols 等高级能力，硬编码会膨胀到几千行。
+
+**解决方案**：plugin 架构 — `registerPlugins([InjectCSS, ReplaceElements, Layers, Masks, MissingIconIndicator, SvgSymbols], { mixoutsTo: api })`。每个 plugin 暴露 `hooks`（节点属性解析）+ `provides`（DOM 注入）两段式接口。
+
+**关键参数**：
+- `hooks: { 'findIconDefinition': fn, 'parseTransform': fn }` 解析阶段
+- `provides: { 'replacement': fn, 'transform': fn }` 注入阶段
+- `mixoutsTo` 把方法挂到核心 `api` 上（链式注册）
+- `conflic-detection` 模块检测 `window.FontAwesome` 已被占用
+
+**最佳实践**：功能模块化第一原则是"每个 plugin 自包含"，不要把多个能力塞到一个大文件；hooks 命名空间要稳定（`findIconDefinition` 不要改名）；版本升级时保留旧 plugin 通过 shim 文件兜底。
+
+### 模式 4 - SVG 数据压缩（5 元组格式）
+
+**问题场景**：2 万 + 个 SVG 单独存文件 → 仓库体积 1GB+；JSON 对象存路径数据 → 体积大 30%。
+
+**解决方案**：用元组 `[width, height, ligatures[], unicode, pathData]` 5 元素位置强一致（schema `minItems/maxItems: 5`）。序列化比对象少 30% 体积，且 5 元素顺序固定利于解析。
+
+**关键参数**：
+- `width/height`：viewBox 尺寸
+- `ligatures[]`：CSS 类名数组（多语言别名）
+- `unicode`：私有区 PUA 编码（`\f015`）
+- `pathData`：SVG d 字符串
+- JSON Schema 约束保证 5 元素位置
+
+**最佳实践**：大量重复数据用数组 + schema 约束比对象更紧凑（少 key 字符串）；同时 schema 也是验证工具，能挡住错位数据；批量读取时流式解析而非一次加载全量。
+
+### 模式 5 - 多协议混部（License Strategy）
+
+**问题场景**：单一项目里 icons (CC BY 4.0)、fonts (SIL OFL 1.1)、code (MIT) 三种协议，单一协议必然不兼容。
+
+**解决方案**：按产物类型自动适用协议 — `solid.svg` 走 CC BY，`solid.woff2` 走 SIL OFL，`fontawesome.js` 走 MIT。用户从 npm 拉包时按 file 路径自动匹配，LICENSE.txt 顶部声明汇总。
+
+**关键参数**：
+- Icons: CC BY 4.0（需署名原作者）
+- Fonts: SIL OFL 1.1（可商用、不可单独卖字体）
+- Code: MIT（最宽松）
+- `banned-icons.yml` 标记品牌图标需单独授权
+
+**最佳实践**：开源项目涉及多类资产时按 file 类型分配协议，不要试图"一协议打天下"；LICENSE.txt 顶部 1 段说明协议矩阵，README 加 1 节"How to use in commercial product"。
+
+---
+
+## 第二段：扩展范式
+
+### 模式 6 - Webfont 子集化（Glyph Subsetting）
+
+**问题场景**：Font Awesome 7 有 3 万 + icon，全量 woff 体积 2MB+，首屏加载浪费。
+
+**解决方案**：按 family 拆分成 `fa-solid-900.woff2 / fa-regular-400.woff2 / fa-brands-400.woff2` 三个子集，每子集 ~200KB，浏览器只下载实际用到的 family。
+
+**关键参数**：
+- 字形子集工具：fonttools + pyftsubset
+- 子集粒度：按 unicode 区间（PUA 区 + 拉丁）
+- `unicode-range` CSS 描述符让浏览器懒加载未使用区间
+- `font-display: swap` 避免 FOIT（字体不可见）
+
+**最佳实践**：中文字体必走子集化（动辄 5MB 全量不可接受）；`unicode-range` 配 `@font-face` 让浏览器按需下载；CDN 缓存按 url 参数版本（`?v=7.2.0`）防止升级失效。
+
+### 模式 7 - CSS Pseudo-element 集成
+
+**问题场景**：图标最常见用法是 `<i class="fas fa-home"></i>`，需要把字体 glyph 注入到 `::before` content。
+
+**解决方案**：CSS 伪元素 + unicode 转义。`.fa-home::before { content: "\f015"; }` 把 home icon 渲染为 inline 元素。配合 `font-family: 'Font Awesome 7 Free'; font-weight: 900`。
+
+**关键参数**：
+- `content: "\f015"` 反斜杠转义 PUA 区 unicode
+- `font-family: var(--fa-style-family, 'Font Awesome 7 Free')`
+- `font-weight: var(--fa-style, 900)`
+- `display: inline-block; width: 1em; text-align: center`
+
+**最佳实践**：图标用 `<i>` 而非 `<span>` 是约定（HTML5 接受 i 为图标）；`aria-hidden="true"` 对装饰性图标加无障碍属性；语义图标配 `<span class="sr-only">xxx</span>` 提供屏读文本。
+
+### 模式 8 - SVG Sprite + Symbol 模式
+
+**问题场景**：CSS 伪元素方式不能改色（`color: currentColor` 也只能单色），复杂图标（多色品牌 logo）需要 inline SVG。
+
+**解决方案**：SVG sprite — 一个 `<svg style="display:none"><symbol id="fa-home" viewBox="0 0 512 512">...</symbol></svg>`，业务用 `<svg><use href="#fa-home"/></svg>` 引用。颜色由 `fill` 控制，支持多色。
+
+**关键参数**：
+- `<symbol id>` 命名空间
+- `<use href="#xxx">` 引用（注意 xlink:href 已弃用）
+- `fill="currentColor"` 继承父级颜色
+- `viewBox` 控制缩放比例
+
+**最佳实践**：纯色图标用 webfont（CSS 简单、缓存友好），多色 / 需改色用 SVG sprite；sprite 集中放 body 顶部 `<svg style="display:none">` 避免 layout 抖动；id 命名加前缀（如 `fa-`）避免冲突。
+
+### 模式 9 - Build Pipeline 设计
+
+**问题场景**：1.5 万 SVG + 1 万 CSS 类 + JS bundle + 多格式字体，手工构建慢、易错。
+
+**解决方案**：分阶段构建：
+1. `bundle-svg`：从 icons.yml 生成 `svgs/*.svg`
+2. `font-subset`：用 fonttools 把 SVG 转 woff2
+3. `css-vars-generator`：从 icon-families.yml 生成 `all.css`
+4. `js-bundler`：rollup 打包 fontawesome.js
+5. `json-schema-validate`：验证 metadata 与 schema 一致
+
+**关键参数**：
+- 各阶段独立 npm script（`npm run build:svg` / `build:font` / ...）
+- CI 并行跑构建
+- 构建产物用 `dist/` 目录
+- `package.json` 的 `files` 字段控制发布内容
+
+**最佳实践**：构建脚本拆成 5-10 个独立 step 而非 1 个大脚本；每个 step 接受 input/output 路径参数（可独立测试）；CI cache `node_modules` + 部分构建产物加速。
+
+### 模式 10 - CI/CD 与发布策略
+
+**问题场景**：icon 库是海量小文件 + 多制品，每周 release 时手动跑构建 + 验证 1 小时+。
+
+**解决方案**：GitHub Actions matrix — `validate`（schema 校验）+ `build`（生成所有制品）+ `npm-publish`（自动发布）+ `cdn-sync`（推到 jsdelivr/unpkg）。
+
+**关键参数**：
+- `npm version patch/minor/major` 自动 bump + tag
+- `changesets` 管理 monorepo 多包版本
+- CDN `https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7/css/all.css` 免配置
+- `banned-icons.yml` 自动 PR 拒绝品牌 icon 误用
+
+**最佳实践**：开源库的 CI 必须有"一键回滚"（git tag + CDN 旧版本仍在）；jsdelivr/unpkg 是免费 CDN，新版本 push 后几分钟内可访问；changesets 让 contributor 写 changelog 简单化。
+
+---
+
+## 第三段：进阶范式
+
+### 模式 11 - Masking（图标合成）
+
+**问题场景**：用户想要"两个图标叠加"效果（圆形背景 + 内部图标），传统方式要预生成所有组合图。
+
+**解决方案**：mask 模式 — 外层 icon 作为 `<mask>`，内层 icon 作为 fill。`data-fa-mask="fa-circle"` 让目标 icon 渲染在 circle 形状内。
+
+**关键参数**：
+- `<mask id="..."><use href="#fa-circle"/></mask>` SVG 原生
+- `data-fa-mask` 自定义属性 + Masks 插件解析
+- `transform: scale(1.5)` 调整内部 icon 大小
+- `data-fa-mask-size` 调整内 icon 比例
+
+**最佳实践**：mask 比预生成组合图节省 99% 存储；常用 mask 模板抽到 CSS class（`.fa-stack { position: relative }` + `.fa-stack-1x / 2x`）；mask 仅支持单色。
+
+### 模式 12 - Layering（图层堆叠）
+
+**问题场景**：复杂图标（带边框 + 内部图形）需要多个 SVG 组合。
+
+**解决方案**：Layers API — `layers.text = (counter, ...icons)`，在 `dom.i2svg()` 阶段把多个 icon 拼成一个 SVG 元素。
+
+**关键参数**：
+- `icon.layers.text = [inverse, ['fa-circle', 'fa-home']]` 数组支持嵌套
+- 默认绝对定位 + z-index 堆叠
+- `text` 后缀支持不同字号
+- `counter` 参数是 layer index
+
+**最佳实践**：layering 适合"背景容器 + 前景图标"模式（如"购物车在圆里"）；超过 3 层考虑改用 SVG 源文件直接画。
+
+### 模式 13 - Transform（图标变形）
+
+**问题场景**：图标默认 1×1 大小，要放大、缩小、旋转、固定位置。
+
+**解决方案**：transform API — `data-fa-transform="shrink-6 right-4 rotate-45"`，后端改 SVG `transform` 属性。
+
+**关键参数**：
+- `shrink-N`：缩小 N/16 倍
+- `grow-N`：放大 N/16 倍
+- `up-N / down-N / left-N / right-N`：位移 N/16 em
+- `rotate-N`：旋转 N 度
+
+**最佳实践**：transform 是运行时改 SVG 属性，无需预生成多尺寸版本；动画用 CSS `transition: transform .3s` 配合 data 属性变化。
+
+### 模式 14 - 性能：CDN 与懒加载
+
+**问题场景**：用户只在 2-3 个页面用图标，全量加载 all.css (10K 行) 浪费。
+
+**解决方案**：三种策略：
+- 全量 `all.css`（最简单，10KB gzip 后 ~3KB）
+- 按 family 拆 `solid.css / regular.css / brands.css`（每 ~1KB）
+- 按需 JS 注入 `import { faHome } from '@fortawesome/free-solid-svg-icons'; library.add(faHome)`（最省）
+
+**关键参数**：
+- `<link rel="stylesheet" href="...">` 阻塞渲染
+- `preload` + `media="print" onload="this.media='all'"` 异步 CSS
+- JS 动态 `<link>` 注入
+- `font-display: swap` 避免文字 FOIT
+
+**最佳实践**：营销站用全量 all.css（缓存友好）；SaaS 应用用按需 import（节省首屏 30KB）；CDN url 加版本号 `?7.2.0` 避免升级失败。
+
+### 模式 15 - Tree-shaking 与按需打包
+
+**问题场景**：npm 包 `@fortawesome/free-solid-svg-icons` 含 2 万个 icon 定义，全量 import 体积 5MB+。
+
+**解决方案**：按需 import + tree-shaking。`import { faHome, faUser } from '@fortawesome/free-solid-svg-icons'; library.add(faHome, faUser)` 让 webpack 摇树掉其他 icon。
+
+**关键参数**：
+- `library.add(...)` 注册到 FontAwesome 全局
+- webpack 5 / rollup 自动 tree-shake
+- `@fortawesome/free-brands-svg-icons` 单独包品牌
+- `@fortawesome/pro-solid-svg-icons` 付费包
+
+**最佳实践**：用 ESLint 规则禁止 `import * as icons from '@fortawesome/free-solid-svg-icons'` 全量引入；按需包名是 `free-solid-svg-icons` 而非 `fontawesome-free`（后者是 webfont 包）；CI 跑 `webpack-bundle-analyzer` 检查 tree-shaking 效果。
+
+---
+
+## 第四段：实战范式
+
+### 模式 16 - React 集成（react-fontawesome）
+
+**问题场景**：原生 `<i class="fas fa-home">` 写法在 React 里丑（className 拼字符串），要组件化 + props 化。
+
+**解决方案**：`react-fontawesome` 提供 `<FontAwesomeIcon icon={faHome} size="lg" spin color="red" />` 组件；内部用 `library.add(faHome)` 注册到全局。
+
+**关键参数**：
+- `icon={faHome}` 或 `icon={['fab', 'github']}`（前缀 + 名）
+- `size="xs / sm / lg / 2x / 3x ..."`
+- `spin / pulse` 动画
+- `color / style / className` 自定义样式
+
+**最佳实践**：项目入口 `import { library } from '@fortawesome/fontawesome-svg-core'; library.add(faHome, faUser, faCog)` 集中注册；组件库封装 `<AppIcon name="home" />` 统一 props；测试用 `jest.mock('@fortawesome/react-fontawesome')` 避免影响 snapshot。
+
+### 模式 17 - Vue 集成（vue-fontawesome）
+
+**问题场景**：Vue 项目要用 Font Awesome，组件化 + 自定义 props。
+
+**解决方案**：`vue-fontawesome` 提供 `<font-awesome-icon :icon="['fab', 'github']" />` SFC；`Vue.component('font-awesome-icon', FontAwesomeIcon)` 全局注册。
+
+**关键参数**：
+- 组件名 `FontAwesomeIcon` / `FontAwesomeLayers` / `FontAwesomeLayersText`
+- `:icon` 支持字符串 / 数组 / icon 定义对象
+- `Library` 实例独立管理（多 library 共存）
+
+**最佳实践**：用 Vite + 自动 import 插件 `unplugin-vue-components` 自动引入 icon 组件；SSR 场景用 `client-only` 包裹避免水合不一致。
+
+### 模式 18 - 自托管 vs CDN
+
+**问题场景**：CDN 快但有第三方依赖（GDPR / 隐私 / 速度），自托管稳定但要管部署。
+
+**解决方案**：权衡矩阵：
+- CDN：开发快、首屏 50ms 拿到（jsdelivr 全球节点）、需隐私评估
+- 自托管：完全可控、SSO 内部用户友好、需配 nginx + 版本管理
+
+**关键参数**：
+- jsdelivr url `https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.2.0/css/all.min.css`
+- 自托管放 `/static/vendor/fontawesome/`
+- `<link crossorigin="anonymous">` 解决 CORS
+- `integrity="sha384-..."` SRI 校验防篡改
+
+**最佳实践**：电商 / 政企网站优先自托管（合规要求）；SaaS / 营销站用 CDN（速度优先）；CDN 加 `integrity` 哈希防供应链攻击；SRI 失败时浏览器拒绝加载。
+
+### 模式 19 - 图标搜索与自动化
+
+**问题场景**：设计师 / 开发者找图标靠记忆或翻官网搜索，效率低。
+
+**解决方案**：
+- 官方搜索 `https://fontawesome.com/icons?d=gallery&q=home`
+- VS Code 插件 `Font Awesome Autocomplete` 配 JSON snippets
+- Figma 插件 `Font Awesome for Figma` 直接拖入设计稿
+- CI 脚本 `scripts/check-icons.js` 验证所有 class 名都存在
+
+**关键参数**：
+- `free-brands` 包含约 4500 个品牌 logo
+- `unicode` 反查 `https://fontawesome.com/cheatsheet`
+- Figma 文件 + Sketch Library 离线包
+
+**最佳实践**：项目内建 `docs/icons.md` 列出所有用到的 icon 名（避免重复搜索）；CI lint 规则 `no-unknown-icon` 防止拼写错；icon 集中放 `src/icons.ts` 文件。
+
+### 模式 20 - 替代方案选型
+
+**问题场景**：Font Awesome 免费版图标有限（20000+ 但风格统一性弱），付费版 $60+/年；考虑 Material Icons / Heroicons / Tabler Icons 替代。
+
+**解决方案**：选型矩阵：
+- Font Awesome：图标最全（3万+）、跨端、社区最大、付费版解锁 Pro
+- Material Icons：Google Material Design、2000+、单一风格
+- Heroicons：Tailwind 团队、300+、极简 SVG
+- Tabler Icons：3000+、24×24 网格、统一描边
+- Lucide：原 Feather、1000+、现代风格
+
+**关键参数**：
+- 包体积（KB）：FA all.css (10K 行) vs Heroicons (10KB total SVG)
+- 协议：FA 三协议混部 vs Lucide ISC
+- 多色支持：FA 5+ Pro / Material Icons 三色
+- 树摇友好度：FA 按需 import vs Material 全量
+
+**最佳实践**：B 端后台用 Material Icons（风格统一 + 体积小）；营销站用 Font Awesome（图标最全）；设计驱动型项目用 Heroicons（与 Tailwind 集成）；多色品牌 logo 用 Font Awesome Pro。

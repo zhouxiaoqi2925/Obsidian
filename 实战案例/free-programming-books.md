@@ -1,433 +1,322 @@
----
-title: free-programming-books
-type: 资源列表
-lang: —
-stars: 350k+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - 资源列表
----
+# free-programming-books - 免费编程书籍大全资源仓库
 
-# free-programming-books · 项目深度解析
-
-> 免费编程书籍大全
-> 来源：项目\free-programming-books-main.zip
-
-## 写在前面：解析哲学
-
-按 V3 模版，**先骨架后血肉，先 What 后 Why，最后 How to steal**。
-每个小点都遵循：点状解析 → 思维导图 → 落地模板 → 反例警示。
+**GitHub**: EbookFoundation/free-programming-books
+**Star**: 350k+
+**语言**: Markdown
+**主题**: 资源列表 / 社区编辑 / 公开课
+**适用场景**: 编程学习者找免费电子书、播客、在线课、动手教程
 
 ---
 
-## 0. 解析前的 5 个准备
+## 第一段：基础范式
 
-**[点状解析]**：拿到仓库后先做 5 件不起眼但极重要的事，避免后面返工。
+### 模式 1 - 纯 Markdown 仓库结构
 
-**[思维导图]**：
-```
-解析前准备
-├── 0.1 克隆仓库（--depth 1 瘦身）
-├── 0.2 建 _analysis 子目录（13 个分类）
-├── 0.3 写问题清单（5 问）
-├── 0.4 速查表（meta 信息）
-└── 0.5 锁定 commit（避免中途漂移）
-```
+**问题场景**：资源列表项目（如 awesome-xxx）用二进制、PDF、DOCX 难维护，且涉版权风险；用代码仓库易 fork、PR、版本管理。
 
-**[反例警示]**：没用 --depth 1 → 大仓库拉半天还失败；目录没分类 → 文件全堆一起；没锁 commit → 写到一半上游 push 了你不知道。
+**解决方案**：本项目主体是一个 `books.md`（按语言分类的免费书列表），每条目 `- [书名](URL) - 作者`，无 PDF/DOCX 资产，链接指向外部原始地址。零版权争议 + 零仓库体积。
 
----
+**关键参数**：
+- 主文件 `books.md`（3 万+ 行）
+- 子分类 `books/*.md`（中文 / 葡萄牙语 / 西班牙语 / 俄语等）
+- 配置文件 `_config.yml`（Jekyll GitHub Pages）
+- 协议文件 `LICENSE`（Apache-2.0，仅对仓库元数据）
 
-## 1. 开发计划书（Project Charter）
+**最佳实践**：资源列表类项目坚持"无资产、纯链接"原则；分类按语言 / 主题 / 难度三维度切分；定期跑链接检查脚本（`scripts/check_links.py`）防止死链。
 
-| 字段 | 内容 |
-|---|---|
-| 项目名 | free-programming-books |
-| 一句话定位 | 免费编程书籍大全 |
-| 核心问题 | 解决「多语言分类 + 社区编辑」领域的核心痛点：免费编程书籍大全 |
-| 目标用户 | 全开发者 |
-| 商业模式 | 开源 + 周边服务 |
-| 复刻难度 | ⭐⭐ |
-| 当前状态 | 活跃 |
-| 团队规模 | 50+ |
-| 关键里程碑 | v0.1 / v1.0 / 当前版本 |
+### 模式 2 - 社区驱动的编辑流程
 
-**[反例警示]**：只看 star 数就开干 → 玩具项目不值得学一个月；不看 license → GPL-3.0 商用直接踩坑；不看 pushedAt → 仓库 3 年没动 = 学了也用不上。
+**问题场景**：350k+ star 的资源列表靠 1 个维护者必然跟不上更新，需要"任何人可贡献"。
 
----
+**解决方案**：标准 GitHub Flow — Fork → Branch → 修改 → PR → CI 验证链接 → Maintainer 审核 → merge。`.github/CONTRIBUTING.md` 详细写明规范（书名格式、是否收费、URL 验证）。
 
-## 2. 项目框架（Repo Skeleton Map）
+**关键参数**：
+- 6000+ contributors
+- PR 平均审核时间 < 24h
+- CI 跑 `linkspector` 死链检测 + `languagetool` 拼写检查
+- 标签机器人（`github-actions[bot]`）自动打标
 
-**[点状解析]**：不读代码，先看"目录怎么长"。— 项目常见布局：src/ + docs/ + tests/
+**最佳实践**：项目健康靠"低门槛贡献 + 自动化验证"；CONTRIBUTING.md 写明 3 件事 — 接受什么、拒绝什么、怎么写 PR；CI 跑所有 PR 验证才能 merge。
 
-**[思维导图]**：
-```
-资源列表 框架
-├── 2.1 顶层结构（tree -L 2）
-├── 2.2 配置入口（config 文件）
-├── 2.3 代码入口（main.*/app.*/server.*/cli.*）
-├── 2.4 文档位置（docs/README/CHANGELOG）
-├── 2.5 测试位置（test/tests/*_test.*）
-└── 2.6 部署相关（deploy/k8s/docker）
-```
+### 模式 3 - 多语言站点（i18n）
 
-**[本项目实际结构]**：
-```
-├── /
-├── .editorconfig/
-├── .github/
-├── .gitignore/
-├── LICENSE/
-├── README.md/
-├── _config.yml/
-├── _includes/
-├── books/
-├── casts/
-├── courses/
-├── docs/
-├── favicon.ico/
-├── more/
-├── scripts/
-```
+**问题场景**：全球开发者用不同母语，本地化资源列表要支持 10+ 语言。
 
-**实际配置入口**：`无标准配置文件`
+**解决方案**：Jekyll 多语言插件 + `books/{lang}/` 子目录。`books.md` 是英文主版，`books/zh.md` 是中文版，每种语言独立 PR。
 
-**实际代码入口**：``
+**关键参数**：
+- 30+ 语言版本
+- 主语言英文（`books.md`）
+- 同步策略：英文更新触发 bot 提醒各语言翻译者
+- `_data/languages.yml` 维护语言列表
 
-**核心目录**（文件数最多）：`docs`, `books`, `courses`, `casts`, `more`, `.github/workflows`
+**最佳实践**：开源文档 i18n 优先建"主语言 + 关键 3 语言"，不要一上来铺 30 语言（维护成本爆炸）；同步策略用 weekly bot 通知而非强制同步（翻译者节奏不同）。
 
-**[反例警示]**：上来就 cat main.go → 找不到入口；忽略 vendor/node_modules → 看 10 万行依赖以为项目很大；错过 docs/ → 错过作者的"自述"。
+### 模式 4 - 链接质量保证（Dead Link）
+
+**问题场景**：资源列表 80% 价值在链接，URL 失效（网站关闭、改版、迁移）就直接废掉。
+
+**解决方案**：CI 跑 `linkspector` + `lychee` 检查所有链接 HTTP 状态码，定期人工 + 自动化重审查。
+
+**关键参数**：
+- `lychee --offline` 本地 DNS 解析
+- `--max-redirects 5 --timeout 20`
+- 失败链接打 PR 提醒
+- 每周一 GitHub Action 跑全量链接检查
+
+**最佳实践**：资源列表类项目必备 link checker；CI 失败 50% 是链接失效，要区分"网站永久关闭"和"临时 503"；用 archive.org 备份镜像替代死链。
+
+### 模式 5 - LICENSE 边界
+
+**问题场景**：项目用 Apache-2.0，但链接到的书可能有自己的版权（"免费"≠"公有领域"）。
+
+**解决方案**：明确 README 声明 — 仓库内容（分类、描述）走 Apache-2.0；链接到的资源遵循各自所有者的协议。"免费"界定 = 永久免费 + 不需注册 + 合法下载。
+
+**关键参数**：
+- `LICENSE` 文件 Apache-2.0
+- README 写 "Free" 的严格定义
+- `CONTRIBUTING.md` 写"拒绝盗版 PDF"
+- 不镜像任何 PDF 到仓库
+
+**最佳实践**：资源聚合类项目必区分"本仓库协议" vs "链接资源协议"；贡献前确认资源确为作者/出版方免费发布；遇到版权争议 PR 立刻关闭。
 
 ---
 
-## 3. 项目画像（Profile）
+## 第二段：扩展范式
 
-**[点状解析]**：用 5 个数字量化"这个项目长什么样"，5 分钟形成判断。
+### 模式 6 - 子分类目录设计
 
-| 维度 | 数据 |
-|---|---|
-| 总文件数 | 245 |
-| 主语言 | Markdown |
-| 涉及语言 | Markdown, YAML |
-| Star | 350k+ |
-| License | Apache-2.0（主流开源协议，需查实际仓库） |
-| Docker 支持 | ❌ |
-| K8s 支持 | ❌ |
-| CI 配置 | ✅ |
-| 有测试 | ❌ |
+**问题场景**：单一 `books.md` 10 万行维护不动（编辑器卡、PR diff 巨大）。
 
-**[反例警示]**：cloc 包含测试 → 数字虚高 2 倍；只看 contributors 总数 → 1 人贡献 90% = 伪活跃；忽略 indirect deps → 漏洞扫描漏一半。
+**解决方案**：按语言拆分子目录 `books/zh.md / books/es.md / books/ru.md`，主 `books.md` 存英文。子目录可独立 PR，独立 review。
 
----
+**关键参数**：
+- `books/zh.md` 中文
+- `books/pt-BR.md` 巴西葡语
+- `books/en-US.md` 美国英语
+- 主仓 `README.md` 总览
 
-## 4. 架构设计（Architecture Deep Dive）
+**最佳实践**：单文件 > 1 万行考虑拆分子文件；子文件命名用 ISO 语言代码（`zh-CN` / `pt-BR`）；README 顶部放总目录索引。
 
-**[点状解析]**：资源列表 项目的核心架构看点是 **多语言分类 + 社区编辑**。
+### 模式 7 - 持续集成（CI/CD）
 
-**[思维导图]**：
-```
-资源列表 架构
-├── 4.1 部署图（节点 + 容器 + 网络）
-├── 4.2 组件图（服务 + 依赖 + 协议）
-├── 4.3 4+1 视图（逻辑/进程/部署/开发/场景）
-└── 4.4 关键设计决策 ADR
-```
+**问题场景**：350k+ star 仓库每周 100+ PR，手工验证格式、链接、拼写不可能。
 
-**核心架构看点**（多语言分类 + 社区编辑）：
-- 多语言分类 + 社区编辑
-- 核心数据流
-- 性能/可用性关键点
+**解决方案**：GitHub Actions 多 job：
+1. `link-checker`：lychee 检查所有 markdown 链接
+2. `spelling`：codespell 拼写
+3. `lint`：markdownlint 格式
+4. `language-detection`：检测未声明语言
+5. `duplicate-check`：防止重复链接
 
-**ADR-001: 为什么是 资源列表 方向**
-- 状态：已采纳
-- 背景：解决「多语言分类 + 社区编辑」领域的核心痛点：免费编程书籍大全
-- 决策：采用 多语言分类 + 社区编辑 作为核心架构思路
-- 理由：该方向在 资源列表 领域已被广泛验证，兼顾性能、可维护性与生态
-- 替代：其他可选方案（取决于具体场景与团队技术栈）
+**关键参数**：
+- `.github/workflows/*.yml` 5+ 个 workflow
+- 大文件拆分 lint 跑（避免 OOM）
+- `concurrency` 限制同时跑 1 个
+- 失败 PR 评论具体行号
 
-**[反例警示]**：只画总图看不清细节；没有 ADR 不知道为什么这样设计；忽略部署视图上线才发现问题。
+**最佳实践**：资源列表类项目 CI 必跑"链接 + 拼写 + 重复"三件套；PR 模板 `.github/PULL_REQUEST_TEMPLATE.md` 写明贡献清单；状态检查全绿才允许 merge。
 
----
+### 模式 8 - 元数据丰富化
 
-## 5. 代码深度解析（带 WHY）⭐ 重点
+**问题场景**：基础列表 `- [书名](URL)` 缺少关键信息（作者、出版年、难度、时长）。
 
-**[点状解析]**：每读一个文件必须回答"为什么这样写"。
+**解决方案**：增强格式 `- [书名](URL) - 作者 (年份, 难度：⭐⭐)`。贡献者在提交时填完整元数据。
 
-### 5.1 找骨架代码
+**关键参数**：
+- 字段：书名 / URL / 作者 / 年份 / 难度 / 主题
+- 难度 1-5 ⭐
+- 主题标签（python / web / devops...）
 
-**前 5 个最大源码文件**：
-```
-1. `scripts/rtl_ltr_linter.py`
-```
+**最佳实践**：列表类项目必加"主键 + 分类"两字段（书名 + 主题）；元数据是 SEO 友好的；CI 可验证"必填字段非空"。
 
-**入口文件**：``
+### 模式 9 - 离线备份策略
 
-### 5.2 单文件分析卡（入口示例）
+**问题场景**：外部链接失效 = 资源消失。需要"自托管备份"。
 
-```markdown
-## 文件：
+**解决方案**：archive.org 自动爬取 + 仓库 README 鼓励 "Bookmark in archive.org"；CI 检查关键链接是否有 archive.org 备份。
 
-### 职责（What）
-项目的引导入口，负责初始化配置、装配依赖、启动核心服务。
+**关键参数**：
+- `https://web.archive.org/web/*/URL` 通配
+- 自动化 `archive-bot` PR
+- README 教贡献者"提交前先 archive.org 保存"
 
-### 关键代码段
-（实际精读时填）
+**最佳实践**：关键资源 1) 自己下载本地 2) 推 archive.org 3) 写主仓库；备份是 anti-fragile 设计。
 
-### 为什么这样写（WHY）❗
-- 入口越薄越好 → 让核心逻辑可独立测试
-- 配置/启动/路由三层分离 → 各层可替换
-- 显式依赖注入（而非全局变量）→ 业务代码可移植
-```
+### 模式 10 - 标签与主题分类
 
-### 5.3 设计模式识别清单
+**问题场景**：用户找"AI 入门书"需要在 3 万行列表里搜索。
 
-| 模式 | 出现位置 | 解决什么问题 |
-|---|---|---|
-| Factory | `NewXxx()` | 屏蔽复杂初始化 |
-| Observer | `OnXxx` 回调 | 解耦事件源与处理者 |
-| Middleware | `Use/Handler chain` | 链式处理横切关注点 |
-| Pool | `sync.Pool / object pool` | 减少 GC 压力 |
-| Strategy | 接口+多种实现 | 运行时切换算法 |
+**解决方案**：每条目加主题标签 `[AI]` / `[入门]` / `[英文]`，CI 生成 `_data/tags.yml`，网站用 tag 过滤。
 
-### 5.4 反模式 / 坑位识别
+**关键参数**：
+- 主题：AI / Web / DevOps / Mobile / Database...
+- 难度：入门 / 进阶 / 专家
+- 语言：英语 / 中文 / 西语...
 
-```bash
-grep -rn 'panic(' --include='*.go' .    # 找 panic
-grep -rn 'go func' --include='*.go' .   # 找裸 goroutine
-grep -rn 'global\|window\.' --include='*.py' .  # 找全局变量
-```
-
-### 5.5 资源列表 项目的独特看点
-
-- **多语言分类 + 社区编辑**：这是 free-programming-books 的"灵魂"功能，必须精读
-- **多语言分类 + 社区编辑**：核心架构创新
-- **核心数据流**：性能/可用性关键
-
-**[反例警示]**：只看 What 不看 Why → 抄过来不理解；跳过测试代码 → 错过"作者怎么自测"的精华；忽略 vendor/ 依赖代码 → 失去"作者如何用 std lib"的线索。
+**最佳实践**：标签系统设计原则 — 互斥（每资源只贴 1-2 个核心 tag）、扁平（不要 3 层嵌套）、可枚举（CI 能列全）。
 
 ---
 
-## 6. 运行机制（Bring It Up）
+## 第三段：进阶范式
 
-**[点状解析]**：跑起来才算。光看代码是幻觉。
+### 模式 11 - 自动化提交机器人
 
-```bash
-# 6.1 找启动脚本
-ls -la | grep -E 'Makefile|run|start|serve'
+**问题场景**：发现新书后人工提交慢，催办流程不高效。
 
-# 6.2 本地起服务
-make run 2>&1 | tee _analysis/run/stdout.log &
+**解决方案**：GitHub Actions + API 监听 rss / 出版社 newsletter，自动提 PR。
 
-# 6.3 smoke test
-curl -sS http://localhost:8080/health
-```
+**关键参数**：
+- `actions/labeler` 自动打 `new-book` 标签
+- 监听 `oreilly.com/feed/free` 等免费书 RSS
+- 自动检测 `https://github.com/.../free-ebook-day` 模式
 
-**[反例警示]**：跳过 smoke test → 一跑就崩；不看 /proc/PID/fd → 资源泄漏查不出；不打 trace → 链路黑盒。
+**最佳实践**：自动化提 PR 是辅助，主仓 review 还是人工；机器人 PR 单独打 `automated` 标签；避免 spam 一次性提 50 个 PR 引发 reviewer 疲劳。
 
----
+### 模式 12 - 社区治理
 
-## 7. 演进历史（Time Travel）
+**问题场景**：仓库大到一定规模，maintainer 1-2 人处理不过来。
 
-**[点状解析]**：看一个项目的"人生"，比看它"现在"更能学到东西。
+**解决方案**：分层治理：
+- `OWNERS` 文件列主维护者（merge 权限）
+- `MAINTAINERS.md` 列常规贡献者（标签 / 关闭 issue 权限）
+- 各语种 `OWNERS` 子维护者（merge 本语言 PR）
 
-```bash
-git log --oneline --decorate --graph | head -100
-gh release list --limit 20
-```
+**关键参数**：
+- `CODEOWNERS` GitHub 自动 assign
+- 子目录 owner 机制
+- `TRIAGE-ROLES` GitHub 新角色
 
-**已知里程碑**：
-- v0.x 原型：MVP 验证
-- v1.0 稳定：API 冻结
-- v2.0：性能与生态
-- 现状：持续维护/社区化
+**最佳实践**：大仓库主 owner 5-10 人；子语言子 owner 2-3 人；新贡献者通过"前 5 个 PR 全审核"建立信任；设 `good first issue` 标签吸新血。
 
-**[反例警示]**：只看 master 分支 → 错过"为什么不这么写"的讨论；忽略 v1 → v2 的 commit → 错过"推翻重来的理由"；不看 issue → 错过设计权衡。
+### 模式 13 - 跨仓库引用
 
----
+**问题场景**：awesome 系列有 N 个（`awesome-python` / `awesome-go` / `awesome-rust`），跨仓库引用难。
 
-## 8. 质量保障（How It Doesn't Break）
+**解决方案**：互链机制 — `free-programming-books` README 顶部列相关 awesome 列表，awesome 列表底部列 `free-programming-books`。
 
-**[点状解析]**：测试 + CI + Lint + 性能基准，4 道防线。
+**关键参数**：
+- README "Related Projects" 章节
+- 不复制内容只互链（避免维护双份）
+- awesome-list 标记 `awesome` badge
 
-| 维度 | 状态 |
-|---|---|
-| 单测 | ❌ |
-| CI | ✅ |
-| Docker | ❌ |
-| K8s | ❌ |
-| Lint 配置 | 见 无标准配置文件 |
-| 性能基准 | 待验证 |
+**最佳实践**：同类项目互链不互抄；联盟式生态（awesome 系列互相引流）；每个 awesome 列表底部固定位置放相关 awesome 链接。
 
-**[反例警示]**：只看覆盖率不看断言质量 → 100% 覆盖但测了空函数；没 CI → 本地能跑别人拉下来崩；没模糊测试 → parser 永远有边角 case 没覆盖。
+### 模式 14 - 搜索与发现
 
----
+**问题场景**：3 万行 markdown 文件原生搜索体验差（GitHub search 慢、不支持模糊）。
 
-## 9. 生态依赖（Map of the World）
+**解决方案**：
+- GitHub 内置 search（按 path / language 过滤）
+- 部署的 `https://ebookfoundation.github.io/free-programming-books/` 用 lunr.js 索引
+- 第三方工具 `https://www.ossbooks.org/` 镜像搜索
 
-**[点状解析]**：依赖图 = 项目的"供应链"。一个 GPL 依赖毁掉整个商业版。
+**关键参数**：
+- lunr 索引字段：title / author / category
+- 模糊搜索 + 自动补全
+- 高级搜索语法 `category:python level:beginner`
 
-**关键配置文件**：`无标准配置文件`
+**最佳实践**：大列表项目考虑外接 Algolia / Meilisearch 全文搜索；本地用 ripgrep `rg -i 'python' books.md`；避免在仓库内建前端工程（加重维护）。
 
-**依赖合规检查清单**：
-- [ ] 全部 License 是 Apache-2.0（主流开源协议，需查实际仓库） 或更宽松
-- [ ] 无 GPL 传染（AGPL 同理）
-- [ ] 无 3 年未更新的死库
-- [ ] 无已知 CVE
+### 模式 15 - 数据导出与 API
 
-**[反例警示]**：只看直接依赖 → 漏掉间接 GPL；不看 license → 上线后被法务叫停；不看 pushedAt → 用了一个已死 3 年的库。
+**问题场景**：开发者想用编程方式消费这个列表（自己构建"今日推荐书"网站）。
 
----
+**解决方案**：第三方工具定期拉 markdown → 转换 JSON / SQLite，发布到 npm / github pages。
 
-## 10. 生产实践（Battle-Tested）
+**关键参数**：
+- `free-programming-books.json`（社区维护）
+- `books.sqlite`（聚合数据库）
+- `https://api.ossbooks.org/v1/books?lang=zh`
 
-**[点状解析]**：生产里踩过的坑比文档里写得多。
-
-| 实践 | free-programming-books 怎么做的 | 能不能抄 |
-|---|---|---|
-| 配置热更新 | viper / fsnotify (Go) / dotenv (Node) / pydantic (Python) | ✅/❓ |
-| 优雅停服 | signal.NotifyContext + Server.Shutdown | ✅/❓ |
-| 限流 | token bucket / sliding window | ✅/❓ |
-| 链路追踪 | opentelemetry SDK | ✅/❓ |
-| 健康检查 | /healthz + /readyz 双探针 | ✅/❓ |
-| 结构化日志 | zap / logrus / winston 结构化日志 | ✅/❓ |
-
-**[反例警示]**：只看 README 怎么跑 → 上线发现没考虑 K8s readiness；没看优雅停服 → K8s 滚动更新丢请求；没看链路追踪 → 出问题查不到慢在哪。
+**最佳实践**：纯 markdown 不易消费，社区可派生 JSON 镜像；不要主仓加 API（增重维护）；有需求时鼓励派生项目（`free-programming-books-api`）。
 
 ---
 
-## 11. 社区文化（People & Process）
+## 第四段：实战范式
 
-**[点状解析]**：项目能不能长寿，10% 看代码，90% 看人。
+### 模式 16 - 贡献者入职路径
 
-| 维度 | 状态 |
-|---|---|
-| 治理模式 | 待查（GOVERNANCE.md） |
-| 维护者 | 待查（MAINTAINERS.md） |
-| RFC 流程 | 待查（docs/rfcs/） |
-| 沟通渠道 | 待查（README） |
-| 议题活跃 | 350k+ star 量级 |
+**问题场景**：新人不知怎么贡献（提交格式、哪些书可加）。
 
-**[反例警示]**：只看代码不看人 → 投奔 BDFL 跑路项目；不看 issue 响应 → 项目其实已死；不看 RFC → 错过"为什么改 API"的讨论。
+**解决方案**：
+- `CONTRIBUTING.md` 详细文档
+- `good first issue` 标签
+- 审核员友好评论（引导而非指责）
+- 5 个 PR 后解锁更多权限
 
----
+**关键参数**：
+- 平均首次 PR 响应时间 < 24h
+- 评论引导格式（而非 `LGTM`）
+- Discord / Slack 社区（部分 OSS）
 
-## 12. 教训总结（What To Steal / What To Avoid）
+**最佳实践**：每个 OSS 项目应该有"新人友好"的 1 个入口文档（CONTRIBUTING.md）；第一次 PR 体验决定贡献者去留。
 
-### 12.1 必偷的 3 件事
+### 模式 17 - 反垃圾与质量
 
-```markdown
-1. **多语言分类 + 社区编辑**（free-programming-books 的核心）
-   - 实现思路：该方向在 资源列表 领域已被广泛验证，兼顾性能、可维护性与生态
-   - 应用场景：多语言分类 + 社区编辑
-   - 自己项目：可借鉴到 开源 + 周边服务
+**问题场景**：OSS 大仓库必引来 spam PR（推广自家书 / 链接农场）。
 
-2. **多语言分类 + 社区编辑**（架构设计）
-   - 解耦了什么/怎么解耦
-   - 借鉴到自己的分层架构
+**解决方案**：
+- `github-actions[bot]` 自动跑 link quality check
+- 维护者人工 review
+- Spam PR 标记 `invalid` + 锁定 issue
+- `TRIAGE` 角色快速关闭 spam
 
-3. **核心数据流**（性能/可用性）
-   - 关键技巧：性能/可用性关键点
-   - 用到自己的热点路径
-```
+**关键参数**：
+- 黑名单域名列表（spammy hosting）
+- PR 模板强制填"为什么这本书值得收录"
+- 重复链接检查脚本
 
-### 12.2 必避的 3 个坑
+**最佳实践**：大仓库 50% PR 是 spam；CI 过滤 80%，人工 review 20%；保护 maintainer 精力是项目长寿关键。
 
-```markdown
-1. **过度设计**（资源列表 常见）
-   - 症状：抽象层叠层叠
-   - 解决：先跑起来再抽象
+### 模式 18 - 国际化协作
 
-2. **配置硬编码**
-   - 解决：12-factor + 显式配置
+**问题场景**：翻译者来自不同国家，时区不同步，沟通成本高。
 
-3. **同步阻塞调用链**
-   - 解决：context + async/await
-```
+**解决方案**：
+- 全异步（GitHub PR + 评论）
+- 周会（公开 zoom 录屏）
+- 文档英文化（让非英语母语者能参与）
+- BOT 翻译提醒（英文 PR 触发时 @ 各语言 owner）
 
-### 12.3 7 天复刻路线图
+**关键参数**：
+- 主语言：英语
+- 文档：英文 + 部分中文
+- 沟通：GitHub Discussions（非实时）
+- 工具：`weblate` 协作翻译（部分子项目用）
 
-```markdown
-## 7 天复刻路径（以 free-programming-books 为例）
-- D1: 跑起来 → 混个脸熟
-- D2: 读  → 理解启动流程
-- D3: 读核心目录 `docs`, `books`, `courses`, `casts`, `more`, `.github/workflows` → 理解主流程
-- D4: 跑测试 + 改一处 → 理解可扩展点
-- D5: 自己写个 200 行的 mini-free-programming-books（只保留核心）
-- D6: 把 多语言分类 + 社区编辑 用到自己的项目
-- D7: 写一篇博客把 5 天串起来
-```
+**最佳实践**：异步为主 + 同步为辅；时区友好（公开会议录屏 + 字幕）；bot 提醒而不是私聊催办。
 
-### 12.4 项目打分卡
+### 模式 19 - 治理与决策
 
-| 维度 | 1 分 | 3 分 | 5 分 | free-programming-books 自评 |
-|---|---|---|---|---|
-| 代码质量 | 凑合 | 工业级 | 教科书 | ⭐⭐⭐ |
-| 文档完整 | 没有 | 有 README | 完整 + RFC | ⭐⭐⭐ |
-| 社区活跃 | 死了 | 有 issue 响应 | 繁荣 | ⭐⭐⭐⭐⭐ |
-| 设计优雅 | 能用 | 合理 | 艺术 | ⭐⭐⭐⭐ |
-| 可借鉴 | 抄不抄无所谓 | 部分可抄 | 必抄 | ⭐⭐⭐⭐ |
+**问题场景**：项目重大决策（接受哪种语言版本 / 移到 GitHub Org / 加新分类）需要共识。
 
----
+**解决方案**：
+- `GOVERNANCE.md` 公开治理文档
+- 公开 RFC（GitHub Discussions → Issue → PR）
+- 维护者投票（多数同意）
+- 创始人有最终决定权（如 2 票僵局）
 
-## 13. 学习萃取（Cheat Sheet）
+**关键参数**：
+- 维护者名单 `MAINTAINERS.md`
+- 决策日志 `docs/decisions/`
+- 投票通过率 2/3
 
-```markdown
-# 《free-programming-books》学习卡片
+**最佳实践**：治理透明 → 决策可追溯 → 减少争吵；公开 RFC 比私下讨论好；多数同意 + 创始人兜底。
 
-## 一句话价值
-> 免费编程书籍大全
+### 模式 20 - 长期可持续性
 
-## 3 个核心洞察
-1. 多语言分类 + 社区编辑：该方向在 资源列表 领域已被广泛验证，兼顾性能、可维护性与生态
-2. 多语言分类 + 社区编辑：核心数据流
-3. 性能/可用性关键点：可直接借鉴到自己的项目
+**问题场景**：OSS 项目 3-5 年后 maintainer 倦怠，PR 堆积，无人回应。
 
-## 5 段必读代码
-1.  — 启动流程
-2. scripts/rtl_ltr_linter.py — 核心实现
-3.  — 关键算法
-4.  — 性能优化
-5.  — 边界处理
+**解决方案**：
+- 培养接班人（每个 owner 至少 1 个 co-owner）
+- 模块化权限（子目录 owner）
+- 定期清理（关闭超 6 月未回复 issue）
+- 项目转移（如个人 → Foundation）
 
-## 1 个反模式
-- 资源列表 常见过度设计
+**关键参数**：
+- 6 月未活动 PR 自动关闭
+- 季度健康度报告
+- Foundation 接管机制（EbookFoundation）
 
-## 1 个可复用模式
-- 多语言分类 + 社区编辑 实现方式
-
-## 我能马上用的 3 件事
-1. [ ] 把 多语言分类 + 社区编辑 拆成 3 个步骤
-2. [ ] 学 多语言分类 + 社区编辑 写一个 mini-free-programming-books
-3. [ ] 把 核心数据流 用到自己的 开源 + 周边服务
-```
-
----
-
-## 14. 项目特点速查（资源列表 类）
-
-> free-programming-books 作为 资源列表 类项目，它的独特看点：
-
-- **多语言分类 + 社区编辑** → 该方向在 资源列表 领域已被广泛验证，兼顾性能、可维护性与生态
-- **多语言分类 + 社区编辑** → 核心数据流
-- **性能/可用性关键点** → 可借鉴的工程实践
-
-**与同类的对比**：
-vs 其他 资源列表 方案：特点突出
-
----
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-|---|---|
-| 文件 | 项目\free-programming-books-main.zip |
-| 大小 | 0.8 MB |
-| 总文件 | 245 |
-| 解析时间 | 2026-06-01 |
-
----
-
-## 一句话总结
-
-> 解析 free-programming-books = 计划书 + 框架图 + 多语言分类 + 社区编辑 + 跑起来 + 偷过来。
+**最佳实践**：每个 OSS maintainer 都要有"退出计划"；把项目养到 3-5 年后能自运行（不依赖个人）才算成功；商业公司接手（GitHub → Foundation）可延长寿命。
