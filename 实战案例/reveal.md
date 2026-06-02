@@ -1,494 +1,649 @@
----
-title: reveal
-type: frontend-framework
-lang: typescript
-stars: 70k+
-date: 2026-06-02
-tags:
-  - 开源项目
-  - 演示框架
-  - 前端
-  - 浏览器
+# reveal.js - 演示文稿框架的 DOM 即真相范式
+
+**GitHub**: hakimel/reveal.js
+**Star**: 70k+
+**语言**: TypeScript / JavaScript
+**主题**: 演示框架 / Controller-per-aspect / FLIP / 多视图同源
+**适用场景**: 浏览器内 HTML 演示文稿、技术演讲、教育课件、需要"分享链接恢复进度"的场景
+
 ---
 
-# reveal · 项目深度解析
+## 第一段：核心架构与工厂函数范式
 
-> 一句话定位：reveal.js 是一个"开箱即用"的 HTML 演示文稿框架，让任何拥有浏览器的人免费做出漂亮的演示稿。
-> 来源：G:\实战案例\GitHub顶尖项目\reveal\
+### 模式 1：工厂函数 + 闭包 namespace
 
-## 写在前面：解析哲学
+**问题场景**：一个 2964 行的主控制器要管理 18 个子模块（翻页、键盘、URL、动画……），用 ES class 继承会形成深继承链；用 ES module 多文件又需要解决循环依赖。如何用最朴素的方式组织一个 3k 行单文件框架？
 
-本笔记遵循"先骨架后血肉，先 What 后 Why，最后 How to steal"的解析路径。reveal.js 是一个非常"老牌"且"长寿"的项目（2011 年至今），代码风格横跨 ES5/ES2020+（同时提供 `dist/reveal.js` ES5 版和 `dist/reveal.mjs` ESM 版），并自带一个 React 适配层。这意味着它既要兼容极老浏览器（IE11 注释里仍有 `Avoid .remove() with multiple args for IE11 support`），又要用上现代 Vite/TypeScript 工具链。我们从架构、代码、运行、演进、生态逐层剥开它。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：仓库 `hakimel/reveal.js`（当前快照 `version: 6.0.1`）
-2. **分类**：演示框架 / 前端库 / 单页 WebApp / 自带构建系统
-3. **问题清单**：
-   - 它如何在 DOM 上做"幻灯片翻页"？
-   - 它怎么支持 Markdown/Math/Highlight 三种语法扩展？
-   - 它怎么做到"FLIP 自动动画"（auto-animate）？
-   - 它怎么兼容 PDF 打印、Scroll 阅读、Overview 缩略图三种视图？
-   - React 包怎么跟主库解耦？
-4. **速查表**：
-   - 入口：`js/reveal.js`（2964 行工厂函数）
-   - 类型入口：`js/index.ts`
-   - 构建：`vite + tsc + sass`
-   - 测试：`qunit + node-qunit-puppeteer`
-5. **锁定 commit**：分析时使用 `package.json` 中 `version: 6.0.1`
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-| --- | --- |
-| 项目名 | reveal.js（仓库：`hakimel/reveal.js`） |
-| 定位 | 浏览器内运行的 HTML 演示文稿框架 |
-| 核心问题 | 传统 PPT/Keynote 难分发、难分享、难版本化；HTML 演示工具又太零散 |
-| 目标用户 | 开发者、技术演讲者、教育者 |
-| 商业模式 | 开源 MIT + 商业产品 slides.com 配套 GUI 编辑器 |
-| 复刻难度 | 中等（核心 ~3k 行，但配套 SCSS 主题 + 6 个插件 + React 适配层工程量翻倍） |
-| 状态 | 活跃维护（持续 14 年） |
-| 团队 | Hakim El Hattab（创始）+ 社区贡献者 |
-| 关键里程碑 | 2011 立项 / 2013 走红 / 2017 4.0 重写插件系统 / 2023 Scroll View / 2026 v6.0.1 |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-点状解析：仓库顶层是**双产物**——根目录是"vanilla JS 包"，`react/` 子目录是"独立 React 包"。两个包通过 `peerDependencies: "reveal.js"` 解耦，React 包只调 `import Reveal from 'reveal.js'`，不直接读内部文件。
-
-```mermaid
-mindmap
-  root((reveal.js v6))
-    js
-      reveal.js (2964行核心)
-      controllers 18个
-        autoanimate (FLIP)
-        fragments
-        keyboard
-        location (URL hash)
-        scrollview
-        plugins
-        ...
-      utils
-        util
-        device
-        loader
-      config.ts (类型+默认)
-      index.ts (旧版API壳)
-    plugin 独立6个
-      markdown
-      highlight
-      math (katex/mathjax2-4)
-      notes
-      search
-      zoom
-    react 独立子包
-      components
-        Deck Slide Fragment
-        Stack Markdown Code
-      useEffect 管理生命周期
-    css 17个主题
-      league/white/black
-      blood/dracula/sky...
-    test QUnit + Puppeteer
-    scripts
-      add-banner zip build-es5
-```
-
-关键入口：
-
-- **代码入口**：`js/reveal.js`（默认导出 `function( revealElement, options )`）
-- **类型入口**：`js/reveal.d.ts`、`js/config.ts`
-- **React 入口**：`react/src/components/deck.tsx`
-- **样式入口**：`css/reveal.scss`（主样式）+ `css/theme/*.scss`（17 主题）
-- **HTML 入口**：`index.html`（demo）+ `demo.html`
-- **构建入口**：`vite.config.ts`、`vite.config.styles.ts`、每个插件一个 `vite.config.ts`
-
-## 3. 项目画像（Profile）
-
-| 维度 | 数据 |
-| --- | --- |
-| 总文件数 | ~183（不含 `node_modules`） |
-| 主语言 | TypeScript 6.0.2（核心 `js/`，辅助 `plugin/`，`react/`） |
-| 涉及语言 | TS / JS / SCSS / MD / HTML |
-| Star | 70k+（GitHub 头部） |
-| License | MIT |
-| Docker | 无（纯前端，无需容器） |
-| K8s | 无 |
-| CI | GitHub Actions（`.github/workflows/test.yml` + `spellcheck.yml`） |
-| 测试 | 有（QUnit + node-qunit-puppeteer 跑 16+ HTML 测试页） |
-| 节点要求 | `>=20.19.0` |
-| 关键运行时依赖 | `marked`（Markdown）、`highlight.js`（代码高亮）、`fitty`（文字自适应）、`jszip`（打包） |
-| 关键构建依赖 | `vite ^8.0.3`、`esbuild ^0.28.0`、`sass ^1.98.0` |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-点状解析：reveal.js 用了**"Controller-per-aspect"**模式，一个 `Reveal` 闭包持有 18 个 Controller 实例，每个 Controller 只关心一件事（翻页、键盘、URL、片段……），通过 `this.Reveal.getXxx()` 共享状态。这与 Redux/MobX 的"单一 store + 多个切片"思想类似，但实现零依赖。
-
-```mermaid
-flowchart LR
-    User[用户操作] --> Reveal[Reveal 闭包]
-    Reveal --> C1[SlideContent]
-    Reveal --> C2[Fragments]
-    Reveal --> C3[Keyboard]
-    Reveal --> C4[Location]
-    Reveal --> C5[AutoAnimate]
-    Reveal --> C6[Backgrounds]
-    Reveal --> C7[Controls]
-    Reveal --> C8[ScrollView]
-    Reveal --> C9[Plugins]
-    Reveal --> C10[Notes]
-    Reveal --> ...
-    Plugins --> MD[markdown plugin]
-    Plugins --> HL[highlight plugin]
-    Plugins --> MTH[math plugin]
-    Plugins --> NOTES[notes plugin]
-    Plugins --> SRCH[search plugin]
-    Plugins --> ZM[zoom plugin]
-    Reveal --> DOM[(DOM 树<br/>.reveal>.slides>section*)]
-```
-
-**核心看点**：
-
-1. **工厂函数 + 闭包作为 namespace**：`export default function( revealElement, options )` 内部定义 18 个 `let` 变量，外部以对象方法暴露（`Reveal.slide()`、`Reveal.next()`…），没有 `class`，没有继承，纯对象组合。
-2. **Controller 解耦**：每个 Controller 收到 `Reveal` 引用，自己读 `this.Reveal.getConfig()` 自己写 `this.Reveal.dispatchEvent()`，不互相调用，实现"广播 + 拉取"的事件模型。
-3. **插件三态机**：`Plugins` 类的 `state` 字段在 `idle -> loading -> loaded` 三态间转换，先用 `Promise` 串行初始化所有同步插件，再 `loadAsync` 加载 async 依赖，确保就绪顺序。
-
-**核心架构 3 句话（ADR 关键设计决策）**：
-
-1. **拒绝类继承，采用闭包 + Controller 注入**：所有交互能力以 `new XxxController(Reveal)` 形式注入到工厂函数闭包，避免深继承链和 `super()` 调用的复杂性——见 `js/reveal.js` 107-125 行一次性 `new` 18 个 Controller。
-2. **DOM 即数据源**：slides 内容完全来自用户写的 HTML，框架只做"标记"（`past`/`present`/`future`/`hidden`/`aria-hidden`），不维护内存中的 slide 模型——这让 Markdown 插件可以**事后**注入节点，URL 反序列化也可以直接通过 `[data-id]` 查 DOM。
-3. **多视图同源**：`print`/`scroll`/`reader`/`overview` 4 种视图共用同一棵 DOM 树，通过 `viewDistance` 性能开关（`config.viewDistance` + `mobileViewDistance`）和 `updateSlidesVisibility()` 动态 `slideContent.load()/unload()` 卸载远处 slide——见 `js/reveal.js` 1822-1899 行的 `updateSlidesVisibility`。
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-打开 `js/reveal.js`，前三屏就是 80% 的"为什么"：
+**解决方案**：`export default function( revealElement, options )` 工厂函数 + 闭包作 namespace。内部 `let` 18 个 Controller 实例 + 内部状态变量，对外返回 `Reveal` 对象暴露 API。无 `class`、无继承、无循环依赖问题。
 
 ```js
-// 工厂函数 + 闭包命名空间（第 40 行）
+// js/reveal.js:40-126
 export default function( revealElement, options ) {
-    // ... 200 行内部状态 ...
+    // ... 200 行内部状态（let config, indexh, indexv, ...）
     slideContent = new SlideContent( Reveal ),
     slideNumber = new SlideNumber( Reveal ),
     jumpToSlide = new JumpToSlide( Reveal ),
     autoAnimate = new AutoAnimate( Reveal ),
-    // ... 共 18 个 Controller ...
+    // ... 共 18 个 Controller 一次性 new
     function initialize( initOptions ) { ... }
     function start() { ... }
     return { initialize, slide, next, prev, ... }   // 公共 API
 }
 ```
 
-### 5.2 单文件分析卡
+**关键参数**：
+- 入口签名：`(revealElement, options) => Reveal`（DOM 元素 + 配置）
+- 内部状态：`let config, indexh, indexv, indexf`（横向/纵向/片段索引）
+- Controller 列表：`slideContent / slideNumber / jumpToSlide / autoAnimate / backgrounds / controls / fragments / keyboard / location / notes / overview / plugins / pointer / print / scrollview / slideChores / touch / focus`
+- 公共 API：返回对象解构 30+ 方法（`slide` / `next` / `prev` / `configure` / `destroy` ...）
 
-**File 1: `js/reveal.js`（2964 行，主控制器）**
+**最佳实践**：闭包 namespace 适合"一次实例化 + 长期持有"的对象（演示 deck、编辑器实例）；调试栈全是 "anonymous" 是代价，换 ES class + private field 更友好；新交互 = 加新 Controller，不改老 Controller。
 
-- **WHAT**：核心 `Reveal` 工厂函数
-- **WHY（关键设计）**：
-  - **配置优先级合并**（第 151 行）：
-    ```js
-    config = { ...defaultConfig, ...config, ...options, ...initOptions, ...Util.getQueryHash() }
-    ```
-    5 层合并（默认值 → 构造函数前 configure → 构造选项 → initialize 选项 → URL hash），URL 胜出，便于做"分享带状态链接"。
-  - **`setViewport()` 区分 embedded vs full-page**（177-188 行）：embedded deck 用 `.reveal-viewport` 容器，full-page 用 `<body>`，从而可以多个 deck 嵌在一页——这是 4.0 重写后的关键变更。
-  - **`setupScrollPrevention()` 用 `setInterval(..., 1000)`**（459-468 行）：注释明确说"没办法用 CSS 解决（iframe 焦点 / 文字选择溢出），只能每秒纠正 scrollTop/scrollLeft"，典型的"承认现实"型 hack。
+### 模式 2：Controller-per-aspect 模式
 
-**File 2: `js/controllers/autoanimate.js`（627 行，FLIP 动画核心）**
+**问题场景**：翻页、键盘、URL、片段、动画……如果全部堆在一个大对象里，3k 行后必然是"谁动了我的 state"；如何拆分关注点又不引入复杂的消息总线？
 
-- **WHAT**：在两张带 `data-auto-animate` 的 slide 间自动过渡
-- **WHY（FLIP 技术）**：
-  1. 测量 from-slide 元素位置 `getBoundingClientRect()`（First）
-  2. 设 to-slide 元素 transform = (from - to) 偏移（Last）
-  3. 改 `data-auto-animate="running"` 触发 CSS transition（Invert/Play）
-  4. 配套 `data-auto-animate-unmatched="false"` 关掉未匹配元素
-- **WHY（CSS 注入优化）**：第 99 行 `this.autoAnimateStyleSheet.innerHTML = css.join( '' )` 一次性写入——注释说"Setting the whole chunk of CSS at once is the most efficient way; sheet.insertRule is multiple factors slower"。
+**解决方案**：每个 Controller 是独立类，构造时接收 `Reveal` 引用，自己读 `this.Reveal.getConfig()`、自己写 `this.Reveal.dispatchEvent()`，不互相调用——形成"广播 + 拉取"的事件模型。
 
-**File 3: `js/controllers/plugins.js`（254 行，插件加载器）**
+```js
+// js/controllers/keyboard.js（核心结构）
+export default class Keyboard {
+    constructor( Reveal ) {
+        this.Reveal = Reveal
+        // 读 config
+        this.config = this.Reveal.getConfig().keyboard
+        // 绑定事件
+        this.Reveal.getRevealElement().addEventListener( 'keydown', this.onKeyDown, false )
+    }
+    onKeyDown( event ) {
+        // 调 Reveal.next() / prev()
+        if ( event.keyCode === 39 ) this.Reveal.next()
+    }
+}
+```
 
-- **WHAT**：加载 `Reveal.initialize({ plugins, dependencies })` 里的依赖
-- **WHY（双轨加载）**：
-  - **同步依赖**：`scripts[]` 数组，挨个 `loadScript()` 并发加载，等全部完成才 `initPlugins()`
-  - **异步依赖**：`asyncDependencies[]` 数组，在 `loadAsync()` 阶段才加载，不阻塞首屏——典型例子是 Highlight.js 太大，演讲时再加载
-- **WHY（串行 init）**：第 124-146 行的 `initNextPlugin()` 是显式串行（不是 `Promise.all`），因为插件之间可能有依赖（如 markdown 插件先跑出 slide 树，math 插件后跑公式渲染）。
+**关键参数**：
+- Controller 构造：`new XxxController( Reveal )`（不传具体依赖，传整个 Reveal 引用）
+- 通信方式：`this.Reveal.getConfig()` / `this.Reveal.getRevealElement()` / `this.Reveal.dispatchEvent()` / `this.Reveal.on()`
+- 生命周期：随 Reveal 工厂函数 new 出来 + 绑定事件，destroy 时各自清理
+- 数量：v6.0.1 共 18 个 Controller（`js/controllers/` 目录）
 
-**File 4: `js/controllers/location.js`（249 行，URL 同步）**
+**最佳实践**：Controller 持有 `this.Reveal` 引用（不互相 import，避免循环依赖）；Controller 之间不直接调方法（用事件总线）；新功能 = 加新 Controller 文件 + 在 `reveal.js` 第 107-125 行注册一次。
 
-- **WHAT**：把 `indexh/indexv/f` 写到 URL hash，读时反向解析
-- **WHY（命名链接支持）**：第 43-99 行 `getIndicesFromHash()` 优先尝试命名链接（`#/my-slide/2`），退路是数字索引（`#/3/1`），用 `document.getElementById( decodeURIComponent(name) )` 查 DOM——支持 Unicode slide 名。
-- **WHY（Chrome 缩略图 bug 延迟写入）**：`MAX_REPLACE_STATE_FREQUENCY = 1000`（毫秒），第 129 行 `writeURL(delay)` 的 delay 参数让 hash 写入有去抖。
+### 模式 3：5 层配置合并
 
-**File 5: `js/controllers/scrollview.js`（951 行，Scroll 模式）**
+**问题场景**：配置可能来自 5 个地方：默认值、用户全局配置、构造选项、initialize 选项、URL hash。手动合并易错；URL 优先级最高（"分享链接带状态"）怎么实现？
 
-- **WHAT**：把"全屏翻页"模式转为"长页面滚动"模式
-- **WHY（保存/恢复 innerHTML）**：
-  ```js
-  this.slideHTMLBeforeActivation = this.Reveal.getSlidesElement().innerHTML
-  ```
-  激活前先备份原始 HTML，以便切回 normal 视图时恢复——因为 Scroll 视图会重写 DOM 结构（包 `.scroll-page` 容器）。
-- **WHY（auto-animate slide 合并到同一 page）**：第 69-74 行的 `if( shouldAutoAnimateBetween )` 把 auto-animate 序列的 slide 放到同一 `.scroll-auto-animate-page`，避免滚动时动画跨页"断掉"。
+**解决方案**：`js/reveal.js:151` 一行 spread 5 层合并：URL hash 胜出（最后覆盖），便于做"分享带状态链接"。
 
-**File 6: `js/controllers/keyboard.js`（415 行，键盘）**
+```js
+// js/reveal.js:151
+config = { ...defaultConfig, ...config, ...options, ...initOptions, ...Util.getQueryHash() }
+// 5 层合并：默认 → 全局configure → 构造选项 → initialize → URL hash
+```
 
-- **WHAT**：把 `keyCode` 映射到 `Reveal.next/prev/...`
-- **WHY（多条件阻断）**：第 178 行 `if (activeElementIsCE || activeElementIsInput || activeElementIsNotes || unusedModifier) return;`——只有当焦点不在 input/textarea/contenteditable 上，且没有多余 modifier 键时才响应，避免破坏演讲中的输入场景。
+**关键参数**：
+- 5 层优先级（从低到高）：`defaultConfig` < 全局 `configure({...})` < 构造函数 `options` < `initialize({...})` < `Util.getQueryHash()`
+- 内部合并：用 ES6 spread（不是 deep merge，是 shallow merge）
+- 深度配置：需要用户自己 deep merge（如 `theme` 是对象，用户手写 `{...default, ...user}`）
+- URL 解析：`Util.getQueryHash()` 读 `location.hash` 转对象
 
-**File 7: `react/src/components/deck.tsx`（257 行，React 适配）**
+**最佳实践**：多层 spread 是浅合并（顶层 key 覆盖），深层 key 需自己深合并；URL hash 胜出 = "分享链接 = 分享进度" 是杀手锏；多 deck 同页时 `configure({...})` 调用时机要清晰。
 
-- **WHAT**：把 Reveal 包装为 React 组件
-- **WHY（React StrictMode 兼容）**：第 140-150 行的卸载函数把 `destroy()` 推迟到 `Promise.resolve().then(...)`（下一微任务），并用 `teardownRequestRef` 计数器判断"这个卸载是不是被 StrictMode 的双调用假动作触发的"——避免 StrictMode 下误销毁活跃实例。
-- **WHY（WeakMap 做 slide id 分配）**：第 108-109 行 `slideIdsRef = useRef(new WeakMap())` + `nextSlideIdRef = useRef(1)`，把 React 节点转成稳定数字 id，方便用 `JSON.stringify()` 做"slide 结构签名"做 diff。
+### 模式 4：DOM 即数据源
 
-### 5.3 设计模式
+**问题场景**：传统 SPA 维护内存中的 slide 数组 + DOM 双向同步，每次新增/删除 slide 要双向更新；Markdown 插件、URL 反序列化都需要"知道当前 slide 结构"——如何让数据源唯一？
 
-| 模式 | 体现 |
-| --- | --- |
-| Facade | `Reveal` 工厂函数闭包，隐藏 18 个 Controller |
-| Strategy | 4 个 View（normal/scroll/print/reader）共用同一套 API |
-| Observer | `Reveal.on/off/dispatchEvent` + Controller 间 `dispatchEvent` |
-| Mediator | `Reveal` 实例充当中介，Controller 之间不直接调用 |
-| Plugin | `Plugins` 类 + `loadScript()` + `init()` 钩子 |
-| FLIP | `AutoAnimate` 的 First/Last/Invert/Play 动画 |
-| Module Reveal | 工厂函数内 `let` 变量 + 返回 `Reveal` 对象 |
+**解决方案**：slides 内容完全来自用户写的 HTML，框架**不维护内存模型**，只做"标记"（`past/present/future/hidden/aria-hidden`）。所有扩展（Markdown、URL、auto-animate）通过读 DOM 参与。
 
-### 5.4 反模式
+```js
+// js/reveal.js:1709-1762 — 状态标记循环
+function updateSlidesVisibility() {
+    for ( let i = 0; i < slides.length; i++ ) {
+        // 通过 class 表达状态
+        slides[i].classList.toggle( 'past', i < indexh )
+        slides[i].classList.toggle( 'present', i === indexh )
+        slides[i].classList.toggle( 'future', i > indexh )
+    }
+}
+// 读当前 slide：document.querySelector('.slides > .present')
+// URL 反序列化：document.getElementById(decodeURIComponent(name))
+```
 
-- **Closure-as-namespace** 在 2964 行规模下开始吃瘪——调试时栈里只能看到 "anonymous"，所有 `let config`、`let indexh` 共享一个作用域，没有命名空间隔离。
-- **`<div class="reveal">` 是硬约定**：第 132 行 `throw 'Unable to find presentation root'` 直接抛字符串而非 `Error`，堆栈里只能看到 `at reveal.js:132`，错误类型不明确。
-- **CSS 类名即状态机**：`past/present/future` 三个 class 在每张 slide 上都设置（1709-1762 行循环所有 slide），slide 多时（>100）有性能问题。
+**关键参数**：
+- 状态表达：CSS class `past` / `present` / `future` / `hidden`
+- slide 查询：`document.querySelector('.slides > .present')`（无内存索引）
+- 命名查找：`document.getElementById('my-slide')`（支持 Unicode slide 名）
+- 性能问题：>100 张 slide 时循环所有 slide 标记 class 有性能开销
 
-### 5.5 独特看点
+**最佳实践**：DOM 即数据源 = "单一真相源"，避免双向同步 bug；缺点是 >100 slide 时纯 class 切换有性能问题（考虑 `data-state` 属性 + 委托）；扩展插件统一通过 querySelector 读 DOM。
 
-1. **多语言同源产物**：`dist/reveal.js`（UMD ES5）+ `dist/reveal.mjs`（ES Module）+ `dist/reveal.d.ts`（类型），三件套通过 `package.json#exports` 暴露 7 个子路径（`./plugin/markdown` 等），现代打包器和老 IE 都能用。
-2. **URL 即状态**：每个 `indexh/indexv/fragment` 都可写回 hash，分享链接 = 分享进度，配合 `print-pdf` query 自动切 PDF 模式。
-3. **视图化打印**：`view: 'print'` 模式把所有 slide 设 `present`、调大 `viewDistance = Number.MAX_VALUE`，让浏览器原生 PDF 打印输出"幻灯片纸"。
+### 模式 5：事件总线 on/off/dispatchEvent
 
-## 6. 运行机制（Bring It Up）
+**问题场景**：18 个 Controller 互相之间要通信（翻页后通知 Overview 缩略图更新、URL 同步、片段更新……），如果 A 直接调 B 的方法就是紧耦合；如何解耦？
 
-启动脚本（`package.json#scripts`）：
+**解决方案**：`Reveal` 充当 Mediator，提供 `on(event, cb)` / `off(event, cb)` / `dispatchEvent(type, args)` 三个 API。所有 Controller 通过事件订阅和广播。
+
+```js
+// js/reveal.js 内置事件总线
+Reveal.on( 'slidechanged', ( event ) => {
+    // event.indexh, event.indexv, event.previousSlide, event.currentSlide
+} )
+Reveal.on( 'fragmentshown', ( event ) => { ... } )
+Reveal.on( 'overviewshown', () => { ... } )
+// Controller 内部广播
+this.Reveal.dispatchEvent( 'slidechanged', { indexh, indexv, previousSlide, currentSlide } )
+```
+
+**关键参数**：
+- 事件类型：`slidechanged` / `fragmentshown` / `fragmenthidden` / `overviewshown` / `overviewhidden` / `paused` / `resumed` / `ready` / `destroyed`
+- 订阅方式：`Reveal.on(type, listener)` 返回 unsubscribe 函数
+- 广播 payload：`dispatchEvent(type, data)` 第二参数透传给 listener
+- 内部使用：所有 Controller 在 `slide()` 后广播 `slidechanged`，Overview / Location / Notes 各自订阅
+
+**最佳实践**：跨 Controller 通信 = 事件总线（不是直接方法调用）；外部用户也能订阅（写插件用）；事件 payload 命名要稳定（`indexh` / `indexv` 用了 14 年没改过）。
+
+---
+
+## 第二段：翻页与视图系统
+
+### 模式 6：SlideContent 与翻页算法
+
+**问题场景**：键盘 `→` 翻页、触摸滑动翻页、URL `#/3/1` 直接定位、Overview 缩略图点击跳转——多源输入如何统一到同一个"翻页"操作？
+
+**解决方案**：`SlideContent` Controller 负责"翻页算法"本身：维护 `indexh / indexv / indexf`（横向/纵向/片段索引），`slide(h, v, f)` 是唯一改 state 的入口。键盘/触摸/URL 都最终调 `Reveal.slide()`。
+
+```js
+// js/reveal.js:slide() — 翻页主入口
+function slide( h, v, f, o ) {
+    // 边界检查
+    if ( !overviewActive() && h !== undefined && !isVerticalSlide( currentSlide ) ) {
+        h = constrainH( h )   // 0 ≤ h < horizontalSlides.length
+    }
+    // 更新索引
+    indexh = h
+    indexv = v ?? 0
+    indexf = f ?? -1
+    // 广播
+    dispatchEvent( 'slidechanged', { indexh, indexv, previousSlide, currentSlide } )
+    return currentSlide
+}
+```
+
+**关键参数**：
+- 三维索引：`indexh`（横向）/ `indexv`（纵向 slide 栈）/ `indexf`（片段步骤）
+- 边界约束：`constrainH(h)` / `constrainV(v)` 防止溢出
+- 唯一入口：`slide()` 内部处理所有翻页逻辑，键盘/触摸/URL 都调它
+- 返回值：返回 `currentSlide` DOM 节点（链式判断）
+
+**最佳实践**：翻页算法 = 单一函数 + 单一状态；输入源（键盘/触摸/URL）只调不实现；`slide()` 返回 DOM 节点是"翻页成功的副作用"（链式判断）。
+
+### 模式 7：Fragments 步骤控制
+
+**问题场景**：一张 slide 上有 5 个 bullet point，演讲者希望逐步显示（前一个出现后一个再出现），不是一次性全显。Markdown 写 `<!-- .element: class="fragment" -->` 怎么映射？
+
+**解决方案**：`Fragments` Controller 扫描 slide 内 `.fragment` 元素，按 DOM 顺序编号。`navigateFragment(direction)` 控制 next/prev 步骤，配合 `data-fragment-index` 排序。
+
+```js
+// js/controllers/fragments.js 核心
+function navigateFragment( direction ) {
+    const fragments = currentSlide.querySelectorAll( '.fragment' )
+    if ( direction > 0 && indexf < fragments.length - 1 ) {
+        indexf++
+        fragments[indexf].classList.add( 'visible' )
+    } else if ( direction < 0 && indexf >= 0 ) {
+        fragments[indexf].classList.remove( 'visible' )
+        indexf--
+    }
+}
+// HTML 写法
+// <li class="fragment">First point</li>
+// <li class="fragment">Second point</li>
+```
+
+**关键参数**：
+- 元素标记：CSS class `fragment` + 可选 `data-fragment-index` 显式排序
+- 状态：每个 fragment 有 `visible` class（逐步添加）
+- 索引：当前步骤 `indexf`（-1 = 全部隐藏）
+- 跨 slide：翻页时 `indexf` 重置
+
+**最佳实践**：Markdown 插件通过 `marked` 渲染时为每个 list item 加 `class="fragment"`；复杂动画用 `data-fragment-style="appear"` / `"fade-up"` 选动画类型；不要超过 10 个 fragment（演讲节奏失控）。
+
+### 模式 8：Keyboard 多条件阻断
+
+**问题场景**：用户在演讲中按 `→` 想翻页，但可能焦点在 speaker notes 的 input 框、或者按了 `Ctrl+→` 想在 word 间跳转——键盘事件不能"无脑"响应。
+
+**解决方案**：`Keyboard` Controller 监听 keydown，第 178 行多条件阻断：焦点在 input/textarea/contenteditable / 多余 modifier 键 / Notes 窗口打开时，全部 return。
+
+```js
+// js/controllers/keyboard.js:178
+onKeyDown( event ) {
+    const activeElementIsCE = document.activeElement?.isContentEditable
+    const activeElementIsInput = ['INPUT','TEXTAREA','SELECT'].includes( document.activeElement?.tagName )
+    const activeElementIsNotes = document.activeElement?.classList?.contains( 'speaker-notes' )
+    const unusedModifier = ( event.shiftKey && event.keyCode < 48 )   // shift+letter 是合法修饰
+    if ( activeElementIsCE || activeElementIsInput || activeElementIsNotes || unusedModifier ) return
+    // 真正处理
+    if ( event.keyCode === 39 ) this.Reveal.next()
+}
+```
+
+**关键参数**：
+- 阻断条件：4 个 OR（contenteditable / form input / speaker notes / 异常 modifier）
+- 修饰键容忍：shift+letter 是合法组合（不用阻断）
+- 焦点检测：`document.activeElement` 实时读
+- 键位映射：`keyCode === 39` → `→` / `keyCode === 32` → space / `B` 暂停 / `F` 全屏 / `S` 打开 notes
+
+**最佳实践**：键盘事件"少响应"原则（误触发比不响应更糟）；同时监听 keyup 防止长按重复触发；自定义键位暴露 `keyboard: { 39: 'next', ... }` 配置。
+
+### 模式 9：ScrollView 备份/恢复 innerHTML
+
+**问题场景**：演示有两种"看"的方式——全屏翻页（normal）和长页面滚动（scroll 阅读模式）。两种模式的 DOM 结构不同（scroll 要把 slide 重组成 page），切回 normal 时怎么恢复原始结构？
+
+**解决方案**：`ScrollView` Controller 在激活时**备份**原始 innerHTML，重组 DOM（包 `.scroll-page` 容器 + auto-animate 合并 page）；切回 normal 时**恢复**备份。
+
+```js
+// js/controllers/scrollview.js:79
+this.slideHTMLBeforeActivation = this.Reveal.getSlidesElement().innerHTML
+// 激活时：备份原始 HTML
+// this.Reveal.getSlidesElement().innerHTML = this.slideHTMLBeforeActivation   // 恢复
+// 重组：每个 slide 包 .scroll-page
+// auto-animate slide 合并到同一 page（避免动画跨页断掉）
+if ( shouldAutoAutoAnimateBetween ) {
+    page = appendAutoAnimatePages( page, slides )
+}
+```
+
+**关键参数**：
+- 备份时机：scrollview 激活前
+- 备份位置：`slideHTMLBeforeActivation` 实例字段
+- 恢复时机：scrollview 失活
+- auto-animate 合并：第 69-74 行 `shouldAutoAnimateBetween` 把动画序列 slide 放同一 `.scroll-auto-animate-page`
+- 文件大小：scrollview.js 951 行（v6.0.1 是最长的 Controller 之一）
+
+**最佳实践**：状态切换前**先备份**比"再构造一次"快（避免重新执行 Markdown 渲染）；DOM 重组后要重置 scroll 位置；auto-animate 在 scroll 模式要特殊处理（合并 page）。
+
+### 模式 10：多视图同源 + viewDistance 性能开关
+
+**问题场景**：`normal/print/scroll/reader/overview` 5 种视图共用同一棵 DOM 树，远处 slide 渲染浪费 CPU/内存；>100 slide 时每张都设 `past/present/future` 循环可见。
+
+**解决方案**：`viewDistance: 3`（默认）+ `mobileViewDistance: 2` 控制"激活可见 slide 范围"；超过范围的 slide 调 `slideContent.load()/unload()` 卸载到 placeholder。
+
+```js
+// js/reveal.js:1822-1899 updateSlidesVisibility
+function updateSlidesVisibility() {
+    const viewDistance = isMobileDevice ? config.mobileViewDistance : config.viewDistance
+    for ( let i = 0; i < slides.length; i++ ) {
+        const distance = Math.abs( i - indexh )
+        if ( distance < viewDistance ) {
+            slideContent.load( slides[i] )   // 渲染
+        } else {
+            slideContent.unload( slides[i] )  // 卸载
+        }
+        // 永远更新 class（past/present/future）
+        slides[i].classList.toggle( 'past', i < indexh )
+        slides[i].classList.toggle( 'present', i === indexh )
+        slides[i].classList.toggle( 'future', i > indexh )
+    }
+}
+```
+
+**关键参数**：
+- `viewDistance`：默认 3（可见范围内 slide 数）
+- `mobileViewDistance`：默认 2（移动设备更激进卸载）
+- `slideContent.load()`：渲染 slide（解析 Markdown / Highlight / Math）
+- `slideContent.unload()`：卸载到 placeholder（保留 DOM 结构，释放计算）
+- 视图切换：`print` 模式设 `viewDistance = Number.MAX_VALUE`（全部加载便于 PDF 打印）
+
+**最佳实践**：viewDistance 是性能优化关键（>50 slide 时调小）；print 模式单独放大 viewDistance 保证 PDF 完整；不要在 render 期间触发 `updateSlidesVisibility`（无限循环）。
+
+---
+
+## 第三段：动画与插件体系
+
+### 模式 11：AutoAnimate FLIP 技术
+
+**问题场景**：两张 slide 上有相同元素（如 `<h1>`），翻页时希望元素"自动从 A 位置飞到 B 位置"，而不是"消失再出现"。CSS 做不到（不知道两张 slide 的相对位置），JS 如何实现？
+
+**解决方案**：FLIP 四步——First（测 from-slide 元素位置）/ Last（设 to-slide 元素 transform 偏移到 from 位置）/ Invert（去掉 transform 触发 transition）/ Play（用户看到元素从 from 位置平滑滑到 to 位置）。
+
+```js
+// js/controllers/autoanimate.js:24-122
+// First: 测 from-slide 元素位置
+const fromRect = fromElement.getBoundingClientRect()
+// Last: 测 to-slide 元素位置 + 设 transform 偏移
+const toRect = toElement.getBoundingClientRect()
+const deltaX = fromRect.left - toRect.left
+const deltaY = fromRect.top - toRect.top
+toElement.style.transform = `translate(${deltaX}px, ${deltaY}px)`
+// Invert: 改 data-auto-animate="running" 触发 CSS transition
+toElement.closest('.slide').setAttribute('data-auto-animate', 'running')
+// Play: 清掉 transform，浏览器自动用 transition 过渡
+requestAnimationFrame( () => toElement.style.transform = '' )
+```
+
+**关键参数**：
+- 标记：两张 slide 加 `data-auto-animate` 属性
+- 元素匹配：相同 `id` 或 `data-id` 的元素配对
+- 未匹配元素：`data-auto-animate-unmatched="false"` 关掉
+- 缓动：`data-auto-animate-easing="linear"` 单元素覆盖
+- CSS 注入优化：第 99 行 `this.autoAnimateStyleSheet.innerHTML = css.join('')` 一次性写入（注释说 "sheet.insertRule is multiple factors slower"）
+
+**最佳实践**：FLIP = 4 个独立步骤（测量/设置/触发/播放），每步独立可调；要 `requestAnimationFrame` 包一层确保 transition 触发；批量元素用 transform 不用 top/left（GPU 加速）。
+
+### 模式 12：Plugins 三态机（idle → loading → loaded）
+
+**问题场景**：插件有同步和异步两种（如 markdown 是同步、highlight 是异步大依赖）；如何统一管理加载状态避免重复 init？
+
+**解决方案**：`Plugins` Controller 的 `state` 字段在 `idle → loading → loaded` 三态间转换，串行 `initNextPlugin()` 显式处理依赖（不是 `Promise.all`）。
+
+```js
+// js/controllers/plugins.js:35-90
+state: 'idle'    // 三态
+function load( plugins, dependencies ) {
+    this.state = 'loading'
+    // 1. 同步脚本并发加载
+    Promise.all( dependencies.scripts.map( loadScript ) )
+        // 2. 串行 init（不 Promise.all）
+        .then( () => this.initNextPlugin() )
+}
+function initNextPlugin() {
+    if ( this.plugins.length === 0 ) {
+        this.state = 'loaded'
+        this.dispatchEvent( 'ready' )
+        return
+    }
+    const plugin = this.plugins.shift()
+    try {
+        plugin.init?.()    // 调 init 钩子
+    } finally {
+        this.initNextPlugin()  // 显式递归（不 await）
+    }
+}
+```
+
+**关键参数**：
+- 三态：`idle`（未加载） / `loading`（加载中） / `loaded`（就绪）
+- 串行 init：`initNextPlugin()` 显式递归（不是 `Promise.all`）
+- 错误处理：`try/finally` 包 `plugin.init()`，单个插件失败不影响后续
+- 同步依赖：`scripts[]` 数组（先全部加载完再 init）
+- 异步依赖：`asyncDependencies[]`（在 `loadAsync()` 阶段才加载，不阻塞首屏）
+
+**最佳实践**：插件 init 串行 = 简单可推理（不是性能问题，因为 init 本身快）；同步依赖 vs 异步依赖分离 = 首屏不阻塞；`state` 字段 + `dispatchEvent('ready')` 让外部能 `await Reveal.ready`。
+
+### 模式 13：同步/异步双轨加载
+
+**问题场景**：插件依赖可能是同步的小脚本（marked、katex）也可能是异步大文件（highlight.js 1MB+）；如果全走同步加载，首屏卡死；如果全走异步，Markdown 渲染不出来。
+
+**解决方案**：`dependencies.scripts[]`（同步，并发加载，全部完成才 init）+ `dependencies.asyncDependencies[]`（异步，fire-and-forget，演讲时后台加载）。
+
+```js
+// js/controllers/plugins.js
+function load( plugins, dependencies ) {
+    // 同步依赖：并发 + 全部等
+    const scriptPromises = dependencies.scripts.map( src => loadScript( src ) )
+    // 异步依赖：fire-and-forget
+    dependencies.asyncDependencies.forEach( ({ src, asyncLoad }) => {
+        loadScript( src ).then( () => asyncLoad() )   // 加载完才跑
+    } )
+    return Promise.all( scriptPromises ).then( () => this.initNextPlugin() )
+}
+// 用法
+Reveal.initialize({
+    plugins: [ Markdown, Notes, Highlight ],   // 同步插件
+    dependencies: [
+        { src: 'plugin/highlight/plugin.js' },                                       // 同步
+        { src: 'plugin/highlight/load.js', asyncLoad: true },                       // 异步
+    ]
+})
+```
+
+**关键参数**：
+- `scripts[]`：同步依赖（marked、mathjax）—— 全部加载完才 init
+- `asyncDependencies[]`：异步依赖（highlight.js）—— 后台加载，加载完跑 `asyncLoad()`
+- `loadScript()`：内部用 `<script>` 注入 + 监听 `onload` 包成 Promise
+- 错误处理：单个 script 失败 `Promise.all` reject → 整批失败
+
+**最佳实践**：大依赖（highlight.js、mathjax 完整版）走 asyncDependencies；小依赖（marked、katex）走 scripts；演讲关键依赖绝不放异步（首屏必须可用）。
+
+### 模式 14：Markdown 插件节点注入
+
+**问题场景**：用户写 `<section data-markdown><script type="text/template"># Hello</script></section>`，如何让 reveal 在初始化时把 Markdown 文本转成 DOM 节点？
+
+**解决方案**：Markdown 插件扫描 `data-markdown` section，读 `<script type="text/template">` 内容 → `marked()` 解析 → `innerHTML` 注入 → 触发 slide 重新布局。
+
+```js
+// plugin/markdown/plugin.ts
+function convertMarkdownToHTML( section ) {
+    const template = section.querySelector( 'script[type="text/template"]' )
+    const markdown = template?.textContent ?? ''
+    const html = marked.parse( markdown, { smartypants: true } )
+    section.innerHTML = html   // 注入 DOM
+}
+// reveal 初始化时调用
+Reveal.getMarkdownSlides().forEach( convertMarkdownToHTML )
+```
+
+**关键参数**：
+- 标记：`data-markdown` 属性
+- 容器：`<section data-markdown><script type="text/template">...</script></section>`
+- 解析器：`marked ^17`（外部依赖）+ `marked-smartypants`（智能引号）
+- 注入时机：`Reveal.initialize()` 时一次性处理
+- 属性支持：`<!-- .element: class="fragment" -->`（reveal 扩展语法）
+
+**最佳实践**：Markdown 是**事后**注入节点（初始化阶段），符合"DOM 即真相"原则；`<script type="text/template">` 防止浏览器解析 HTML 实体（避免 `<` 变 `&lt;`）；多语言版本（`data-separator` + `data-separator-vertical`）支持横纵分页。
+
+### 模式 15：Highlight / Math 异步大依赖
+
+**问题场景**：highlight.js 体积 1MB+（含 200+ 语言），mathjax 完整版 3MB+；演讲一上来全加载 = 首屏 5s 白屏；按需加载又怕"演讲到代码 slide 时才加载"来不及。
+
+**解决方案**：用 `asyncDependencies` 机制（模式 13）让 highlight/math 后台加载，配合 `callback` 字段指定"加载完跑什么"。
+
+```js
+// plugin/highlight/plugin.ts
+Reveal.initialize({
+    dependencies: [
+        { src: 'plugin/highlight/plugin.js', async: true, callback: () => hljs.initHighlightingOnLoad() }
+    ]
+})
+// plugin/highlight/plugin.ts 内部
+hljs.registerLanguage( 'javascript', javascript )
+hljs.registerLanguage( 'python', python )
+// <pre><code class="javascript">let x = 1</code></pre>  // HTML 写法
+```
+
+**关键参数**：
+- 异步标记：`async: true`
+- 回调：`callback: () => hljs.initHighlightingOnLoad()`
+- 语言注册：插件加载时调 `hljs.registerLanguage()`
+- HTML 写：`class="javascript"` / `class="python"`（CSS class 标识语言）
+- Math：Katex（轻量，~300KB）vs MathJax（完整，~3MB）
+
+**最佳实践**：highlight.js 必走异步（体积太大）；Math 看场景选 Katex（速度 + 中等体积）或 MathJax（功能全 + 大体积）；用 `data-line-numbers` 给代码加行号。
+
+---
+
+## 第四段：URL 状态、React 适配与现代演进
+
+### 模式 16：Location URL hash 双向同步
+
+**问题场景**：演讲中按 `→` 翻到第 5 页，希望浏览器 URL 变成 `#/5/1`，让用户**复制链接发给同事**就能直接看到第 5 页。如何双向同步（`slide(5,1)` 写 hash，hash 变化时也翻页）？
+
+**解决方案**：`Location` Controller 监听 `hashchange` + `slidechanged` 事件，写入 `location.hash` 用 `history.replaceState`（不污染 history）；`MAX_REPLACE_STATE_FREQUENCY = 1000ms` 防止 Chrome 缩略图 bug 频刷。
+
+```js
+// js/controllers/location.js:43-99 getIndicesFromHash
+function getIndicesFromHash() {
+    const hash = window.location.hash
+    // 1. 优先尝试命名链接 #/my-slide/2
+    const nameMatch = hash.match( /#\/([^\/]+)\/(\d+)/ )
+    if ( nameMatch ) {
+        const slide = document.getElementById( decodeURIComponent( nameMatch[1] ) )
+        if ( slide ) return { h: parseInt( nameMatch[2] ), v: 0, f: -1 }
+    }
+    // 2. 退路数字索引 #/3/1
+    const numMatch = hash.match( /#\/(\d+)\/(\d+)/ )
+    if ( numMatch ) return { h: parseInt( numMatch[1] ), v: parseInt( numMatch[2] ), f: -1 }
+    return null
+}
+// 写入（带去抖）
+writeURL( delay = 0 ) {
+    clearTimeout( this.writeURLTimeout )
+    this.writeURLTimeout = setTimeout( () => {
+        history.replaceState( null, '', `#/${indexh}/${indexv}` )
+    }, delay )
+}
+```
+
+**关键参数**：
+- 读：`getIndicesFromHash()` 优先命名（`#/my-slide/2`）退路数字（`#/3/1`）
+- 写：`writeURL(delay)` 用 `setTimeout` 去抖 + `history.replaceState`（不污染 history）
+- `MAX_REPLACE_STATE_FREQUENCY = 1000ms`：防 Chrome 缩略图 bug
+- 双向：`hashchange` 事件 → 调 `slide()` 翻页
+- 命名支持：`document.getElementById()` 支持 Unicode slide 名
+
+**最佳实践**：URL 即状态 = "分享链接 = 分享进度" 杀手锏；用 `replaceState` 不 `pushState`（否则浏览器后退键会卡死）；`?print-pdf` query 用 `Util.getQueryHash()` 单独读（不在 hash 里）。
+
+### 模式 17：命名链接（data-id → Unicode slide 名）
+
+**问题场景**：URL 用数字索引 `#/3/1` 不友好（用户不知道 3 是哪张），但用纯文本名太长（`#/introduction-to-algorithm`），如何平衡可读性 + 简短？
+
+**解决方案**：`Location` Controller 支持 `data-id` 属性做 slide 名字，URL 解析时优先尝试命名（`#/intro/1`），退路数字。`document.getElementById(decodeURIComponent(name))` 查 DOM 支持 Unicode。
+
+```html
+<!-- HTML 写法 -->
+<section data-id="intro">
+    <h1>Introduction</h1>
+</section>
+<section data-id="algo">
+    <h1>Algorithm</h1>
+</section>
+<!-- URL: #/intro/0 = intro slide 第 0 段 -->
+```
+
+**关键参数**：
+- 标记：`<section data-id="intro">`（id 唯一）
+- URL 语法：`#/intro/0`（name + 段索引）
+- Unicode 支持：`decodeURIComponent()` 解码，支持中文 slide 名（`#/介绍/0`）
+- 退路：未命中的 id 仍走数字索引
+- 持久化：URL hash 自带"分享"能力
+
+**最佳实践**：data-id 用"短英文"（`intro` / `algo` / `demo`），不是完整短语；中文 slide 名可行但不友好（URL 编码变长）；`#/` 数字路径作 fallback 永远保留。
+
+### 模式 18：React 子包 + StrictMode 兼容
+
+**问题场景**：reveal.js 是 vanilla JS 库（工厂函数返回对象），React 项目想用 `<Deck>` 组件复用，怎么桥接？React 18 StrictMode 会**故意双调用** effect 检测 bug（unmount 后再 mount），如何避免误销毁活跃 Reveal 实例？
+
+**解决方案**：`react/src/components/deck.tsx` 用 `useEffect` 调 `new Reveal()` + `initialize()`，unmount 调 `destroy()`。`teardownRequestRef` 计数器 + `Promise.resolve().then(...)` 推迟 teardown 避免 StrictMode 假销毁。
+
+```tsx
+// react/src/components/deck.tsx:114-150
+const teardownRequestRef = useRef( 0 )
+useEffect( () => {
+    const deck = new Reveal( revealRef.current, options )
+    deck.initialize().then( () => resolve() )
+    return () => {
+        teardownRequestRef.current++
+        const myTeardown = teardownRequestRef.current
+        // 推迟到下一微任务
+        Promise.resolve().then( () => {
+            if ( teardownRequestRef.current === myTeardown ) {
+                deck.destroy()   // 确认是"真的卸载"才销毁
+            }
+        } )
+    }
+}, [] )
+```
+
+**关键参数**：
+- 桥接：`new Reveal( ref.current, options )` + `deck.initialize()`
+- StrictMode 兼容：`teardownRequestRef.current++` + 推迟到微任务，验证"是否被新的 mount 覆盖"
+- `Promise.resolve().then(...)`：推到下一微任务（StrictMode 双调用后，第二次 mount 的 counter 必然 > 第一次）
+- 错误处理：`destroy()` 内部 try/catch
+- 子包解耦：`react/` 是独立 npm package，peerDependency `"reveal.js"`
+
+**最佳实践**：任何"桥接到外部生命周期"的库（vanilla / jQuery）都要处理 React StrictMode 双调用；用 ref 计数器 + 微任务推迟是经典模式；React 子包独立维护（不污染核心）。
+
+### 模式 19：WeakMap slide id 分配
+
+**问题场景**：React 节点（虚拟 DOM）每次 render 重新创建，URL/auto-animate 又需要稳定数字 id 做引用 + diff，怎么把"React 节点"映射到"稳定 id"？
+
+**解决方案**：`slideIdsRef = useRef(new WeakMap())` 把"React 节点"作为 key（WeakMap 自动 GC），`nextSlideIdRef = useRef(1)` 维护下一个 id。WeakMap 的 key 是 React 节点对象，无需手动清理。
+
+```tsx
+// react/src/components/deck.tsx:108-109
+const slideIdsRef = useRef( new WeakMap() )
+const nextSlideIdRef = useRef( 1 )
+// 分配 id
+const id = (node) => {
+    if ( !slideIdsRef.current.has( node ) ) {
+        slideIdsRef.current.set( node, nextSlideIdRef.current++ )
+    }
+    return slideIdsRef.current.get( node )
+}
+// 用 id 做 diff
+JSON.stringify( slideNodes.map( id ) )  // 稳定签名
+```
+
+**关键参数**：
+- 数据结构：`WeakMap<object, number>`（React 节点 → 稳定 id）
+- 起始：`nextSlideIdRef.current = 1`
+- 自增：每次新节点分配新 id（永不重用）
+- GC：WeakMap key 释放时自动 GC（无需手动清理）
+- 应用：JSON.stringify slide 列表做"结构签名" diff
+
+**最佳实践**：WeakMap 是"对象 → 任意值"映射的标准方案（比 Map 强在自动 GC）；永不重用 id 避免 stale reference；用 `useRef` 包裹保证 React 多次 render 同一 WeakMap。
+
+### 模式 20：多产物导出 + 打印视图
+
+**问题场景**：现代打包器（Vite/Webpack）用 ESM，老 IE 用 UMD/ES5，TypeScript 项目要 `.d.ts` 类型——单 package.json 怎么暴露 7 个子路径（核心 + 6 个插件）？
+
+**解决方案**：`package.json#exports` 字段配置多子路径 + 多条件（`import` / `require` / `default`），构建脚本分别打 ESM/ES5/类型。
 
 ```json
-"dev": "vite"           // 等价于 npm start
-"build:core": "tsc && vite build && vite build -c vite.config.styles.ts"
-"build": "... + 6 个插件各 build 一次 + add-banner"
-"test": "node scripts/test.js"
+// package.json
+{
+    "main": "dist/reveal.js",                      // UMD ES5（老 IE）
+    "module": "dist/reveal.mjs",                   // ES Module（现代打包器）
+    "types": "dist/reveal.d.ts",                   // TypeScript 类型
+    "exports": {
+        ".": {
+            "import": "./dist/reveal.mjs",
+            "require": "./dist/reveal.js",
+            "types": "./dist/reveal.d.ts"
+        },
+        "./plugin/markdown": {
+            "import": "./plugin/markdown/plugin.mjs",
+            "require": "./plugin/markdown/plugin.js"
+        },
+        "./plugin/highlight": "...",               // 6 个插件各一个
+        "./plugin/math": "...",
+        "./plugin/notes": "...",
+        "./plugin/search": "...",
+        "./plugin/zoom": "..."
+    }
+}
 ```
 
-本地起服务：
+**关键参数**：
+- 7 个子路径：`.` (核心) + 6 个插件
+- 3 种条件：`import`（ESM）/ `require`（CJS）/ `types`（TS）
+- 双产物：ES5（`reveal.js`）+ ESM（`reveal.mjs`）
+- 构建脚本：`tsc && vite build && vite build -c vite.config.styles.ts`（TS + JS + SCSS 三个产物）
+- 打印视图：`?print-pdf` query → 调 `view: 'print'` + `viewDistance = MAX_VALUE` → 浏览器原生 PDF 打印
 
-```bash
-cd G:\实战案例\GitHub顶尖项目\reveal
-npm install        # 需要 Node >= 20.19
-npm start          # vite 启动，http://localhost:5173
-```
+**最佳实践**：双产物 + 多 subpath 是工业级 npm 包标配；打印视图不重新生成 DOM（设 viewDistance 让浏览器原生分页）；TypeScript 类型用 `tsc --emitDeclarationOnly` 单独产 `.d.ts`。
 
-Smoke test：
+---
 
-1. 打开 `http://localhost:5173/` → demo 演讲稿
-2. 按 `→` 翻页 / `B` 暂停 / `F` 全屏 / `S` 打开 speaker notes 弹窗
-3. `?print-pdf` 模式（`http://localhost:5173/?print-pdf`）→ 切打印视图
-4. 打开 `examples/markdown.html` → Markdown 插件
+## 附录：5 段必读代码
 
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant R as Reveal
-    participant C as Controllers
-    participant P as Plugins
-    U->>R: new Reveal(el, options)
-    U->>R: .initialize()
-    R->>P: plugins.load(plugins, deps)
-    P->>P: loadScript() 同步依赖
-    P->>P: initPlugins() 串行
-    P-->>R: resolve()
-    R->>R: start() 绑定事件
-    R->>C: render() 各 Controller
-    R-->>U: ready 事件
-    U->>R: 键盘 next()
-    R->>C: slide() 更新 class
-    C-->>U: DOM transition
-```
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-    title reveal.js 演进里程碑
-    dateFormat YYYY
-    section 核心
-    2011 项目启动           :done, 2011, 1y
-    2013 走红(GitHub趋势)   :done, 2013, 1y
-    2017 v4.0 插件系统重写  :done, 2017, 1y
-    2023 Scroll View 引入   :done, 2023, 1y
-    2024 React 子包首发     :done, 2024, 1y
-    2026 v6.0.1 当前版本   :active, 2026, 1y
-```
-
-关键转折点：
-
-- **2017 4.0**：`Reveal.initialize()` 从单例改为可多次实例化（多 deck 同页），引入 Controller-per-aspect 模式
-- **2020 4.1**：`auto-animate` 引入，FLIP 动画成为杀手特性
-- **2023 4.5+**：`scrollview.js` 出现（951 行），支持长页面阅读模式
-- **2024**：`react/` 独立子包发布，Vite 替换 Grunt
-- **2026 v6**：Node ≥20.19、Vite 8、TypeScript 6
-
-## 8. 质量保障（How It Doesn't Break）
-
-4 道防线：
-
-1. **测试**：`scripts/test.js` 用 `node-qunit-puppeteer` 跑 16+ HTML 测试页（`test/test-*.html`），含多实例、依赖、销毁、PDF、滚动、状态、网格导航等场景
-2. **CI**：`.github/workflows/test.yml` + `spellcheck.yml`（`.codespellrc` 配置）
-3. **Lint**：`.prettierrc` + `.prettierignore`，无 ESLint（项目偏务实）
-4. **类型**：`tsc` 在 `build:core` 阶段硬性检查；`plugin/markdown/index.ts` 头部用 `@ts-expect-error` 标注"运行时实现还在 JS 中"
-
-## 9. 生态依赖（Map of the World）
-
-```mermaid
-flowchart TD
-    R[reveal.js] --> M[marked ^17]
-    R --> H[highlight.js ^11]
-    R --> F[fitty ^2]
-    R --> J[jszip ^3]
-    R --> V[vite ^8]
-    R --> T[typescript ^6]
-    R --> S[sass ^1.98]
-    R --> P[node-qunit-puppeteer]
-    R --> E[esbuild ^0.28]
-    R --> G[glob ^13]
-    R --> MS[marked-smartypants]
-```
-
-合规检查：
-
-- ✅ MIT 全自洽，无 GPL 污染
-- ✅ 无外部 CDN 硬编码（plugin 通过 `dependencies.src` 走本地或自定 URL）
-- ✅ 高亮/数学/Markdown 全部插件化，零运行时强制依赖
-
-## 10. 生产实践（Battle-Tested）
-
-| 维度 | 实现 | 文件位置 |
-| --- | --- | --- |
-| 配置热更新 | `Reveal.configure({...})` 重新触发 `configure()` 钩子 | `js/reveal.js` 1100+ |
-| 优雅停服 | `Reveal.destroy()` 解绑所有 Controller，移除 DOM 标记 | `js/reveal.js` 2800+ |
-| 错误边界 | 全局 `dispatchEvent` + `error` 事件类型 | Controller 内 `try/catch` |
-| 性能优化 | `viewDistance`（默认 3）+ `mobileViewDistance`（默认 2） | `js/reveal.js` 1822-1899 |
-| 健康检查 | N/A（纯前端库） | — |
-| 结构化日志 | `console.warn('Unrecognized plugin format', s)` | `js/controllers/plugins.js` 79 |
-| 状态持久化 | URL hash 双向同步 | `js/controllers/location.js` |
-| postMessage 桥 | `setupPostMessage()` + 黑名单正则 `registerPlugin\|...` | `js/utils/constants.ts` 7 |
-
-## 11. 社区文化（People & Process）
-
-- **治理**：Hakim El Hattab 是 BDFL，`slides.com` 商业化做 GUI 编辑器，反哺核心
-- **维护者**：核心 1-3 人 + 数百 PR 贡献者
-- **RFC**：`revealjs.com` 文档仓单独 git repo，避免污染主代码
-- **沟通**：GitHub Issues + Discussions，`FUNDING.yml` 接 GitHub Sponsors
-- **议题活跃度**：日均 5-10 issues，bug 响应快（个人项目少见）
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **Controller-per-aspect 模式**：把"一个框架"拆成 18 个互相不直接调用的 Controller，每个持 `this.Reveal`，最易扩展（加新交互 = 加新 Controller，不改老 Controller）
-2. **URL 即状态**：把 `indexh/indexv/f` 写回 hash，零后端做"分享链接恢复进度"
-3. **多视图同源**：`normal/print/scroll/reader` 共用 DOM，靠 `viewDistance` 卸载远处 slide，零虚拟化代码
-
-### 12.2 必避 3 坑
-
-1. **闭包当 namespace**：调试栈全是 "anonymous"，换 ES class + private field 更友好
-2. **throw 字符串**：`throw 'Unable to find presentation root'` 应该 `throw new Error(...)` 才能拿到 stack
-3. **硬编码 class 名**：`past/present/future` 散落在 18 个 Controller，改名要全文替换
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7天复刻 reveal.js 核心
-    dateFormat YYYY-MM-DD
-    section 骨架
-    工厂函数 + Controller 注入     :a1, 2026-06-02, 1d
-    URL hash 双向同步              :a2, after a1, 1d
-    section 交互
-    键盘 + 翻页 + 片段             :a3, 2026-06-04, 1d
-    FLIP auto-animate              :a4, after a3, 1d
-    section 扩展
-    插件加载器 + markdown plugin   :a5, 2026-06-06, 1d
-    Scroll view 模式               :a6, after a5, 1d
-    section 收尾
-    PDF 打印视图 + SCSS 主题       :a7, 2026-06-08, 1d
-```
-
-### 12.4 打分卡（10 分制）
-
-| 维度 | 分数 | 评语 |
-| --- | --- | --- |
-| 架构清晰度 | 9 | Controller 解耦堪称范本 |
-| 代码可读性 | 7 | 闭包风格对新人略劝退 |
-| 可扩展性 | 10 | 插件 + Controller 双扩展点 |
-| 可测试性 | 6 | 集成测试为主，缺单元测试 |
-| 文档质量 | 8 | 注释充分，外部文档独立站 |
-| 性能 | 7 | 远 slide unload 有，但 slide >100 时 past/future 循环可见 |
-| 安全性 | 8 | postMessage 黑名单 + URL 解析 try/catch |
-| 工程化 | 9 | Vite + TS + 多产物导出，工业级 |
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：reveal.js 是"把传统 PPT 拆成 DOM + 状态机"的典范，它的所有能力都来自 18 个 Controller 之间的协奏，而不是中央调度器。
-
-**3 个核心洞察**：
-
-1. **DOM 即真相**：slides 状态完全由 `past/present/future` class 表达，不维护内存模型——所以 Markdown 插件、URL 反序列化、auto-animate 都可以"事后参与"
-2. **多视图同源**：`print/scroll/reader` 复用同一棵 DOM 树，靠 CSS + `viewDistance` 切换——比"渲染成不同 React 树"省 80% 代码
-3. **插件双轨**：同步插件串行 init，异步插件 fire-and-forget——既保证首屏稳定，又不阻塞大依赖
-
-**5 段必读代码**：
-
-1. `js/reveal.js:40-126` —— 18 Controller 注入 + 状态闭包
-2. `js/reveal.js:130-168` —— initialize() + 5 层 config 合并
-3. `js/controllers/autoanimate.js:24-122` —— FLIP 动画 + unmatched 元素处理
-4. `js/controllers/plugins.js:35-90` —— 双轨插件加载
-5. `react/src/components/deck.tsx:114-150` —— React StrictMode 兼容的 defer teardown
-
-**1 反模式**：`js/reveal.js:132` `throw 'Unable to find presentation root'` 用字符串而非 Error 对象。
-
-**1 可复用模式**：URL hash 双向同步模式（`location.js`）——任何"单页应用 + 分享链接恢复进度"需求都可以抄。
-
-**3 立刻能用的技巧**：
-
-1. `Reveal.shownContexts` 批量 API 替代单张 `slide()`
-2. `data-visibility="hidden"` 在编译时排除 slide，不靠 if-else
-3. `data-auto-animate-easing="linear"` 覆盖单元素缓动
-
-## 14. 项目特点速查
-
-- **独特看点**：
-  - 14 年长寿命，兼容 IE11 到现代浏览器
-  - 自带 17 个 SCSS 主题（白/黑/血/月/日/夜…）
-  - 6 个独立插件（markdown/highlight/math/notes/search/zoom）每个都有独立 vite config
-  - React 独立子包，不污染核心
-  - PDF 打印视图 + Scroll 阅读视图 + Reader 视图三栖
-- **与同类对比**：
-
-```mermaid
-quadrantChart
-    title 演示框架对比
-    x-axis 弱功能 --> 强功能
-    y-axis 难上手 --> 易上手
-    "reveal.js": [0.9, 0.75]
-    "Slidev (Vue)": [0.8, 0.7]
-    "Spectacle (React)": [0.7, 0.6]
-    "Impress.js": [0.5, 0.4]
-    "PowerPoint HTML": [0.4, 0.9]
-```
-
-## 附：仓库元信息
-
-- **路径**：`G:\实战案例\GitHub顶尖项目\reveal\`
-- **总文件**：~183
-- **解析时间**：2026-06-02
-- **关键 commit**：`version: 6.0.1`（package.json）
-- **Node 要求**：`>=20.19.0`
+1. `js/reveal.js:40-126` — 18 Controller 一次性注入 + 闭包 namespace（理解"工厂函数 + Controller"）
+2. `js/reveal.js:130-168` — `initialize()` + 5 层 config 合并（URL hash 胜出）
+3. `js/controllers/autoanimate.js:24-122` — FLIP 4 步动画（First/Last/Invert/Play）
+4. `js/controllers/plugins.js:35-90` — 三态机 + 同步/异步双轨加载
+5. `react/src/components/deck.tsx:114-150` — React StrictMode 兼容的 `Promise.resolve().then` 推迟 teardown
 
 ## 一句话总结
 
-解析 reveal.js = 看懂一个"如何把 PPT 拆成 18 个 Controller + 4 种视图 + 1 个 URL 状态机"的经典前端案例。最值得偷的不是它的代码，而是它"DOM 即真相 + Controller 协奏"的思维模型。
+reveal.js = 2964 行工厂函数 + 18 个 Controller + 5 层 config 合并 + DOM 即数据源 + 4 视图同源 + FLIP auto-animate + 三态机插件 + URL 即状态 + React 桥接；2011 年至今 14 年长寿命，用"闭包 namespace + Controller 协奏"的朴素架构撑起 GitHub 70k+ 演示框架的事实标准，最值得偷的不是代码而是"DOM 即真相 + 多视图同源 + URL 即状态"的思维模型。

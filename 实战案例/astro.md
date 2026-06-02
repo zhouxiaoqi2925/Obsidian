@@ -1,819 +1,422 @@
+# astro - 岛屿架构与 Content Layer 的现代 SSG 框架
+
+**GitHub**: withastro/astro
+**Star**: 50k+
+**语言**: TypeScript
+**主题**: SSG/SSR / 岛屿架构 / Content Layer / View Transitions
+**适用场景**: 内容站、博客、文档、营销页、电商
+
+## 第一段：基础范式
+
+### 模式 1：pnpm workspace + 30+ 内部 Vite 插件的"组合式架构"
+
+**问题场景**：Astro 同时要支持 6 个 UI 框架（React/Vue/Svelte/Solid/Preact/Lit）、5 个部署平台（Node/Cloudflare/Vercel/Netlify/Deno）、MDX/Sitemap/Partytown 等——单一巨型包不可能解耦。
+
+**解决方案**：`packages/astro`（主包）+ `packages/integrations/`（6 框架 × 5 部署 × N 工具）+ `packages/markdown/`（remark/unified 管线），主包用 30+ `vite-plugin-*` 拆 Vite 插件。
+
+**关键参数**：
+- `packages/astro/src/core/`：config / app / routing / build / dev
+- `packages/astro/src/runtime/server/`：SSR 渲染管线
+- `packages/integrations/react/` `vue/` `svelte/` `solid/`
+- `packages/markdown/`：remark 管线
+- `withastro/compiler`：Rust 编译器独立仓库
+
+**最佳实践**：功能用 packages 拆分——独立升级；内部 Vite 插件按职责命名（astro-pages / astro-routes / astro-content）；Rust 性能关键模块独立仓库——`withastro/compiler`；turborepo 编排——`turbo.json`。
+
 ---
-title: astro
-type: web-framework
-lang: typescript
-stars: 50000
-date: 2026-06-02
-tags:
-  - 开源项目
-  - web-framework
-  - vite
-  - islands-architecture
-  - content-driven
+
+### 模式 2：岛屿架构（Islands Architecture）+ astro-island 自定义元素
+
+**问题场景**：传统 SPA 把所有组件当客户端组件——首屏加载大、SEO 差。MPA 没组件化——开发体验差。
+
+**解决方案**：默认服务端渲染（HTML 输出），仅标注 `client:load` / `client:idle` / `client:visible` 的组件才水合为"岛屿"：
+```astro
+<MyReactComponent client:visible />
+<!-- 仅当元素可见时才水合 -->
+```
+
+**关键参数**：
+- `client:load` / `idle` / `visible` / `media` / `only`：水合时机
+- `astro-island` 自定义元素：客户端占位
+- SSR HTML 输出：默认
+- 零 JS 默认：未标 `client:*` 不发 JS
+- `runtime/server/render/`：服务端渲染
+
+**最佳实践**：默认 SSR + 零 JS——`client:*` 才水合；`client:visible` 适用于折叠内容；`client:idle` 适用于非关键交互；`client:only="react"` 跳过 SSR；用 `transition:animate` 配 view transitions。
+
 ---
 
-# astro · 项目深度解析
+### 模式 3：Content Collections + Content Layer 类型安全
 
-> 内容驱动的现代 Web 框架，岛屿架构 + 零 JS 默认输出，基于 Vite 与自研 Rust 编译器。
-> 来源：G:\实战案例\GitHub顶尖项目\astro\
-> 当前版本：astro@6.4.2 (2026-06-01 锁定)
+**问题场景**：Markdown 博客元数据散落各文件——frontmatter 无类型，YAML 错误延迟到运行时。
 
-## 写在前面：解析哲学
-
-本笔记按"先骨架后血肉，先 What 后 Why，最后 How to steal"四段式展开。Astro 是把"内容网站 + 极简 JS"做到极致的代表：默认零运行时、按需水合、岛屿边界由编译器静态推断。先用思维导图和目录树搭出骨架，再读 6 个核心源文件提取 WHY，最后给出可"偷"的具体技术决策。
-
-## 0. 解析前的 5 个准备
-
-- **克隆与定位**：仓库根目录 `G:\实战案例\GitHub顶尖项目\astro\`，6,362 个文件，6362 节点，pnpm monorepo
-- **分类**：TypeScript 主导（98%+），含 Rust 编译器（外部仓库 `withastro/compiler`）
-- **问题清单**：6 个 WHY 问题（编译器为何独立、岛屿边界推断、内容层队列、xxhash 用途、server islands 加密、自定义元素等待机制）
-- **速查表**：`packages/astro/src/core/{config,app,routing,content}/` + `packages/astro/src/runtime/server/`
-- **锁定 commit**：6.4.2 (mtime 2026-06-01)，生产版本对应的代码形态
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 值 |
-|------|-----|
-| 项目名 | astro |
-| 定位 | 内容驱动的现代 Web 框架，零 JS 默认 + 局部水合 |
-| 核心问题 | 解决"内容站被迫下载巨型 SPA 框架"以及"SSR/SSG 配置碎片化" |
-| 目标用户 | 内容站开发者（博客/文档/电商/营销页），想保留 MPA 性能 + 组件化 DX |
-| 商业模式 | MIT 开源 + 企业赞助（Netlify/Sentry/Project IDX）+ 付费集成 |
-| 复刻难度 | ★★★★★（编译器是 Rust，Vite 插件 30+ 个，内容层是独立子系统） |
-| 当前状态 | 6.4.2 稳定版，月均 2-3 次 minor 升级 |
-| 团队规模 | withastro 组织，核心维护 10+ 人，3,000+ 社区贡献者 |
-| 里程碑 | 1.0(2021) → 2.0 Content Collections → 3.0 View Transitions → 4.0 Server Islands → 5.0 Content Layer → 6.0 Server Actions |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-Astro 是典型 pnpm workspace monorepo + 30+ 内部 Vite 插件的"组合式架构"。
-
-```mermaid
-mindmap
-  root((astro monorepo))
-    packages/astro
-      src/core
-        config 配置加载+合并
-        app 请求处理(SSR/SSG)
-        routing 模式匹配+manifest
-        content 内容层+数据存储
-        build 构建编排
-        dev 开发服务
-        create-vite Vite装配
-      src/runtime/server
-        render 组件渲染+水合
-        hydration 客户端指令
-        astro-island 自定义元素
-        transitions 视图过渡
-      src/vite-plugin-*
-        astro .astro 编译
-        astro-server 开发服务器
-        pages 页面枚举
-        routes 路由解析
-        scripts 脚本注入
-        content 内容资产
-        html HTML转换
-        css 样式聚合
-        i18n 国际化
-        env 环境变量
-    packages/integrations
-      react/vue/svelte/solid
-      preact/alpinejs/lit
-      node/cloudflare/vercel/netlify
-      mdx/sitemap/partytown/rss
-    packages/language-tools
-      astro-check 类型检查
-      language-server LSP
-      vscode 编辑器插件
-      ts-plugin TS支持
-    packages/markdown
-      remark/unified 管线
-    外部仓库
-      withastro/compiler Rust编译器
-      withastro/starlight 文档主题
-```
-
-**实际目录树（精简）**：
-
-```
-astro/
-├── packages/
-│   ├── astro/                    # 主包（核心）
-│   │   ├── src/
-│   │   │   ├── core/             # 构建/请求/路由
-│   │   │   ├── runtime/server/   # SSR 渲染管线
-│   │   │   ├── runtime/client/   # 客户端指令(load/idle/visible/media)
-│   │   │   ├── content/          # 内容层
-│   │   │   ├── vite-plugin-*/    # 30+ 内部 vite 插件
-│   │   │   └── index.ts
-│   │   ├── bin/astro.mjs         # CLI 入口
-│   │   └── components/           # 内置 <Image/> <Picture/> <Font/>
-│   ├── integrations/             # 框架/部署适配器
-│   ├── language-tools/           # TS/LSP/VSCode
-│   ├── markdown/                 # 内部 markdown 工具
-│   └── create-astro/             # 项目脚手架
-├── scripts/                      # turborepo 编排脚本
-├── .changeset/                   # 版本变更日志
-├── .github/workflows/            # CI
-└── turbo.json                    # turborepo 配置
-```
-
-**配置入口**：`astro.config.{mjs,js,ts,mts}`，由 `core/config/vite-load.ts` 用 Vite 自己加载，避免重复实现 ESM/TS 解析。
-
-**代码入口**：`packages/astro/src/index.ts` 导出公共 API；CLI 由 `bin/astro.mjs` 启动。
-
-## 3. 项目画像（Profile）
-
-| 指标 | 值 |
-|------|-----|
-| 总文件数 | 6,362 |
-| 主语言 | TypeScript (98%+) |
-| 涉及语言 | TS、JS、Rust（编译器）、CSS、MDX |
-| Star | 50K+ (withastro/astro) |
-| License | MIT |
-| 包管理 | pnpm@11.0.9 workspace |
-| Node 要求 | >= 22.12.0 |
-| 编排工具 | turborepo@2.8 |
-| Lint/Format | biome@2.4 + eslint@10 + prettier@3 + knip@5.82 |
-| 测试 | vitest + playwright（E2E）+ e2e:alpinejs + smoke test |
-| CI | GitHub Actions（ci.yml/badge） |
-| Docker | 官方无 Dockerfile，但有 devcontainer 配置 28 套 |
-| 部署 | 无内置（适配器模式：@astrojs/node/cloudflare/vercel/netlify） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-Astro 的核心架构是"**Vite + Rust 编译器 + 30+ 自研插件 + 岛屿边界推断**"。理解它需要分四层：配置层 → 构建层 → 渲染层 → 水合层。
-
-```mermaid
-flowchart TD
-    A[astro.config.ts] -->|vite-load 加载| B[resolveConfig]
-    B --> C[createVite]
-    C --> D[30+ Vite 插件链]
-    D --> E[.astro 文件]
-    E -->|@astrojs/compiler Rust| F[中间表示 + 边界推断]
-    F --> G[客户端代码切分]
-    G --> H[HTML 输出 + 组件脚本]
-    H --> I{构建模式}
-    I -->|build| J[SSG/SSR 静态化]
-    I -->|dev| K[Vite DevServer + WebSocket]
-    J --> L[部署产物]
-    K --> M[浏览器]
-    L --> M
-    M -->|<astro-island>| N[选择水合策略]
-    N -->|client:load| O[立即执行]
-    N -->|client:idle| P[requestIdleCallback]
-    N -->|client:visible| Q[IntersectionObserver]
-```
-
-### 4.1 核心看点
-
-1. **编译器外部化**：`@astrojs/compiler` 是独立 Rust 仓库，TS 层只通过 npm 包调用。WHY：编译性能（Rust 提升 10-100x），团队语言分工隔离。
-2. **岛屿边界推断**：编译器分析 `.astro` 模板，识别 `client:*` 指令，把它们切出主 bundle 独立 chunk。WHY：让"零 JS"成为默认行为，开发者无须手工分包。
-3. **渲染管线统一**：`BaseApp → AppPipeline` 抽象，让 dev/prod/SSR/SSG 共享同一份渲染逻辑（`packages/astro/src/core/app/base.ts:126`）。
-4. **内容层即数据总线**：`ContentLayer` 内部用 `MutableDataStore` 存数据，`PQueue` 同步任务，`xxhash` 计算 digest。WHY：支持 glob、API、数据库、自定义 loader 统一抽象。
-
-### 4.2 ADR 关键设计决策
-
-**ADR-1：30+ 内部 Vite 插件而非单一大插件**
-
-`packages/astro/src/core/create-vite.ts:60-200` 列出了 30+ 插件：astro:build, astro:routes, astro:scripts, astro:html, astro:css, astro:pages, astro:content, astro:env, astro:i18n, astro:transitions, astro:head, astro:hmr-reload, astro:integrations-container, astro:load-fallback, vite-plugin-renderers 等。
-
-WHY 拆分：每个插件聚焦单一职责（CSS 解析、路由收集、模块解析），可以独立 `enforce: 'pre'` 控制顺序，HMR 边界清晰。出问题时按插件名定位比"一个 5000 行的大插件"快 10 倍。
-
-**ADR-2：内容层用 PQueue 串行化**
-
-`packages/astro/src/content/content-layer.ts:73`：
-
+**解决方案**：`src/content/config.ts` 配 Zod schema，编译期校验 frontmatter：
 ```ts
-this.#queue = new PQueue({ concurrency: 1 });
+import { defineCollection, z } from 'astro:content';
+const blog = defineCollection({
+  type: 'content',
+  schema: z.object({ title: z.string(), date: z.date(), tags: z.array(z.string()) }),
+});
+export const collections = { blog };
 ```
 
-同步任务 `sync()` 调用 `this.#queue.add(() => this.#doSync(options))`。**WHY concurrency=1**：
+**关键参数**：
+- `defineCollection({ type, schema })`：定义
+- `src/content/blog/*.md`：数据源
+- Zod schema：编译期校验
+- `getCollection('blog')`：查询
+- Content Layer v5：多源（Notion / CMS / API）
 
-- 写 `MutableDataStore` 到 `.astro/data-store.mjs` 必须串行（防文件竞态）
-- `digest` 计算要基于一致的状态快照
-- 用户预期"改完 config 触发一次完整 sync"，并发会重复劳动
+**最佳实践**：所有 markdown 都用 Content Collection——类型安全；schema 必用 Zod——`z.string()` 不接受 `undefined`；v5 Content Layer 支持外部源——`loader: glob({ pattern, base })`；`getEntry('blog', slug)` 单条查询。
 
-**ADR-3：服务器岛屿（Server Islands）加密 slots**
+---
 
-`packages/astro/src/core/server-islands/endpoint.ts:58` 定义 `DEFAULT_BODY_SIZE_LIMIT = 1024 * 1024`（1MB），`packages/astro/src/core/encryption.ts` 用对称加密组件 export/props/slots。
+### 模式 4：.astro 文件 + frontmatter + scoped styles
 
-WHY 加密：Server Island 渲染在用户态后端完成，调用方传 `?s=...&e=...&p=...` 三个加密 query（slots/export/props）。如果明文传 slots，攻击者可注入任意 JSX/HTML 节点；加密保证服务端只解码自己签发的 token。
+**问题场景**：React/Vue 模板和逻辑混——HTML/CSS/JS 不分离。Astro 想要"模板即组件，零运行时"。
 
-**ADR-4：路由 Pattern 用正则预编译**
+**解决方案**：`.astro` 文件 = `---` 之间的 frontmatter（TS）+ HTML 模板 + `<style>`（scoped）+ `<script>`（按需打包）：
+```astro
+---
+const { name } = Astro.props;
+---
+<h1>Hello {name}</h1>
+<style>
+  h1 { color: red; }  /* scoped */
+</style>
+```
 
-`packages/astro/src/core/routing/pattern.ts:4-47` 把 `RoutePart[][]` 编译为 `RegExp`：
+**关键参数**：
+- `---` frontmatter：服务端 TS
+- 模板：HTML + JSX 表达式
+- `<style>` 默认 scoped：自动加 hash class
+- `<script>` 按需：默认 type="module"
+- `Astro.props`：组件 props
 
+**最佳实践**：用 .astro 当页面 + 简单组件；复杂交互用 React/Vue 子组件；`<style>` scoped——避免污染；`is:inline` script 不打包；`Astro.props` 而非 `this.props`。
+
+---
+
+### 模式 5：astro.config.mjs + Vite 自加载
+
+**问题场景**：配置文件是 TS 时——框架需要 TS 解析器；MJS 时——又要 ESM loader。Astro 不想重复造轮子。
+
+**解决方案**：`core/config/vite-load.ts` 用 Vite 自己加载配置——Vite 内置 TS/ESM 解析：
 ```ts
-return new RegExp(`^${pathname || initial}${trailing}`);
+import { defineConfig } from 'astro/config';
+export default defineConfig({ integrations: [react()] });
 ```
 
-- 静态段：`/foo` → 转义为 `/foo`
-- 动态段：`/[bar]` → `([^/]+?)`（非贪婪避免多吃斜杠）
-- Rest 段：`/[...rest]` → `(.*?)`
-- 整段可空：`[[lang]]` → `(?:\/([^/]+?))?`
+**关键参数**：
+- `astro.config.{mjs,js,ts,mts}`：4 格式支持
+- `defineConfig` 类型化
+- `core/config/vite-load.ts`：Vite loader
+- Vite 自动 TS/ESM 解析
+- `integrations: [react()]` 框架插件
 
-**WHY 不用 trie/前缀树**：Astro 路由数一般 < 1,000，正则 test 的常数项极小，构造代码比 trie 简单一个数量级。Tire 的优势在 10K+ 路由才显现，Astro 不是为那种规模设计。
+**最佳实践**：用 `defineConfig`——TS 类型提示；TS 配置文件——IDE 跳转；`integrations: []` 列所有插件；`vite` 字段透传 Vite 配置；`output: 'static' | 'server' | 'hybrid'` 选模式。
 
-**ADR-5：自定义元素 + 注释标记做"等子节点就绪"**
+---
 
-`packages/astro/src/runtime/server/astro-island.ts:62-93`：
+## 第二段：扩展范式
 
+### 模式 6：View Transitions + 视图过渡 API
+
+**问题场景**：传统 MPA 整页白屏——SPA 又重。Apple 风格"页面间平滑过渡"怎么做？
+
+**解决方案**：用 `<ViewTransitions />` 组件 + `transition:animate="slide"` 指令：
+```astro
+<head><ViewTransitions /></head>
+<a href="/about" transition:animate="slide">关于</a>
+```
+
+**关键参数**：
+- `<ViewTransitions />` head 注入
+- `transition:name="hero"` 命名元素跨页持久
+- `transition:animate="fade|slide|none"`
+- `transition:persist` 不卸载
+- 基于 View Transitions API（W3C 标准）
+
+**最佳实践**：博客/文档站开 View Transitions——体验佳；`transition:name` 让"图片→详情页"无缝；`transition:persist` 保留 header；不滥用——单页应用反而慢。
+
+---
+
+### 模式 7：Server Islands + Server Actions
+
+**问题场景**：静态站中"购物车"组件需要服务器 session——但要混在 SSG 页中。
+
+**解决方案**：v4+ Server Islands——`server:defer` 让组件在客户端水合时再请求服务端：
+```astro
+<Cart server:defer>
+  <Fragment slot="fallback"><CartSkeleton /></Fragment>
+</Cart>
+```
+
+**关键参数**：
+- `server:defer`：延迟渲染
+- `<Fragment slot="fallback">`：占位
+- v5 Server Actions：`actions.cart.add()`
+- Server Functions 概念
+- 与 React Server Components 异曲同工
+
+**最佳实践**：Server Islands 用于"需要 session 的小部件"——购物车/用户头像；`fallback` 必填——避免 CLS；Server Actions 配 form action——少写 API。
+
+---
+
+### 模式 8：Routing 模式匹配 + manifest
+
+**问题场景**：动态路由 `[id].astro` / `[...slug].astro` / 嵌套 `blog/[...page].astro`——传统 express 风格路由器慢。
+
+**解决方案**：构建期生成 `routes` manifest（静态）+ SSR 期 `routePattern.exec(url)` 模式匹配：
+```js
+const route = routes.find(r => r.pattern.test(pathname));
+```
+
+**关键参数**：
+- `pages/` 文件路由：自动注册
+- `[param].astro`：动态段
+- `[...rest].astro`：rest
+- `getStaticPaths()`：SSG 预生成
+- 嵌套 layout
+
+**最佳实践**：动态路由用 `[slug].astro`；`getStaticPaths` 必填——SSG 必须；`prerender = true` 强制预渲染；layout 嵌套用 `<Layout>` 组件；`Astro.params` 拿路由参数。
+
+---
+
+### 模式 9：Integrations 适配器多部署目标
+
+**问题场景**：一个 Astro 项目要部署到 Vercel/Netlify/Cloudflare/Node/Deno——各平台 runtime API 不同。
+
+**解决方案**：`@astrojs/vercel` / `@astrojs/netlify` / `@astrojs/cloudflare` / `@astrojs/node` 适配器包，统一暴露 `AstroIntegration` API。
+
+**关键参数**：
+- `@astrojs/node`：Node SSR
+- `@astrojs/vercel`：Vercel Edge
+- `@astrojs/cloudflare`：Cloudflare Workers
+- `output: 'server'`：SSR 模式
+- adapter 暴露 `addEntrypoint` 钩子
+
+**最佳实践**：选 adapter 与部署平台一致；`output: 'hybrid'` 混 SSG+SSR；edge runtime 限 API——`process.env` 不可用；`@astrojs/vercel/serverless` 走 Vercel Functions。
+
+---
+
+### 模式 10：构建期 + dev 期的双轨
+
+**问题场景**：Astro 既要 `astro build`（产出静态文件）又要 `astro dev`（HMR 开发）——两套构建管线要保持一致。
+
+**解决方案**：`core/build/`（build pipeline）+ `core/dev/`（HMR + Vite dev server）共享 `runtime/server` 渲染层。
+
+**关键参数**：
+- `astro build`：rollup 打包
+- `astro dev`：Vite dev server
+- `astro preview`：build 后预览
+- `astro check`：类型检查
+- 共享 `runtime/server/render.ts`
+
+**最佳实践**：开发用 `astro dev` HMR；生产 `astro build`；`astro preview` 测生产构建；`astro check` 跑 TS 类型——CI 必加；`--verbose` 调试。
+
+---
+
+## 第三段：进阶范式
+
+### 模式 11：Remark + 插件管线处理 Markdown
+
+**问题场景**：Markdown 需支持 GFM / 数学公式 / 代码高亮 / 链接检查——直接 `marked` 不够。
+
+**解决方案**：用 `unified` 生态（`remark-parse` → `remark-gfm` → `remark-math` → `remark-rehype` → `rehype-highlight`）：
+```js
+export default { markdown: { remarkPlugins: [remarkGfm], rehypePlugins: [rehypeHighlight] } };
+```
+
+**关键参数**：
+- `remarkPlugins`：`remark-gfm` / `remark-math` / `remark-mdx`
+- `rehypePlugins`：`rehype-highlight` / `rehype-slug` / `rehype-autolink-headings`
+- `shikiConfig.theme`：代码高亮主题
+- `mdx` 集成
+- `gfm: true`：表格 / 任务列表
+
+**最佳实践**：配 `remark-gfm`——表格 + 任务列表；`rehype-slug` + `autolink-headings`——锚点；`rehype-highlight` 客户端高亮——不引 shiki；`shikiConfig.theme` 多主题。
+
+---
+
+### 模式 12：Image 组件自动优化
+
+**问题场景**：用户传大图直接显示——首屏大、CDN 流量贵。手动用 `next/image` 风。
+
+**解决方案**：内置 `<Image />` + `<Picture />` 组件，构建期 sharp 处理：
+```astro
+<Image src={import('./hero.jpg')} alt="hero" width={800} height={400} format="webp" />
+```
+
+**关键参数**：
+- `<Image />`：单图优化
+- `<Picture />`：多源（AVIF/WebP/JPG fallback）
+- `import()` 引用：Vite 处理
+- `width` / `height`：必填（防 CLS）
+- `format="webp" | "avif"`
+
+**最佳实践**：必传 `width`/`height`——避免 CLS；用 `import()` 而非字符串路径——Vite 处理；`<Picture>` 多源——AVIF 优先；`densities={[1, 2]}` 配 retina。
+
+---
+
+### 模式 13：I18n 国际化 + 默认 locale
+
+**问题场景**：多语言站点——路由前缀、locale fallback、SEO hreflang。
+
+**解决方案**：`astro.config.i18n` 配默认 locale + 路由前缀：
+```js
+i18n: { defaultLocale: 'en', locales: ['en', 'zh'], routing: { prefixDefaultLocale: false } }
+```
+
+**关键参数**：
+- `defaultLocale`：默认
+- `locales`：可用列表
+- `routing.prefixDefaultLocale`：默认 locale 是否带前缀
+- `Astro.currentLocale`：运行时
+- `getRelativeLocaleUrl()`：URL 构造
+
+**最佳实践**：i18n 走 config——非自建；`prefixDefaultLocale: false` 让 `/` 直接是默认；用 `getRelativeLocaleUrl` 避免硬编码；hreflang SEO 必加。
+
+---
+
+### 模式 14：Adapter 部署目标 Hooks
+
+**问题场景**：不同部署平台（Vercel/Cloudflare/Node）需要不同 entrypoint 和构建产物——adapter 模式。
+
+**解决方案**：`AstroIntegration` 暴露 `astro:config:done` / `astro:server:setup` / `astro:build:done` 钩子，adapter 改 Vite 配置 + 注入 entrypoint。
+
+**关键参数**：
+- `astro:config:done`：改 config
+- `astro:server:setup`：dev server 钩子
+- `astro:build:done`：构建产物
+- `setAdapter(@astrojs/node)`：注册
+- Vite `ssr.external` / `noExternal`
+
+**最佳实践**：写自定义 integration 用 `defineIntegration`；`astro:config:done` 改 `vite.ssr` 配置；`astro:build:done` 注入 entrypoint；用 `addRoute` 加自定义 route。
+
+---
+
+### 模式 15：TypeScript 严格模式 + astro:content 类型
+
+**问题场景**：项目用 TS 但内容（Markdown/Frontmatter）无类型——开发体验断崖。
+
+**解决方案**：`tsconfig.json` extends `astro/tsconfigs/strict` + `astro:content` 自动生成类型：
+```json
+{ "extends": "astro/tsconfigs/strict", "include": [".astro/types.d.ts"] }
+```
+
+**关键参数**：
+- `astro/tsconfigs/strict`：严格 TS
+- `astro/tsconfigs/base`：基础
+- `astro:content` 虚拟模块
+- `.astro/types.d.ts`：自动生成
+- `astro check`：类型检查
+
+**最佳实践**：用 `astro/tsconfigs/strict`——最严；`astro check` CI 必跑；内容 schema 必 Zod——类型自动生成；`Astro.props` 类型化。
+
+---
+
+## 第四段：实战范式
+
+### 模式 16：Content Layer 多源数据加载
+
+**问题场景**：v5 前 content 只能从 `src/content/*.md` 读——CMS / Notion / API 不支持。
+
+**解决方案**：v5 Content Layer 暴露 `loader` API：
 ```ts
-connectedCallback() {
-    if (!this.hasAttribute('await-children') ||
-        document.readyState === 'interactive' ||
-        document.readyState === 'complete') {
-        this.childrenConnectedCallback();
-    } else {
-        // 等待最后一个子节点 = 注释节点 'astro:end'
-        const mo = new MutationObserver(() => {
-            if (this.lastChild?.nodeType === Node.COMMENT_NODE &&
-                this.lastChild.nodeValue === 'astro:end') {
-                this.lastChild.remove();
-                onConnected();
-            }
-        });
-        mo.observe(this, { childList: true });
-        document.addEventListener('DOMContentLoaded', onConnected);
-    }
-}
+const blog = defineCollection({
+  loader: async () => (await fetch('https://cms.example.com/api/posts')).json(),
+  schema: z.object({ title: z.string() }),
+});
 ```
 
-**WHY 双重保险**：HTML streaming 下 SSR 流式到达浏览器时 `<astro-island>` 元素可能比它的 SSR 子节点更早 connect。`MutationObserver` 监听 `astro:end` 注释 marker（编译器在岛屿结束位置插入），同时挂 `DOMContentLoaded` 兜底（防止 marker 被用户 CSS `display:none` 误删）。
+**关键参数**：
+- `loader: glob({ pattern, base })`：本地
+- `loader: file(...)`：单文件
+- 自定义 `loader: async () => data`
+- v5 替代 v4 glob loader
+- 与 CMS 集成
 
-## 5. 代码深度解析（带 WHY）⭐ 重点
+**最佳实践**：本地 markdown 用 `glob` loader；外部 API 用 custom loader；schema 必 Zod；`getCollection('blog')` 拉全部；增量构建——`watch` 监听。
 
-### 5.1 找骨架代码
+---
 
-Astro 的代码骨架由 6 段组成，按调用顺序：
+### 模式 17：Actions v5 + 表单提交
 
-1. **配置加载**：`src/core/config/{config,vite-load,validate,merge}.ts`
-2. **Vite 装配**：`src/core/create-vite.ts`（400 行）
-3. **路由 Manifest**：`src/core/routing/create-manifest.ts`（1012 行）
-4. **构建/开发编排**：`src/core/build/...` 和 `src/core/dev/...`
-5. **请求处理**：`src/core/app/{base,app,pipeline}.ts`
-6. **SSR 渲染**：`src/runtime/server/render/{component,slot,head}.ts`
+**问题场景**：表单提交要写 server endpoint + client fetch——重复样板。
 
-### 5.2 单文件分析卡
-
-#### 文件 1：`packages/astro/src/runtime/server/astro-island.ts`（自定义元素）
-
-**作用**：浏览器端的"岛屿"运行时，负责按指令懒加载组件并水合。
-
-**关键代码段**（行 95-138）：
-
+**解决方案**：v5 `astro:actions` 暴露服务端 actions：
 ```ts
-async childrenConnectedCallback() {
-    let beforeHydrationUrl = this.getAttribute('before-hydration-url');
-    if (beforeHydrationUrl) {
-        await import(beforeHydrationUrl);
-    }
-    this.start();
-}
-
-private handleHydrationError(error: unknown) {
-    const componentUrl = this.getAttribute('component-url');
-    const event = new CustomEvent('astro:hydration-error', {
-        cancelable: true, bubbles: true, composed: true,
-        detail: { error, componentUrl },
-    });
-    const shouldLogError = this.dispatchEvent(event);
-    if (shouldLogError) {
-        console.error(`[astro-island] Error hydrating ${componentUrl}`, error);
-    }
-}
+// src/actions/index.ts
+import { defineAction } from 'astro:actions';
+export const server = {
+  addToCart: defineAction({ handler: async (input, ctx) => { ... } })
+};
 ```
 
-**WHY 解析**：
+**关键参数**：
+- `defineAction({ handler })`
+- `Astro.callAction('addToCart', input)`
+- 表单 `method="POST" action={actions.addToCart}`
+- zod 输入校验
+- 类型安全
 
-- **`cancelable: true`** 让用户能用 `addEventListener('astro:hydration-error', e => e.preventDefault())` 拦截错误日志——可观测性 + 用户控制权
-- **`bubbles: true` + `composed: true`** 让事件穿透 Shadow DOM 边界，方便上层框架统一处理
-- **`before-hydration-url`** 是 Astro 6 引入的"先于水合执行的脚本"机制（典型用途：注入全局错误捕获、preload polyfill）
+**最佳实践**：表单提交用 actions——少写 endpoint；Zod 校验输入——`input: z.object({...})`；`ctx.locals` 拿 session；用 `Astro.getActionResult` 拿结果。
 
-**反模式/坑点**：
+---
 
-- `propTypes` 表（行 22-37）硬编码 12 种类型（0-11），加新类型必须改这里。这是**紧凑耦合**：运行时格式与编译器必须一致。改进方向是改用符号引用（`@type:Date`）。
+### 模式 18：Middleware 全局请求拦截
 
-#### 文件 2：`packages/astro/src/content/content-layer.ts`（内容层）
+**问题场景**：所有请求要鉴权 / 注入 user / 改 response header——每个页面写一遍。
 
-**作用**：统一管理内容集合（Markdown/MDX/JSON/数据库/自定义 loader）的加载、缓存、热更新。
-
-**关键代码段**（行 105-120）：
-
+**解决方案**：`src/middleware.ts` 拦截所有请求：
 ```ts
-async #getGenerateDigest() {
-    if (this.#generateDigest) return this.#generateDigest;
-    // xxhash is a very fast non-cryptographic hash function...
-    const { h64ToString } = await xxhash();
-    this.#generateDigest = (data) => {
-        const dataString = typeof data === 'string' ? data : JSON.stringify(data);
-        return h64ToString(dataString);
-    };
-    return this.#generateDigest;
-}
+import { defineMiddleware } from 'astro:middleware';
+export const onRequest = defineMiddleware(async (ctx, next) => {
+  ctx.locals.user = await getUser(ctx.request);
+  return next();
+});
 ```
 
-**WHY 用 xxhash（WASM）而非 Node crypto**：
+**关键参数**：
+- `src/middleware.ts`：约定
+- `defineMiddleware((ctx, next) => ...)`
+- `Astro.locals` 类型扩展
+- `sequence(m1, m2, m3)` 串行
+- `ctx.request` / `ctx.cookies`
 
-- 编译阶段要对每个 entry 算 digest，10K+ 文档时 crypto.createHash('sha256') 是瓶颈
-- xxhash-wasm 速度 5-10 GB/s，比 SHA256 快 20-50x
-- **不需要加密性**：digest 只用于"内容变了没"的去重，碰撞概率可接受
-- **WASM 而非原生 Node**：跨平台一致，避免 node-gyp 编译
+**最佳实践**：鉴权/限流放 middleware——所有路由生效；`sequence(m1, m2)` 串多个；`ctx.locals.user` 类型必扩展；`await next()` 必须——不 await 后续不跑。
 
-**PQueue 串行化**（行 73, 186）：
+---
 
-```ts
-this.#queue = new PQueue({ concurrency: 1 });
-sync(options: RefreshContentOptions = {}): Promise<void> {
-    return this.#queue.add(() => this.#doSync(options));
-}
-```
+### 模式 19：Hybrid 模式 + `prerender` 决策
 
-**WHY 串行**：`MutableDataStore` 写盘是 `JSON.stringify` + `writeFile` 两步，并发会互相覆盖。`#lastConfigDigest` 也是状态，串行才能正确比较。竞态是隐式 bug 源，串行用最简方式消除。
+**问题场景**：项目部分页静态（博客）部分 SSR（用户中心）——传统要两套部署。
 
-#### 文件 3：`packages/astro/src/core/create-vite.ts`（Vite 装配）
+**解决方案**：`output: 'hybrid'` 默认静态 + 单页 `export const prerender = false` 切 SSR。
 
-**作用**：把所有 Astro 内部 vite 插件装到 Vite 实例上。
+**关键参数**：
+- `output: 'static' | 'server' | 'hybrid'`
+- `prerender = true` 强制预渲染
+- `prerender = false` 强制 SSR
+- `hybrid`：默认静态 + 单页覆盖
+- 适配器必填 SSR
 
-**关键代码段**（行 76-145）：
+**最佳实践**：博客/文档 `output: 'static'`；用户中心 `output: 'server'`；混合 `hybrid` + `prerender` per-page；adapter 必选 Node/Vercel/Cloudflare 之一。
 
-```ts
-const _crawlCache = new Map<string, CrawlFrameworkPkgsResult>();
-function cloneCrawlResult(result: CrawlFrameworkPkgsResult) { /* 浅拷贝 */ }
-export function clearCrawlCache(): void { _crawlCache.clear(); }
+---
 
-// In createVite:
-let astroPkgsConfig = _crawlCache.get(crawlCacheKey);
-if (!astroPkgsConfig) {
-    astroPkgsConfig = await crawlFrameworkPkgs({
-        root, isBuild, viteUserConfig: settings.config.vite,
-        isFrameworkPkgByJson(pkgJson) {
-            if (pkgJson?.astro?.external === true) return false;
-            return (
-                pkgJson.peerDependencies?.astro ||
-                pkgJson.dependencies?.astro ||
-                pkgJson.keywords?.includes('astro') ||
-                pkgJson.keywords?.includes('astro-component') ||
-                /^(?:@[^/]+\/)?astro-/.test(pkgJson.name)
-            );
-        },
-    });
-    _crawlCache.set(crawlCacheKey, astroPkgsConfig);
-}
-```
+### 模式 20：性能优化 Zero-JS 默认 + 部分水合
 
-**WHY 缓存 `crawlFrameworkPkgs`**：这函数扫整个 `node_modules` 读 `package.json`，在大型 monorepo 里 5-10 秒。缓存 key 用 `${root}:${isBuild}`，避免 dev/build 互相污染。`clearCrawlCache()` 在 lockfile 变更时手动清。
+**问题场景**：现代框架动辄发 100KB+ JS 到客户端——博客/文档站根本不需要。
 
-**WHY 三层检测 `isFrameworkPkgByJson`**：
+**解决方案**：Astro 默认输出零 JS（除非 `client:*`），部分水合让"必要组件"才发 bundle。
 
-1. `peerDependencies.astro` / `dependencies.astro` → **确定是** Astro 生态
-2. `keywords: ['astro' | 'astro-component']` → **极可能是**（npm 元数据约定）
-3. `/^(?:@[^/]+\/)?astro-/` → **猜**（命名约定）
+**关键参数**：
+- 零 JS 默认：HTML only
+- `client:visible` 折叠组件
+- `client:idle` 空闲时
+- `<Image>` 组件：构建期优化
+- `<ViewTransitions />`：按需
 
-每层都有 false positive/negative 风险，三层组合是工程妥协。**外部化判断放在 pkgJson.astro.external** 是给 SSR adapter 留逃生口（避免 Node polyfill 被错误内联）。
-
-#### 文件 4：`packages/astro/src/runtime/server/hydration.ts`（指令提取）
-
-**作用**：从组件 props 里提取 `client:load`、`client:idle` 等指令，转成 `HydrationMetadata`。
-
-**关键代码段**（行 35-115）：
-
-```ts
-export function extractDirectives(inputProps, clientDirectives): ExtractedProps {
-    for (const [key, value] of Object.entries(inputProps)) {
-        if (key.startsWith('server:')) {
-            if (key === 'server:root') extracted.isPage = true;
-        }
-        if (key.startsWith('client:')) {
-            if (!extracted.hydration) extracted.hydration = { directive: '', value: '', ... };
-            switch (key) {
-                case 'client:component-path': extracted.hydration.componentUrl = value; break;
-                case 'client:component-export': extracted.hydration.componentExport.value = value; break;
-                case 'client:component-hydration': break;  // 编译器标记，运行时忽略
-                case 'client:display-name': break;          // 调试用
-                default: {
-                    extracted.hydration.directive = key.split(':')[1];
-                    extracted.hydration.value = value;
-                    if (!clientDirectives.has(extracted.hydration.directive)) {
-                        throw new Error(`Error: invalid hydration directive "${key}"...`);
-                    }
-                    if (extracted.hydration.directive === 'media' && typeof extracted.hydration.value !== 'string') {
-                        throw new AstroError(AstroErrorData.MissingMediaQueryDirective);
-                    }
-                }
-            }
-        } else {
-            extracted.props[key] = value;
-            if (!transitionDirectivesToCopyOnIsland.includes(key)) {
-                extracted.propsWithoutTransitionAttributes[key] = value;
-            }
-        }
-    }
-    return extracted;
-}
-```
-
-**WHY 保留 `client:component-hydration` 静默**：
-
-编译器在静态分析时把"这个 props 在编译期已绑定到某框架"作为 marker 写入，避免运行时再去遍历 renderers。`component.ts:118-128` 的 `isTagged = Component && Component[Renderer]` 走的就是这条快速路径。
-
-**WHY `clientDirectives` 从外部注入**：用户可在 `astro.config.ts` 自定义 `client:visible-on-hover`，框架必须以 Set 形式接收支持列表。硬编码会破坏扩展点。
-
-#### 文件 5：`packages/astro/src/core/routing/create-manifest.ts`（路由清单）
-
-**作用**：扫描 `src/pages/`，生成路由表（含动态参数、优先级、prerender 标志）。
-
-**关键代码段**（行 52-72）：
-
-```ts
-const ROUTE_DYNAMIC_SPLIT = /\[([\[\]()]+(?:\([^)]+\))?)\]/;
-
-function getParts(part: string, file: string) {
-    const result: RoutePart[] = [];
-    part.split(ROUTE_DYNAMIC_SPLIT).map((str, i) => {
-        if (!str) return;
-        const dynamic = i % 2 === 1;
-        const [, content] = dynamic ? /([^(]+)$/.exec(str) || [null, null] : [null, str];
-        if (!content || (dynamic && !/^(?:\.\.\.)?[\w$]+$/.test(content))) {
-            throw new Error(`Invalid route ${file} — parameter name must match /^[a-zA-Z0-9_$]+$/`);
-        }
-        result.push({ content, dynamic, spread: dynamic && ROUTE_SPREAD.test(content) });
-    });
-    return result;
-}
-```
-
-**WHY 校验参数名**：`[\w$]+` 限定有效 JavaScript 标识符。否则用户写 `/[中文]/` 这种路由时，框架生成的 `Astro.params['中文']` 在 JSON 序列化/反序列化时容易出兼容性问题（特别是 SSR 跨进程传输时）。**用 `\$` 显式允许美元符**是兼容 jQuery 时代遗物。
-
-**WHY `priority.ts` 单独成文件**：路由优先级（`[...slug]` vs `[id]` vs 静态）冲突时排序规则 50+ 行，独立成模块便于单测。
-
-#### 文件 6：`packages/astro/src/core/app/base.ts`（请求处理抽象基类）
-
-**作用**：所有 SSR/SSG/请求处理的统一抽象。
-
-**关键代码段**（行 168-198）：
-
-```ts
-constructor(manifest: SSRManifest, streaming = true, ...args: any[]) {
-    this.manifest = manifest;
-    this.baseWithoutTrailingSlash = removeTrailingForwardSlash(manifest.base);
-    this.pipeline = this.createPipeline(streaming, manifest, ...args);
-    this.manifestData = this.pipeline.manifestData;
-    this.#fetchHandler = new DefaultFetchHandler(this);
-    this.#errorHandler = this.createErrorHandler();
-}
-
-setFetchHandler(handler: { fetch: FetchHandler }): void {
-    this.#fetchHandler = handler;
-    this.#hasCustomFetchHandler = !(handler instanceof DefaultFetchHandler);
-}
-```
-
-**WHY 抽象 `BaseApp` + `AppPipeline`**：
-
-- `App`（生产）和 `DevApp`（开发）继承 `BaseApp`，`createPipeline` 各自返回 `AppPipeline` 或 `DevPipeline`
-- 同样的 `fetch(request)` 入口，dev 多出 HMR/overlay 处理，prod 走静态 manifest
-- `setFetchHandler` 允许 `src/app.ts` 用户自定义 fetch，**保留了与 Next.js Pages Router `getServerSideProps` 类似的逃逸口**
-
-**WHY 私有字段 `#fetchHandler` / `#hasCustomFetchHandler`**：闭包内状态不暴露给子类，feature detection（行 152-153 "only warn once"）基于私有 flag 避免重复警告。
-
-### 5.3 设计模式
-
-| 模式 | 出现位置 | 用意 |
-|------|---------|------|
-| **Pipeline** | `AppPipeline`、`DevPipeline` | 把"匹配→取数据→渲染→响应"拆为可组合阶段 |
-| **Adapter** | `astro:node/vercel/cloudflare/netlify` | 同一种 manifest 适配不同 runtime |
-| **Loader** | `glob/file` loader + 自定义 | 内容集合的"统一拉取接口" |
-| **Plugin Chain** | 30+ Vite 插件 | 单一职责可独立测试 |
-| **Observer** | `MutationObserver` 监 `astro:end` 注释 | 等 HTML 流式到达完成 |
-| **Symbol Mark** | `Symbol.for('astro.needsHeadRendering')` | 跨模块、跨实例共享元信息 |
-| **WeakMap Cache** | `astroFileToCompileMetadataWeakMap` | 编译元数据随 config 生命周期 |
-| **Strategy** | 4 个 `client:*` 指令 + 用户自定义 | 同一水合入口多种触发时机 |
-
-### 5.4 反模式
-
-- **`rendererAliases` + `clientOnlyValues` 硬编码**（`component.ts:34-35`）：把官方 renderer 名字写死。如果有人 fork `@astrojs/react` 取名 `@my/react`，`client:only` 指令识别会失败。改进：用 renderers 列表动态构建。
-- **`forbiddenKeys` 安全白名单**（`astro-island.ts:7`）很窄（仅 3 个），其他原型链污染面没覆盖。如 `componentExport.split('.')` 遍历靠 `Object.hasOwn` 防御，但 `Component[part]` 取值没冻结结果。
-- **`request[Symbol.for("astro.clientAddress")]`**（`base.ts:50` 注释）：依赖 `Symbol.for` 跨进程语义弱，多个 Astro 进程在同一 Node 全局时会冲突。
-- **路由匹配 `manifest.routes.find()` 线性扫**（`match.ts:11`）：100 路由内没问题，1000+ 启动期路由将成瓶颈。Next.js 的 `path-to-regexp` + trie 才是 10K+ 路由答案。
-- **`#getGenerateDigest` 每次 await**（`content-layer.ts:105`）：首次调用有 WASM 初始化开销，但函数级缓存（`if (this.#generateDigest) return ...`）已经做了。
-
-### 5.5 独特看点
-
-1. **`<astro-island>` 自定义元素 + 注释 marker**：HTML streaming 下"等子节点就绪"用注释节点而不是 Promise 巧妙——DOM 解析天然有顺序，注释是免费信号量。
-2. **`getRetryImportUrl` 用 URL hash 绕过模块缓存**（`astro-island.ts:103-108`）：浏览器 `import()` 失败时，加 `?astro-retry=ts` 重试但用 URL 哈希——hash 不发到 server，CDN 命中不变，**模块缓存被强制刷新**。这是处理"第三方脚本自我失败重试"的优雅招。
-3. **devalue 复活 12 种类型**（`astro-island.ts:22-37`）：`propTypes[0-11]` 对应 `Map/Array/RegExp/Date/Map/Set/BigInt/URL/Uint8Array/Uint16Array/Uint32Array/Infinity`。Astro 不发明序列化，复用 `devalue`（Rich Harris 的 Svelte 作者作品）——跨框架同款方案。
-4. **`enforce: 'pre'` + `WeakMap` 跨 build 缓存**（`vite-plugin-astro/index.ts:26-31`）：Astro 单进程多次构建（如 dev HMR 触发）时 `astroFileToCompileMetadata` 跨 build 共享，hoisted script 分析需要历史元数据。
-5. **content config digest 对比**（`content-layer.ts:88-92`）：`if (ctx.config.digest !== this.#lastConfigDigest) this.sync()`——只比较摘要不深比较对象，O(1) 决定是否重新加载。
-
-## 6. 运行机制（Bring It Up）
-
-### 6.1 启动脚本
-
-```bash
-# 安装
-pnpm install                  # 顶层 pnpm@11.0.9，启用 only-allow
-pnpm build                    # turbo 跑 astro/create-astro/@astrojs/*/astro-vscode
-
-# 本地 dev
-cd packages/astro
-pnpm run dev                  # 跑该子包 dev 模式
-
-# 测试
-pnpm test                     # = test:astro + test:integrations + test:language-tools
-pnpm test:unit                # vitest 单元
-pnpm test:integration         # vitest 集成
-pnpm test:e2e                 # playwright 端到端
-
-# Smoke test
-pnpm test:smoke:example       # 跑 @example/* 构建
-pnpm test:smoke:docs          # 跑 docs 站点构建
-```
-
-### 6.2 本地起服务
-
-```bash
-# 装 cli
-npm install -g create-astro
-
-# 创建项目
-npm create astro@latest my-site
-cd my-site
-npm install
-npm run dev      # http://localhost:4321
-```
-
-### 6.3 Smoke Test
-
-```bash
-# 编译
-pnpm run build:ci
-
-# 跑一个 example
-cd examples/minimal
-pnpm install
-pnpm run build   # 成功即通过
-```
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-    title Astro 关键里程碑
-    dateFormat YYYY-MM
-    section 基础期
-    Astro 0.x 概念验证           :done, 2020-06, 6M
-    1.0 Stable 首个生产版         :done, 2021-12, 3M
-    section 内容期
-    2.0 Content Collections      :done, 2023-01, 4M
-    3.0 View Transitions         :done, 2023-11, 3M
-    section 现代化期
-    4.0 Server Islands           :done, 2024-12, 4M
-    5.0 Content Layer API         :done, 2025-07, 4M
-    6.0 Server Actions + rust     :active, 2026-04, 3M
-```
-
-**主要节点**：
-
-- **2020-06**：Fred K. Schott（前 Stripe）发起，主打"像 Jekyll 一样的内容站 + 组件化"
-- **2021-12**：1.0 发布，确定"零 JS 默认 + 局部水合"定位
-- **2022-08**：2.0 加 Content Collections（Zod 验证 frontmatter）
-- **2023-11**：3.0 加 View Transitions API 集成（无刷新路由）
-- **2024-12**：4.0 Server Islands 推出（"组件级 SSR"）
-- **2025-07**：5.0 Content Layer 抽象（任何数据源 = Loader）
-- **2026-04**：6.0 Server Actions + 实验性 Rust 编译器
-
-## 8. 质量保障（How It Doesn't Break）
-
-### 8.1 四道防线
-
-| 防线 | 工具 | 覆盖 |
-|------|------|------|
-| 单元测试 | vitest@2 | `src/**/*.test.ts`（packages/astro/test/） |
-| 集成测试 | vitest | fixtures 端到端行为 |
-| E2E | playwright | 真实浏览器交互 |
-| 类型检查 | `tsc -b` + @astrojs/check | 整个 monorepo |
-
-### 8.2 CI
-
-`.github/workflows/ci.yml` 跑：lint → typecheck → unit → integration → e2e → smoke。`biome` 做格式/导入，`eslint` 做代码规范，`knip` 找未用导出。
-
-### 8.3 Lint & Format
-
-- `biome@2.4.10` 主格式化（性能 10x vs prettier）
-- `eslint@10` + `eslint-plugin-regexp` 规则
-- `prettier@3` 兜底格式化（biome 不擅长的场景）
-
-### 8.4 性能基准
-
-`@benchmark/*` 子包是 Astro 内部 benchmark 套件。`pnpm benchmark` 命令跑 `astro-benchmark` 工具，对比不同 Astro 版本/配置的 build 时延、产物大小、FCP/LCP。
-
-## 9. 生态依赖（Map of the World）
-
-### 9.1 依赖图
-
-```mermaid
-flowchart LR
-    A[astro 核心] --> V[Vite 6+]
-    A --> C[@astrojs/compiler Rust]
-    A --> Z[Zod 4 验证]
-    A --> D[devalue 序列化]
-    A --> P[p-queue 任务]
-    A --> X[xxhash-wasm 摘要]
-    A --> Pic[piccolore 颜色]
-    A --> TG[tinyglobby glob]
-
-    V --> R[Rollup 4]
-    Z --> AC[Astro Config schemas]
-    AC --> PZ[picoquery]
-```
-
-### 9.2 集成生态（15+ 官方包）
-
-- **UI 框架**：react, preact, solid-js, vue, svelte, alpinejs, lit
-- **适配器**：node, cloudflare, vercel, netlify, deno
-- **内容**：mdx, db（libSQL/Turso）, astro-rss
-- **体验**：sitemap, partytown
-- **语言工具**：astro-check, language-server, ts-plugin, vscode
-
-### 9.3 合规检查清单
-
-- ✅ MIT License（允许商用）
-- ✅ CII Best Practices Badge（核心基础设施认证）
-- ✅ Open Governance 治理文档
-- ✅ Code of Conduct
-- ⚠️ 编译器外部化（`withastro/compiler` 独立仓库）需双仓库审计
-- ⚠️ Server Islands 加密模块需安全审计
-
-## 10. 生产实践（Battle-Tested）
-
-| 维度 | 状态 | 实现 |
-|------|------|------|
-| 配置热更新 | ✅ | vite-load + settings timer + dev HMR |
-| 优雅停服 | ✅ | `@astrojs/node` SIGTERM → drain in-flight |
-| 限流 | ❌ | 应用层负责，框架无内置 |
-| 链路追踪 | ⚠️ | 通过 `@astrojs/db` + OpenTelemetry hook 集成 |
-| 健康检查 | ⚠️ | 部署到 K8s 需加 `/healthz` 路由 |
-| 结构化日志 | ✅ | `core/logger` 支持 JSON 输出 |
-| CSP | ✅ | `csp` 模块支持 hash/nonce 策略 |
-| 缓存 | ✅ | `cache/runtime` + 内存 provider + 自定义后端 |
-
-## 11. 社区文化（People & Process）
-
-- **Open Governance**：决策走 RFC 流程（`withastro/roadmap` 仓库），公开投票
-- **维护者**：core team 10+ 人，分编译器/runtime/集成/DX 四个领域
-- **RFC**：重大功能发 PR 到 `withastro/rfcs`，社区 review
-- **沟通**：Discord 4 万+ 成员，活跃 GitHub Discussions
-- **议题活跃**：月均 200+ issue 关闭，PR 100+ 合并
-- **技能平台**：`.agents/skills/astro-developer/` 仓库内置 Claude 技能（architecture/constraints/debugging/testing）
-- **变更日志**：`.changeset/` 用 changesets 管理 semver
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **PQueue 串行化写盘任务**——`content-layer.ts:73` 用 `concurrency: 1` 消除隐式竞态，比锁/Mutex 代码量少 80%
-2. **30+ 内部 Vite 插件的"小而专"哲学**——每个插件 < 200 行，单一职责，可独立单测
-3. **`<astro-island>` + 注释 marker 做流式 HTML 同步**——`MutationObserver` 监听 `astro:end` 注释，等待 SSR 子节点就绪后才水合
-
-### 12.2 必避 3 坑
-
-1. **硬编码框架名（`rendererAliases`、`clientOnlyValues`）**——会卡住社区分叉。改为：让 renderer 在 manifest 自报"支持的 client 指令"
-2. **路由匹配线性扫**——100 路由没事，1000+ 启动慢。预先建 trie 或 path-to-regexp
-3. **Server Islands 默认 1MB body 限制写死**——业务复杂时不够用。配置项必须外露
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7天复刻最小 Astro
-    dateFormat YYYY-MM-DD
-    section Day 1-2 骨架
-    Vite + 路由扫描 + manifest   :a1, 2026-06-02, 2d
-    section Day 3-4 渲染
-    .astro 编译器接入(WASM)       :a2, after a1, 2d
-    SSR 渲染管线 + islands        :a3, after a2, 2d
-    section Day 5-6 内容
-    Content collections + glob    :a4, after a3, 2d
-    section Day 7 打磨
-    client:* 指令 + HMR          :a5, after a4, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数 | 评语 |
-|------|------|------|
-| 架构清晰度 | 9/10 | 30+ 插件命名一致，职责清晰 |
-| 代码可读性 | 8/10 | 注释多但部分文件超 1000 行（create-manifest.ts） |
-| 文档完整度 | 9/10 | docs.astro.build + 仓库 .agents/ 技能 |
-| 性能 | 9/10 | Rust 编译器 + 岛屿默认零 JS |
-| 可扩展性 | 8/10 | Adapter/Loader/Renderer 三个扩展点 |
-| 维护负担 | 6/10 | monorepo + 30+ 集成包，PR 多 |
-| 学习曲线 | 7/10 | 概念多（content layer/server islands），初学者易迷路 |
-| 总评 | 8.0/10 | 顶级内容站框架，Vite 时代的代表 |
-
-## 13. 学习萃取（Cheat Sheet）
-
-### 一句话价值
-
-Astro 用"零 JS 默认 + 局部水合"重塑了内容站开发范式：让 MPA 性能 + 组件化 DX 共存。
-
-### 3 核心洞察
-
-1. **岛屿不是组件，是"组件边界的水合决策"**——编译器在构建期静态推断哪些组件需要客户端 JS，剩下的全是 HTML
-2. **内容层是"统一数据总线"**——把文件、API、数据库、远程 CMS 都抽象成 `Loader`，用 PQueue + xxhash 保证一致性和性能
-3. **30+ Vite 插件的"小而专"哲学**——单一职责 + WeakMap 缓存 + enforce 顺序，是大型 Vite 应用的范式
-
-### 5 段必读代码
-
-| 文件 | 行号 | 为什么必读 |
-|------|------|----------|
-| `packages/astro/src/runtime/server/astro-island.ts` | 53-138 | 自定义元素 + 注释 marker 双重保险等流式 HTML |
-| `packages/astro/src/content/content-layer.ts` | 73, 105-120, 185-200 | PQueue 串行 + xxhash-wasm + 摘要对比触发 sync |
-| `packages/astro/src/core/create-vite.ts` | 60-145 | 30+ 插件装配 + crawl 缓存 + 三层 framework pkg 检测 |
-| `packages/astro/src/runtime/server/hydration.ts` | 35-115 | `extractDirectives` 提取 client:* + 校验 + 拆分 props |
-| `packages/astro/src/core/routing/pattern.ts` | 4-47 | RoutePart[][] → RegExp 编译，spread/dynamic/optional 三态 |
-
-### 1 反模式
-
-**`rendererAliases` + `clientOnlyValues` 硬编码**（`component.ts:34-35`）：官方 renderer 名字写死，社区 fork 改名后 `client:only` 失效。改进：让 renderer 在 manifest 自报元数据。
-
-### 1 可复用模式
-
-**PQueue 串行化 + 摘要触发**（`content-layer.ts`）：写盘前串行排队 + 状态 digest 比对决定是否重跑。这种"廉价单线程 + 智能去重"组合可推广到任何"配置变更触发数据重建"场景。
-
-### 3 立刻能用
-
-1. **`xxhash-wasm`**：任何需要快速摘要的 Node 应用都可装，5-10 GB/s 速度
-2. **`<astro-island>` 注释 marker 同步**：流式 SSR 时等待子节点就绪的方案，可移植到任何自定义元素框架
-3. **`crawlFrameworkPkgs` + 三层检测**：自动识别 monorepo 集成包的最佳实践，比手写 allowlist 健壮
-
-## 14. 项目特点速查
-
-### 独特看点
-
-- **零 JS 默认**：同构输出，但客户端 JS 仅在 `client:*` 指令处出现
-- **Rust 编译器**：`.astro` 文件由独立 Rust 仓库编译，性能 + 团队分工双赢
-- **30+ Vite 插件**：`astro:build`, `astro:routes`, `astro:scripts`, `astro:html`, `astro:css`, `astro:pages`, `astro:content`, `astro:env`, `astro:i18n`, `astro:transitions`, `astro:head` 等
-- **Content Layer 统一数据**：file/glob/API/DB/CMS 都用同一 `Loader` 接口
-- **Server Islands 加密 slots**：组件级 SSR + 加密 payload
-- **PQueue 串行同步**：内容层用 `concurrency: 1` 消除竞态
-
-### 与同类对比
-
-```mermaid
-quadrantChart
-    title 内容站框架对比
-    x-axis "低 DX" --> "高 DX"
-    y-axis "低性能" --> "高性能"
-    quadrant-1 "现代派"
-    quadrant-2 "传统静态"
-    quadrant-3 "老派"
-    quadrant-4 "重 JS"
-    "Astro": [0.92, 0.88]
-    "Next.js": [0.85, 0.72]
-    "Nuxt": [0.80, 0.68]
-    "SvelteKit": [0.82, 0.85]
-    "Hugo": [0.30, 0.95]
-    "Jekyll": [0.25, 0.80]
-    "Remix": [0.75, 0.65]
-    "Eleventy": [0.55, 0.92]
-```
-
-Astro 占据"高 DX + 高性能"第一象限右上角，Hugo 性能高但 DX 差，Next.js/Nuxt 功能强但默认输出偏重。
-
-## 附：仓库元信息
-
-- 路径：`G:\实战案例\GitHub顶尖项目\astro\`
-- 大小：6,362 文件（含 monorepo 全量）
-- 总文件：6,362（packages/astro 606 源文件）
-- 解析时间：2026-06-02
-- 锁定版本：astro@6.4.2
-- Node 要求：>= 22.12.0
-- 关键依赖：Vite 6+, @astrojs/compiler (Rust), Zod 4, devalue, p-queue, xxhash-wasm
-
-## 一句话总结
-
-Astro 的精髓 = Rust 编译器（快） + 30+ Vite 插件（组合） + 岛屿边界（零 JS） + 内容层（统一数据） + PQueue（串行一致） + 自定义元素（流式水合）。它的可借鉴之处不止是技术，更是"在小而专的模块上构建宏大能力"的工程哲学。
-
-## 引用
-
-- 仓库根目录：`G:\实战案例\GitHub顶尖项目\astro\`
-- 主包源：`packages/astro/src/`
-- 关键文件：
-  - `packages/astro/src/runtime/server/astro-island.ts` (276 行)
-  - `packages/astro/src/content/content-layer.ts` (477 行)
-  - `packages/astro/src/core/create-vite.ts` (400 行)
-  - `packages/astro/src/runtime/server/hydration.ts` (188 行)
-  - `packages/astro/src/core/routing/pattern.ts` (58 行)
-  - `packages/astro/src/core/routing/create-manifest.ts` (1012 行)
-  - `packages/astro/src/core/routing/match.ts` (51 行)
-  - `packages/astro/src/core/app/base.ts` (637 行)
-  - `packages/astro/src/runtime/server/render/component.ts` (598 行)
-  - `packages/astro/src/core/config/config.ts` (166 行)
-  - `packages/astro/src/core/server-islands/endpoint.ts` (223 行)
-  - `packages/astro/src/runtime/server/render/astro/factory.ts` (36 行)
-  - `packages/astro/src/content/data-store.ts` (127 行)
-  - `packages/astro/src/content/loaders/glob.ts` (377 行)
-  - `packages/astro/src/vite-plugin-astro/index.ts` (339 行)
+**最佳实践**：博客/文档站零 JS——Lighthouse 满分；`client:visible` 适用于评论/分享；`client:idle` 适用于分析脚本；用 `<link rel="preload">` 预加载字体。

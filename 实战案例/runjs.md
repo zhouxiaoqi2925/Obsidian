@@ -1,35 +1,35 @@
-# runjs - 商业闭源 Electron 的 JS/TS 桌面 playground 教科书
+# runjs - 商业闭源 Electron 项目的"空仓库"反推方法论
 
 **GitHub**: lukehaas/RunJS
 **Star**: ~5k
-**语言**: JavaScript / TypeScript (无源码，仅周边文件)
-**主题**: Electron / 桌面应用 / 代码沙盒 / AI 编程
+**语言**: JavaScript / TypeScript（周边文件，无应用源码）
+**主题**: Electron / 桌面应用 / 代码沙盒 / 闭源反推
 **适用场景**: 学习"商业闭源 Electron 项目如何用周边文件反推架构"、Chrome/Node 双运行时协调、GUI 级 REPL 设计
 
-> RunJS 是一款基于 Electron 的 JavaScript / TypeScript 桌面沙盒，闭源商业付费，仓库内无应用源码。Luke Haas 开发，8 年 30+ 大版本。本文从 CHANGELOG（538 行）、FOSS_Notices（1327 行）、5 语言翻译反推其实现。
+---
 
-## 第一段：基础范式（模式 1-5）
+## 第一段：基础范式
 
-### 模式 1 · 商业 Electron 项目的"空仓库"反推法
+### 模式 1：商业 Electron 项目的"空仓库"反推法
 
-**问题场景**：拿到一个商业闭源 Electron app 的 GitHub 仓库，发现没有 src/、没有 package.json、CHANGELOG 写了 8 年；怎么快速理解其架构？
+**问题场景**：拿到商业闭源 Electron app 的 GitHub 仓库，发现没有 src/、没有 package.json、CHANGELOG 写了 8 年；怎么快速理解其架构？
 
 **解决方案**：把仓库当"考古现场"——CHANGELOG 是产品时间机器（每条 "Upgraded Node" = 商业压力），FOSS_Notices 是真实依赖图，翻译文件是 UI 全息图。三者并排即可还原模块切分。
 
 **关键参数**：
 - CHANGELOG 行数与产品寿命正相关（538 行 = 8 年 30+ 版本）
 - FOSS_Notices 长度 = 真正打进 .asar 的库数量（67 库 = 1327 行）
-- i18n 命名空间 = 内部模块切分（main/common/editor/preferences/license/vars/installer/snippets）
+- i18n 命名空间 = 内部模块切分（main / common / editor / preferences / license / vars / installer / snippets）
 - 翻译键 `errorXxx` 子串 = 错误处理矩阵
 - 翻译键 `setXxx` 子串 = 用户可配置项
 
 **最佳实践**：面对"无源码"商业仓库，优先读 CHANGELOG.md 头尾 + FOSS_Notices 头 100 行 + 主语言翻译前 50 键，30 分钟即可画出 80% 架构。
 
-### 模式 2 · 三运行时并存架构
+### 模式 2：三运行时并存架构
 
 **问题场景**：开发者想要"一段代码同时跑 Node 和 DOM"——既需要 `require('axios')` 又要 `window.fetch`，VSCode 启动慢，Node REPL 没 GUI。
 
-**解决方案**：v4.0.0 起引入"Browser & Node.js (default) / Node only / Browser only" 三模式——同进程 fork Node Worker 跑后端，iframe + WebView 跑浏览器 API，输出按行号回流编辑器。
+**解决方案**：v4.0.0 起引入"Browser & Node.js / Node only / Browser only" 三模式——同进程 fork Node Worker 跑后端，iframe + WebView 跑浏览器 API，输出按行号回流编辑器。
 
 **关键参数**：
 - Runtime 选择 = 策略模式，编译期不变
@@ -38,24 +38,24 @@
 - 结果回流协议 = stdout + tsserver 诊断，按"行号"反查回编辑器 gutter
 - 默认 runtime = "Browser & Node.js"，符合 80% 用户预期
 
-**最佳实践**：当用户既要 Node 生态又要 DOM 时，拆双进程 + IPC 桥比共享 V8 context 更稳；RunJS 选了 worker 进程 + iframe 双路，崩溃边界清晰。
+**最佳实践**：用户既要 Node 生态又要 DOM 时，拆双进程 + IPC 桥比共享 V8 context 更稳；RunJS 选 worker + iframe 双路，崩溃边界清晰。
 
-### 模式 3 · Logpoints 替代传统 Debugger
+### 模式 3：Logpoints 替代传统 Debugger
 
 **问题场景**：教学/演示场景下，传统 breakpoint debugger 太重——要启 inspector、要写 launch.json，新手望而生畏。
 
-**解决方案**：在 tsserver 上加 `provideInlineValues` 实现 logpoints——编辑器左侧 gutter 出现"logpoint 标记"，代码运行后输出面板自动按行号打印顶层表达式结果，hover 高亮对应行。
+**解决方案**：在 tsserver 上加 `provideInlineValues` 实现 logpoints——编辑器左侧 gutter 出现"logpoint 标记"，代码运行后输出面板自动按行号打印顶层表达式结果。
 
 **关键参数**：
 - logpoints ≠ breakpoints：无暂停、无 inspector、纯输出
 - `autoLog` 翻译键 = "Automatically log the result of each top-level expression"
 - 输出面板每条带"匹配行号"，hover 反查回编辑器
-- 适用场景 = 教学/API 调研/快速验证
+- 适用场景 = 教学 / API 调研 / 快速验证
 - 不替代：复杂条件断点、async 调用栈、内存快照
 
 **最佳实践**：教学/演示工具优先做 logpoints 而非 debugger；用户零摩擦，90% 场景够用，省掉 80% debugger 复杂度。
 
-### 模式 4 · 4 Provider AI Chat 统一接入
+### 模式 4：4 Provider AI Chat 统一接入
 
 **问题场景**：用户用 OpenAI / Gemini / Mistral / Anthropic 不同 AI 服务商，每个有不同 API 协议；开发者想"一个 UI 切换 provider"。
 
@@ -66,13 +66,13 @@
 - 用户自配 key = 零运营成本，隐私边界清晰
 - `aiBaseUrl` 支持自定义（兼容代理/Azure）
 - 模型列表按 provider 动态拉取
-- 失败处理 = 翻译键 4 类（invalid / notFound / twoMachinesActive / connectionProblem）
+- 失败处理 = 4 类（invalid / notFound / twoMachinesActive / connectionProblem）
 
 **最佳实践**：AI 接入做"接口 + 多 adapter + 4 配置键"模式；用户自配 key 优于中心化代理，规避合规和成本。
 
-### 模式 5 · Magic Comment 注释驱动功能
+### 模式 5：Magic Comment 注释驱动功能
 
-**问题场景**：在 playground 工具里，用户想对部分代码"豁免运行"或"保留旧值"；加菜单太重，加配置项太散。
+**问题场景**：playground 工具里，用户想对部分代码"豁免运行"或"保留旧值"；加菜单太重，加配置项太散。
 
 **解决方案**：`// @runjs-skip` / `// @runjs-keep` 等 magic comment——注释驱动行为，编辑时无需打开设置。
 
@@ -81,20 +81,22 @@
 - 解析位置 = Babel transform 之前
 - 适用 flag = skip / keep / pure / noLog
 - 翻译键 `toggleMagicComment` 暴露为菜单项
-- 用户群体 = 教学/演示/API 文档作者
+- 用户群体 = 教学 / 演示 / API 文档作者
 
 **最佳实践**：playground 类工具做"magic comment"开关；零配置成本，用户学一次永久受益。
 
-## 第二段：扩展范式（模式 6-10）
+---
 
-### 模式 6 · i18n 命名空间设计
+## 第二段：扩展范式
+
+### 模式 6：i18n 命名空间设计
 
 **问题场景**：商业应用菜单/对话框/设置项极多，每加一个菜单要在 5 个语言文件同步字符串；翻译外包经常漏改、拼写错误传染。
 
 **解决方案**：`translations/{lang}/translation.json` 单文件 + 顶层 8 个命名空间（`main` / `common` / `editor` / `preferences` / `license` / `vars` / `installer` / `snippets`）——按"用户行为"和"对象类型"切分。
 
 **关键参数**：
-- 8 命名空间 = 用户行为（main）+ 通用动词（common）+ 业务模块（editor/preferences/license...）
+- 8 命名空间 = 用户行为（main）+ 通用动词（common）+ 业务模块（editor / preferences / license）
 - 区域分文件 ≠ 按字段分文件（每文件 300+ 行，翻译者一次拿全）
 - 命名空间粒度 = "新增一个菜单项只动 1 个 key，5 个文件同步"
 - 同步成本 = 5 文件 × 1 key = 5 行 diff
@@ -102,23 +104,11 @@
 
 **最佳实践**：i18n 按"行为 + 对象"分命名空间；加 PR lint 检查拼写（避免 `errorOccured` 传染 5 语言）。
 
-### 模式 7 · Release Webhook 极简管线
+### 模式 7：Release Webhook 极简管线
 
 **问题场景**：商业闭源项目，构建在内网，公开仓库如何触发发布？完整 GitHub Actions 编译流程会暴露编译命令。
 
 **解决方案**：`.github/workflows/release.yml` 仅 16 行——`release: published` 触发后 POST 一个 webhook 到 `$WEBHOOK_URL`，负载 `{appId, releaseId, repository, owner}`，由内部 CI 接手。
-
-```
-release:published
-   ↓
-POST $WEBHOOK_URL
-   ↓
-内部 CI 抓 .dmg/.exe/.AppImage
-   ↓
-上传到 runjs.app/releases/latest
-   ↓
-Squirrel auto-update 推送终端用户
-```
 
 **关键参数**：
 - 仓库 GitHub 角色 = 法律凭证 + 事件通知管道
@@ -127,13 +117,13 @@ Squirrel auto-update 推送终端用户
 - 内部 CI 抓 GitHub release 附件 = 单一数据源
 - 优点：仓库极简、零暴露、合规清晰
 
-**最佳实践**：商业/强合规项目把"代码仓库只发事件、构建在内网"做默认解耦；公开仓库不被攻击面扩大。
+**最佳实践**：商业/强合规项目把"代码仓库只发事件、构建在内网"做默认解耦；公开仓库攻击面不扩大。
 
-### 模式 8 · Squirrel 跨平台自动更新
+### 模式 8：Squirrel 跨平台自动更新
 
 **问题场景**：桌面 app 跨 macOS/Windows/Linux 三平台分发，用户安装后如何无感升级？强制下载 dmg 太重。
 
-**解决方案**：Squirrel-based auto-update（macOS 走 Squirrel.Mac，Windows 走 Squirrel.Windows，Linux 走 AppImage 增量）。CHANGELOG v2.8 专门提"Change the way auto-updates are handled"。
+**解决方案**：Squirrel-based auto-update——macOS 走 Squirrel.Mac，Windows 走 Squirrel.Windows，Linux 走 AppImage 增量。CHANGELOG v2.8 专门提"Change the way auto-updates are handled"。
 
 **关键参数**：
 - Squirrel.Mac = .dmg + sparkle
@@ -144,7 +134,7 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：桌面 app 选 Squirrel 系（vs. Electron 自带 autoUpdater）；跨平台一致性更好，macOS 体验接近 App Store。
 
-### 模式 9 · 许可证订阅 + 降级机制
+### 模式 9：许可证订阅 + 降级机制
 
 **问题场景**：商业软件年费到期后，强制关闭会激怒老用户；放任继续用又影响续费。
 
@@ -159,7 +149,7 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：订阅制做"提前提醒 + 自动降级"，避免强制关闭；老用户品牌忠诚度高，温和降级比强关更赚 LTV。
 
-### 模式 10 · .env 自动加载
+### 模式 10：.env 自动加载
 
 **问题场景**：开发者测试 API key、数据库连接串，每次手动 `dotenv.config()` 太烦；又要兼容用户已有的 dotenv 习惯。
 
@@ -174,9 +164,11 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：本地 playground 工具内置 .env 加载；零配置成本，对接 SaaS API 体验质变。
 
-## 第三段：进阶范式（模式 11-15）
+---
 
-### 模式 11 · 翻译键反推模块切分法
+## 第三段：进阶范式
+
+### 模式 11：翻译键反推模块切分法
 
 **问题场景**：商业闭源项目无源码，但有完整 i18n；如何从翻译文件反推内部模块结构？
 
@@ -191,7 +183,7 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：审计商业闭源 app 时，导出所有翻译键按命名空间分组，30 分钟画出 80% 模块图。
 
-### 模式 12 · FOSS_Notices 真实依赖图
+### 模式 12：FOSS_Notices 真实依赖图
 
 **问题场景**：商业软件必须附 FOSS 通告（GPL/MIT/Apache 系义务），这恰好是真实打进 .asar 的依赖清单。
 
@@ -199,14 +191,14 @@ Squirrel auto-update 推送终端用户
 
 **关键参数**：
 - 67 库 = 真实依赖数量（package.json 推测 80-100，含 dev）
-- 关键库 = CodeMirror (MIT) / Babel (MIT) / asar (MIT) / electron-log (MIT) / Prettier (推断) / tsserver (推断)
+- 关键库 = CodeMirror (MIT) / Babel (MIT) / asar (MIT) / electron-log (MIT)
 - 升级节奏 = Electron 主版本每 6-12 个月
 - 许可证合规 = 1327 行 = 67 库全披露
 - 推断置信度 = 90%（商业合规要求极严）
 
 **最佳实践**：从 FOSS_Notices 反推运行时依赖图；商业闭源项目无法直接读 package.json，但 FOSS 是法定披露。
 
-### 模式 13 · Loop Protection 与大文件保护
+### 模式 13：Loop Protection 与大文件保护
 
 **问题场景**：用户写了死循环 `while(true){}`，worker 进程卡死整个 app；粘贴了 50MB 文件，编辑器 OOM。
 
@@ -221,7 +213,7 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：playground 工具必装 3 类防护（loop / 大文件 / 错误粘贴）；90% 崩溃源自这 3 类。
 
-### 模式 14 · CodeMirror 6 + tsserver 集成
+### 模式 14：CodeMirror 6 + tsserver 集成
 
 **问题场景**：编辑器要支持 JS/TS 语法高亮、自动补全、类型检查、hover info；自研成本极高。
 
@@ -236,7 +228,7 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：JS/TS 编辑器集成走 CodeMirror 6 + tsserver；vs. Monaco，启动快 2-3 倍，体积小 50%。
 
-### 模式 15 · Activity Bar + Status Bar VSCode 化
+### 模式 15：Activity Bar + Status Bar VSCode 化
 
 **问题场景**：开发者习惯 VSCode 的左侧图标栏（Activity Bar）和底部状态栏（Status Bar）；新工具要降低学习成本。
 
@@ -251,9 +243,11 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：开发者工具 UI 抄 VSCode（activity bar + status bar + command palette）；用户群重合度高，迁移摩擦小。
 
-## 第四段：实战范式（模式 16-20）
+---
 
-### 模式 16 · Chromium / Node / V8 同步升级
+## 第四段：实战范式
+
+### 模式 16：Chromium / Node / V8 同步升级
 
 **问题场景**：商业 Electron 工具的安全生命线 = 跟住 Chromium 主版本；但 Chromium 每 6-8 周一个 major，Node 每 6 个月，V8 嵌在 Chromium 里——三连升级成本极高。
 
@@ -268,7 +262,7 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：商业 Electron 项目把"Chromium 升级"当月度 KPI；不发版本 = 用户被旧 Chromium 漏洞打，强压力驱动迭代。
 
-### 模式 17 · Tab Unresponsive 检测
+### 模式 17：Tab Unresponsive 检测
 
 **问题场景**：用户开了 20 个 tab，某个 worker 进程卡死（IPC 超时），整个 app 体验崩坏。
 
@@ -283,7 +277,7 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：多 tab 桌面 app 必装 unresponsive 检测；单 tab 强杀 vs. 整 app 崩溃，体验天差地别。
 
-### 模式 18 · NPM 包管理白名单
+### 模式 18：NPM 包管理白名单
 
 **问题场景**：playground 工具允许 `npm install` 任意包，安全风险高（恶意包执行任意代码），但完全禁用又没价值。
 
@@ -298,7 +292,7 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：NPM 集成做"白名单 + 警告"而非"黑名单 + 拒绝"；playground 场景"试一下"是核心价值。
 
-### 模式 19 · Snippet 库导入导出
+### 模式 19：Snippet 库导入导出
 
 **问题场景**：开发者积累的代码片段（snippet）需要跨设备同步、跨工具复用；纯本地文件难分享。
 
@@ -313,24 +307,14 @@ Squirrel auto-update 推送终端用户
 
 **最佳实践**：snippet 库做"本地文件 + 用户云盘同步"而非"中心化账号"；隐私边界清晰，无运营成本。
 
-### 模式 20 · 7 天复刻 RunJS-like 路线
+### 模式 20：7 天复刻 RunJS-like 路线
 
 **问题场景**：开发者想复刻 RunJS 的核心体验（playground + 多 runtime + AI），但不想从零摸索。
 
 **解决方案**：7 天 MVP 拆解——Day 1-3 搭核心（Electron + CodeMirror + Worker 拆双 runtime + Babel transpile + auto-run），Day 4-6 产品化（设置面板 + .env + snippet + NPM 白名单），Day 7 加分（AI Chat 单 provider + logpoints）。
 
-```
-Day 1: Electron + CodeMirror 6 + 双窗口布局
-Day 2: 主进程 + Worker 拆 Node/Browser runtime
-Day 3: Babel transpile + auto-run on change
-Day 4: 设置面板（8 分类）+ .env 加载
-Day 5: Snippet 库 + import/export + 跨设备同步
-Day 6: NPM 包管理（白名单 + 警告）
-Day 7: AI Chat（单一 provider）+ logpoints
-```
-
 **关键参数**：
-- 技术栈 = Electron + CodeMirror 6 + React（推测）
+- 技术栈 = Electron + CodeMirror 6 + React
 - 关键库 = tsserver (LSP) / Babel / electron-log / asar
 - MVP 范围 = 3 runtime + AI + snippet + .env
 - 复刻难度 = 8/10（多 Chromium/Node 同步升级是隐性成本）
@@ -338,32 +322,14 @@ Day 7: AI Chat（单一 provider）+ logpoints
 
 **最佳实践**：复刻 playground 工具，先做"3 runtime + logpoints"核心体验；其他都是装饰，2 周内能出可用品。
 
-## 项目速查
+---
 
-**仓库元信息**：
-- 路径：`G:\实战案例\GitHub顶尖项目\runjs\`
-- 大小：~239 KB
-- 总文件：13
-- License：商业（仓库无 LICENSE）
-- 状态：v4.0.5（2026-05-24）
+## 附录：3 个核心文件
 
-**技术栈**：
-- 主进程：Electron
-- 渲染层：CodeMirror 6 + React（推测）
-- 引擎：Chromium V8 14.6 / Node 24.14.1（v4.0.0 起）
-- LSP：TypeScript tsserver
-- AI：OpenAI / Gemini / Mistral / Anthropic SDK
-- 日志：electron-log
-- 自动更新：Squirrel
+1. `CHANGELOG.md` — 538 行产品时间机器（8 年架构演进）
+2. `FOSS_Notices.md` — 1327 行 67 库真实依赖图
+3. `translations/en/translation.json` — 344 键 UI 树全息图
 
-**3 核心洞察**：
-1. CHANGELOG 是产品的时间机器（538 行 = 8 年架构演进）
-2. 翻译文件是 UI 树的真实全息图（344 键 = 完整功能矩阵）
-3. 多运行时是 Electron 的杀手锏（v4.0 拆 Browser/Node/双路）
+## 一句话总结
 
-**1 反模式**：`errorOccured` 拼写错误传播到 5 语言 → i18n key 没做拼写 lint。
-
-**3 立刻能用**：
-1. 抄 `.github/workflows/release.yml` 做"代码仓库只发事件、构建在内网"解耦
-2. 翻译文件按"命名空间 + 区域"分文件，加 PR lint 检查拼写
-3. CHANGELOG 强制 3 段（Added / Fixed / Changed）+ 显式列依赖主版本号
+runjs = 商业闭源 Electron 项目的"空仓库反推"样本（CHANGELOG + FOSS_Notices + i18n 还原 80% 架构）+ 3 运行时并存（Node Worker + iframe + WebView）+ Logpoints 替代 debugger + Magic Comment 注释驱动，把"playground 工具"做到开发者秒上手。

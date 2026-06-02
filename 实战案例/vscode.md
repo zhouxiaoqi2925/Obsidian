@@ -1,454 +1,351 @@
----
-title: vscode
-type: 编辑器
-lang: TS
-stars: 173k+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - 编辑器
----
-
-# vscode · 项目深度解析
-
-> 微软开源的现代代码编辑器
-> 来源：项目\vscode-main.zip
-
-## 写在前面：解析哲学
-
-按 V3 模版，**先骨架后血肉，先 What 后 Why，最后 How to steal**。
-每个小点都遵循：点状解析 → 思维导图 → 落地模板 → 反例警示。
-
----
-
-## 0. 解析前的 5 个准备
-
-**[点状解析]**：拿到仓库后先做 5 件不起眼但极重要的事，避免后面返工。
-
-**[思维导图]**：
-```
-解析前准备
-├── 0.1 克隆仓库（--depth 1 瘦身）
-├── 0.2 建 _analysis 子目录（13 个分类）
-├── 0.3 写问题清单（5 问）
-├── 0.4 速查表（meta 信息）
-└── 0.5 锁定 commit（避免中途漂移）
-```
-
-**[反例警示]**：没用 --depth 1 → 大仓库拉半天还失败；目录没分类 → 文件全堆一起；没锁 commit → 写到一半上游 push 了你不知道。
-
----
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-|---|---|
-| 项目名 | vscode |
-| 一句话定位 | 微软开源的现代代码编辑器 |
-| 核心问题 | 解决「扩展 API + workbench 架构 + LSP」领域的核心痛点：微软开源的现代代码编辑器 |
-| 目标用户 | 全开发者 |
-| 商业模式 | 商业版（Vim sponsor / VSCode 商业） |
-| 复刻难度 | ⭐⭐⭐⭐ |
-| 当前状态 | 活跃 |
-| 团队规模 | 50+ |
-| 关键里程碑 | v0.1 / v1.0 / 当前版本 |
-
-**[反例警示]**：只看 star 数就开干 → 玩具项目不值得学一个月；不看 license → GPL-3.0 商用直接踩坑；不看 pushedAt → 仓库 3 年没动 = 学了也用不上。
-
----
-
-## 2. 项目框架（Repo Skeleton Map）
-
-**[点状解析]**：不读代码，先看"目录怎么长"。TS 项目常见布局：src/ + lib/ + types/
-
-**[思维导图]**：
-```
-编辑器 框架
-├── 2.1 顶层结构（tree -L 2）
-├── 2.2 配置入口（package.json / tsconfig.json）
-├── 2.3 代码入口（main.*/app.*/server.*/cli.*）
-├── 2.4 文档位置（docs/README/CHANGELOG）
-├── 2.5 测试位置（test/tests/*_test.*）
-└── 2.6 部署相关（deploy/k8s/docker）
-```
-
-**[本项目实际结构]**：
-```
-├── /
-├── .agents/
-├── .config/
-├── .devcontainer/
-├── .editorconfig/
-├── .eslint-ignore/
-├── .eslint-plugin-local/
-├── .git-blame-ignore-revs/
-├── .gitattributes/
-├── .github/
-├── .gitignore/
-├── .lsifrc.json/
-├── .mailmap/
-├── .mention-bot/
-├── .npmrc/
-├── .nvmrc/
-├── .vscode/
-├── .vscode-test.js/
-├── AGENTS.md/
-├── CONTRIBUTING.md/
-```
-
-**实际配置入口**：`- `.eslint-plugin-local/package.json`
-- `.vscode/extensions/vscode-extras/package.json`
-- `.vscode/extensions/vscode-pr-pinger/package.json`
-- `.vscode/extensions/vscode-selfhost-import-aid/package.json`
-- `.vscode/extensions/vscode-selfhost-test-provider/package.json``
+# vscode - 现代代码编辑器的扩展 API、Workbench 多面板与 LSP 三位一体架构典范
 
-**实际代码入口**：`extensions/git/src/main.ts`
+**GitHub**: microsoft/vscode
+**Star**: ~173k
+**语言**: TypeScript
+**主题**: 代码编辑器、扩展 API、LSP、Electron
+**适用场景**: IDE 扩展、跨平台编辑器、Language Server 开发
 
-**核心目录**（文件数最多）：`src/vscode-dts`, `src/vs/workbench/api/common`, `extensions/copilot/src/platform/notebook/test/node/fixtures`, `src/vs/editor/test/common/viewLayout/__snapshots__`, `src/vs/base/common`, `extensions/vscode-colorize-tests/test/colorize-fixtures`
+## 第一段：基础范式
 
-**[反例警示]**：上来就 cat main.go → 找不到入口；忽略 vendor/node_modules → 看 10 万行依赖以为项目很大；错过 docs/ → 错过作者的"自述"。
+### 模式 1：扩展 API 与 contribute.json
 
----
+**问题场景**：VS Code 生态繁荣（5 万+ 扩展），需要稳定 API 让第三方扩展能力——又不能让恶意扩展破坏主进程。
 
-## 3. 项目画像（Profile）
+**解决方案**：`package.json#contributes` 声明扩展能力（命令/菜单/快捷键/主题/语言/调试器）。`extension.ts` 入口实现 `activate(context)` 生命周期。扩展跑在 `Extension Host` 独立 Node 进程（隔离崩溃）。
 
-**[点状解析]**：用 5 个数字量化"这个项目长什么样"，5 分钟形成判断。
+**关键参数**：
+- `contributes.commands` 注册命令
+- `contributes.menus` 菜单项
+- `contributes.keybindings` 快捷键
+- `activate(context)` 激活钩子
+- `context.subscriptions` 清理
 
-| 维度 | 数据 |
-|---|---|
-| 总文件数 | 18999 |
-| 主语言 | TypeScript |
-| 涉及语言 | C#, C++, Java, JavaScript, Markdown, Python, Rust, Shell |
-| Star | 173k+ |
-| License | MIT License |
-| Docker 支持 | ✅ |
-| K8s 支持 | ❌ |
-| CI 配置 | ✅ |
-| 有测试 | ✅ |
+**最佳实践**：声明式 + 命令式结合；用 `when` 表达式限定命令激活条件；用 `context.subscriptions` 注册清理（disposable）；不在 `activate` 做重活（用 when 延迟）。
 
-**[反例警示]**：cloc 包含测试 → 数字虚高 2 倍；只看 contributors 总数 → 1 人贡献 90% = 伪活跃；忽略 indirect deps → 漏洞扫描漏一半。
+### 模式 2：Workbench 多面板架构
 
----
+**问题场景**：编辑器需要同时展示文件树/编辑器/Terminal/调试器/搜索/扩展等多个面板，且每个面板状态独立。
 
-## 4. 架构设计（Architecture Deep Dive）
+**解决方案**：`Workbench` 是顶层容器，由 `Part`（顶部栏/侧栏/编辑器栏/状态栏/面板栏）组成。`View` 是在 Part 内的可停靠区域。`Panel` 持有 `View` 的注册表。
 
-**[点状解析]**：编辑器 项目的核心架构看点是 **扩展 API + workbench 架构 + LSP**。
+**关键参数**：
+- 5 个 Part：TitleBar/Sidebar/Editor/Statusbar/Panel
+- 多种 View Container
+- `Workbench.registerView`
+- TreeView 树形视图
+- WebviewView 内嵌 web
 
-**[思维导图]**：
-```
-编辑器 架构
-├── 4.1 部署图（节点 + 容器 + 网络）
-├── 4.2 组件图（服务 + 依赖 + 协议）
-├── 4.3 4+1 视图（逻辑/进程/部署/开发/场景）
-└── 4.4 关键设计决策 ADR
-```
+**最佳实践**：扩展用 `TreeView` 暴露列表数据；用 `WebviewView` 嵌入自定义 UI；用 `View` 容器做二级导航；用 `when` 表达式控制可见性。
 
-**核心架构看点**（扩展 API + workbench 架构 + LSP）：
-- 扩展 API
-- workbench 多面板
-- 语言服务协议 (LSP)
+### 模式 3：Language Server Protocol（LSP）
 
-**ADR-001: 为什么是 编辑器 方向**
-- 状态：已采纳
-- 背景：解决「扩展 API + workbench 架构 + LSP」领域的核心痛点：微软开源的现代代码编辑器
-- 决策：采用 扩展 API + workbench 架构 + LSP 作为核心架构思路
-- 理由：该方向在 编辑器 领域已被广泛验证，兼顾性能、可维护性与生态
-- 替代：其他可选方案（取决于具体场景与团队技术栈）
+**问题场景**：N 种语言（TS/Python/Go/Rust）× M 种编辑器（VS Code/Sublime/Vim）需要语言服务（补全/跳转/重命名）——两两实现是 N×M 灾难。
 
-**[反例警示]**：只画总图看不清细节；没有 ADR 不知道为什么这样设计；忽略部署视图上线才发现问题。
+**解决方案**：LSP 是 JSON-RPC 协议，定义 100+ 消息（`textDocument/definition`/`completion`/`hover` 等）。语言服务端实现协议，编辑器作为客户端通过 LSP 通信。VS Code 是 LSP 事实标准的发起者。
 
----
+**关键参数**：
+- JSON-RPC 2.0
+- `initialize`/`initialized` 握手
+- `textDocument/*` 文档操作
+- `workspace/*` 工作区
+- `$/progress` 进度通知
 
-## 5. 代码深度解析（带 WHY）⭐ 重点
+**最佳实践**：写语言服务用 LSP（一次实现，多编辑器用）；`vscode-languageserver` Node SDK；`vscode-languageclient` 客户端；用 Streamable HTTP（新版）替代 stdio。
 
-**[点状解析]**：每读一个文件必须回答"为什么这样写"。
+### 模式 4：TextModel 与文档管理
 
-### 5.1 找骨架代码
+**问题场景**：编辑器打开数十文件，每个文件有内容、版本、光标、选区、撤销栈——需要统一管理。
 
-**前 5 个最大源码文件**：
-```
-1. `extensions/git/src/commands.ts`
-2. `extensions/terminal-suggest/src/shell/fishBuiltinsCache.ts`
-3. `extensions/html-language-features/server/lib/jquery.d.ts`
-4. `extensions/terminal-suggest/src/shell/zshBuiltinsCache.ts`
-5. `extensions/git/src/repository.ts`
-```
+**解决方案**：`TextModel` 持文件内容（`ITextSnapshot` + 内容字符串），`IModeService` 协调多个 model。`TextEditor` 持有 `TextModel` + 视图位置。`Source` 是单文件不可变快照。
 
-**入口文件**：`extensions/git/src/main.ts`
+**关键参数**：
+- `TextModel` 文档对象
+- `TextEditor` 编辑器实例
+- `EditorGroup` 编辑器组
+- `WorkingCopyService` 跟踪未保存
+- `TextModel.applyEdits` 编辑
 
-### 5.2 单文件分析卡（入口示例）
+**最佳实践**：用 `TextModel` API 而非 DOM；用 `Edit` 类做编辑（不变性）；用 `Position`/`Range` 抽象；用 `applyEdits` 事务提交。
 
-```markdown
-## 文件：extensions/git/src/main.ts
+### 模式 5：Command Palette 与命令系统
 
-### 职责（What）
-项目的引导入口，负责初始化配置、装配依赖、启动核心服务。
+**问题场景**：功能多（1000+）需要统一发现入口——菜单/快捷键/命令面板都应能调起。
 
-### 关键代码段
-（实际精读时填）
+**解决方案**：`commands.registerCommand(id, fn)` 注册命令；`when` 表达式控制可见性；`Command Palette`（Ctrl+Shift+P）是统一入口。命令 ID 是反域名风格（`extension.id.commandName`）。
 
-### 为什么这样写（WHY）❗
-- 入口越薄越好 → 让核心逻辑可独立测试
-- 配置/启动/路由三层分离 → 各层可替换
-- 显式依赖注入（而非全局变量）→ 业务代码可移植
-```
+**关键参数**：
+- `vscode.commands.registerCommand`
+- `contributes.commands` 声明
+- `contributes.menus` 菜单挂载
+- `contributes.keybindings` 快捷键
+- `when` 子句
 
-### 5.3 设计模式识别清单
+**最佳实践**：所有功能用 `registerCommand` 暴露；用 `when` 表达式智能显示；命令 ID 反域名；用 `disposable` 清理；用 `registerTextEditorCommand` 编辑器命令。
 
-| 模式 | 出现位置 | 解决什么问题 |
-|---|---|---|
-| Factory | `NewXxx()` | 屏蔽复杂初始化 |
-| Observer | `OnXxx` 回调 | 解耦事件源与处理者 |
-| Middleware | `Use/Handler chain` | 链式处理横切关注点 |
-| Pool | `sync.Pool / object pool` | 减少 GC 压力 |
-| Strategy | 接口+多种实现 | 运行时切换算法 |
+## 第二段：扩展范式
 
-### 5.4 反模式 / 坑位识别
+### 模式 6：Webview 与自定义 UI
 
-```bash
-grep -rn 'panic(' --include='*.go' .    # 找 panic
-grep -rn 'go func' --include='*.go' .   # 找裸 goroutine
-grep -rn 'global\|window\.' --include='*.py' .  # 找全局变量
-```
+**问题场景**：扩展需要复杂 UI（图表/表单/富文本）——VS Code API 提供的简单 UI（QuickPick/InputBox）不够用。
 
-### 5.5 编辑器 项目的独特看点
+**解决方案**：`Webview` 是在编辑器区域渲染 HTML/JS 的面板（沙箱隔离），通过 `postMessage` 与扩展主机双向通信。`WebviewView` 是在侧栏/面板栏的 webview。
 
-- **扩展 API + workbench 架构 + LSP**：这是 vscode 的"灵魂"功能，必须精读
-- **扩展 API**：核心架构创新
-- **workbench 多面板**：性能/可用性关键
+**关键参数**：
+- `createWebviewPanel`
+- `enableScripts: true`
+- `postMessage`/`onDidReceiveMessage`
+- `WebviewViewProvider`
+- CSP 限制
 
-**[反例警示]**：只看 What 不看 Why → 抄过来不理解；跳过测试代码 → 错过"作者怎么自测"的精华；忽略 vendor/ 依赖代码 → 失去"作者如何用 std lib"的线索。
+**最佳实践**：用 `Webview` 嵌入复杂 UI；用 `postMessage` 通信；用 `localResourceRoots` 加载本地资源；用 CSP 防 XSS；用 `WebviewViewProvider` 做侧栏面板。
 
----
+### 模式 7：TreeView 与数据展示
 
-## 6. 运行机制（Bring It Up）
+**问题场景**：扩展需要树形数据展示（文件/依赖/测试用例/数据库表）——QuickPick 是平面的。
 
-**[点状解析]**：跑起来才算。光看代码是幻觉。
+**解决方案**：`TreeView<T>` 是数据驱动的树视图，扩展实现 `TreeDataProvider<T>` 提供 `getChildren`/`getTreeItem`。`reveal`/`expand`/`select` API 操作节点。
 
-```bash
-# 6.1 找启动脚本
-ls -la | grep -E 'Makefile|run|start|serve'
+**关键参数**：
+- `registerTreeDataProvider`
+- `getTreeItem`/`getChildren`
+- `TreeItem` 节点
+- `reveal`/`expand`
+- `onDidChangeTreeData`
 
-# 6.2 本地起服务
-make run 2>&1 | tee _analysis/run/stdout.log &
+**最佳实践**：用 `TreeView` 展示树形数据；`onDidChangeTreeData` 通知变更；`collapsibleState` 控制折叠；用 `command`/`iconPath` 装饰节点；用 `tooltip` 显示详情。
 
-# 6.3 smoke test
-curl -sS http://localhost:8080/health
-```
+### 模式 8：Debug Adapter Protocol（DAP）
 
-**[反例警示]**：跳过 smoke test → 一跑就崩；不看 /proc/PID/fd → 资源泄漏查不出；不打 trace → 链路黑盒。
+**问题场景**：N 种语言（JS/Python/Go）× M 种调试器（lldb/gdb）需要编辑器集成——两两实现灾难。
 
----
+**解决方案**：DAP 是类似 LSP 的协议，VS Code 是发起者。`DebugSession` 持有 DAP 连接；扩展实现 `DebugAdapterDescriptorFactory` 启动调试适配器；`DebugConfigurationProvider` 动态生成配置。
 
-## 7. 演进历史（Time Travel）
+**关键参数**：
+- `DebugConfigurationProvider`
+- `DebugAdapterDescriptorFactory`
+- `registerDebugAdapterDescriptorFactory`
+- `vscode-debugadapter` Node SDK
+- `contributes.debuggers` 调试器声明
 
-**[点状解析]**：看一个项目的"人生"，比看它"现在"更能学到东西。
+**最佳实践**：写调试器用 DAP（一次实现，多编辑器用）；用 `vscode-debugadapter` Node SDK；用 `DAP Executable`/`Server`/`Named Pipe` 三种描述符；用 `configurationDone` 同步。
 
-```bash
-git log --oneline --decorate --graph | head -100
-gh release list --limit 20
-```
+### 模式 9：Settings（用户/工作区/语言）
 
-**已知里程碑**：
-- v0.x 原型：MVP 验证
-- v1.0 稳定：API 冻结
-- v2.0：性能与生态
-- 现状：持续维护/社区化
+**问题场景**：扩展需要配置项——支持用户级、工作区级、语言级多层级。
 
-**[反例警示]**：只看 master 分支 → 错过"为什么不这么写"的讨论；忽略 v1 → v2 的 commit → 错过"推翻重来的理由"；不看 issue → 错过设计权衡。
+**解决方案**：`contributes.configuration` 声明配置；`workspace.getConfiguration().get(key)` 读；`onDidChangeConfiguration` 监听变更。配置支持 scope（`application`/`machine`/`window`/`resource`）。
 
----
+**关键参数**：
+- `contributes.configuration.properties`
+- `workspace.getConfiguration("extId")`
+- `get<T>(key)` 读
+- `onDidChangeConfiguration`
+- scope 限定
 
-## 8. 质量保障（How It Doesn't Break）
+**最佳实践**：用 `configuration` 声明所有配置；`get` 强类型；用 `inspect` 看来源（default/user/workspace）；`onDidChangeConfiguration` 监听变更；用 scope 控制可见性。
 
-**[点状解析]**：测试 + CI + Lint + 性能基准，4 道防线。
+### 模式 10：状态栏与装饰
 
-| 维度 | 状态 |
-|---|---|
-| 单测 | ✅ |
-| CI | ✅ |
-| Docker | ✅ |
-| K8s | ❌ |
-| Lint 配置 | 见 - `.eslint-plugin-local/package.json`
-- `.vscode/extensions/vscode-extras/package.json`
-- `.vscode/extensions/vscode-pr-pinger/package.json`
-- `.vscode/extensions/vscode-selfhost-import-aid/package.json`
-- `.vscode/extensions/vscode-selfhost-test-provider/package.json` |
-| 性能基准 | 待验证 |
+**问题场景**：扩展需要在底部状态栏显示信息（Git 状态/语言/缩进）——在编辑器装饰提示（lint 警告）。
 
-**[反例警示]**：只看覆盖率不看断言质量 → 100% 覆盖但测了空函数；没 CI → 本地能跑别人拉下来崩；没模糊测试 → parser 永远有边角 case 没覆盖。
+**解决方案**：`StatusBarItem` 是状态栏项；`createStatusBarItem(alignment, priority)`。`TextEditor.setDecorations` 给编辑器加背景/下划线/gutter 图标；`CodeLens` 在代码上方显示可点击提示。
 
----
+**关键参数**：
+- `createStatusBarItem`
+- `setText`/`setTooltip`/`setCommand`
+- `createTextEditorDecorationType`
+- `setDecorations`
+- `registerCodeLensProvider`
 
-## 9. 生态依赖（Map of the World）
+**最佳实践**：用 `StatusBarItem` 显状态（Git/编码）；用 `setDecorations` 做 lint 高亮；用 `CodeLens` 显引用计数；用 `registerHoverProvider` 悬停；用 `disposable` 清理。
 
-**[点状解析]**：依赖图 = 项目的"供应链"。一个 GPL 依赖毁掉整个商业版。
+## 第三段：进阶范式
 
-**关键配置文件**：`- `.eslint-plugin-local/package.json`
-- `.vscode/extensions/vscode-extras/package.json`
-- `.vscode/extensions/vscode-pr-pinger/package.json`
-- `.vscode/extensions/vscode-selfhost-import-aid/package.json`
-- `.vscode/extensions/vscode-selfhost-test-provider/package.json``
+### 模式 11：多进程架构（主/渲染/扩展/Search/Edit）
 
-**依赖合规检查清单**：
-- [ ] 全部 License 是 MIT License 或更宽松
-- [ ] 无 GPL 传染（AGPL 同理）
-- [ ] 无 3 年未更新的死库
-- [ ] 无已知 CVE
+**问题场景**：编辑器要稳定（不卡顿），但又需要扩展能力（不能拖垮主进程）——单进程不可能。
 
-**[反例警示]**：只看直接依赖 → 漏掉间接 GPL；不看 license → 上线后被法务叫停；不看 pushedAt → 用了一个已死 3 年的库。
+**解决方案**：VS Code 拆分为多进程：
+- **Main Process**（Node）：窗口管理
+- **Renderer Process**（Electron Chromium）：UI 渲染
+- **Extension Host**（Node）：扩展沙箱
+- **Search Process**：搜索（rg 后台）
+- **Edit/TypeScript Server**：语言服务
 
----
+**关键参数**：
+- 进程间用 IPC
+- `Extension Host` 独立崩溃
+- 渲染进程多 WebContents
+- Utility Process 通用 worker
+- Shared Process 跨窗口
 
-## 10. 生产实践（Battle-Tested）
+**最佳实践**：扩展跑在 Extension Host（隔离崩溃）；用 `UtilityProcess` 跑重活；用 IPC 通信；监控进程状态；用 `SharedProcess` 跨窗口共享。
 
-**[点状解析]**：生产里踩过的坑比文档里写得多。
+### 模式 12：Language Server 与 TypeScript Server
 
-| 实践 | vscode 怎么做的 | 能不能抄 |
-|---|---|---|
-| 配置热更新 | viper / fsnotify (Go) / dotenv (Node) / pydantic (Python) | ✅/❓ |
-| 优雅停服 | signal.NotifyContext + Server.Shutdown | ✅/❓ |
-| 限流 | token bucket / sliding window | ✅/❓ |
-| 链路追踪 | opentelemetry SDK | ✅/❓ |
-| 健康检查 | /healthz + /readyz 双探针 | ✅/❓ |
-| 结构化日志 | zap / logrus / winston 结构化日志 | ✅/❓ |
+**问题场景**：TypeScript 服务（tsserver）复杂（5MB+ 内存，几十秒冷启动），但 VS Code 集成 TS 无延迟——怎么做到的？
 
-**[反例警示]**：只看 README 怎么跑 → 上线发现没考虑 K8s readiness；没看优雅停服 → K8s 滚动更新丢请求；没看链路追踪 → 出问题查不到慢在哪。
+**解决方案**：VS Code 内置 TS Service，`tsserver` 是独立 Node 进程，通过 IPC 通信。VS Code 用 `TypeScriptService` 包装，500ms 延迟下补全/跳转不卡顿。`workspace.ts` 协议复杂但稳定。
 
----
+**关键参数**：
+- `tsserver` Node 进程
+- IPC 协议（结构化消息）
+- `TypeScriptServerCapabilities`
+- 500ms 延迟下的 progress
+- `tsserver.trace` 调试
 
-## 11. 社区文化（People & Process）
+**最佳实践**：扩展用 LSP 而非自创协议；用 `tsserver` 配 TypeScript；用 `vscode.typescript-language-features` 默认；监控 tsserver 内存；用 `workspace/executeCommand` 调用。
 
-**[点状解析]**：项目能不能长寿，10% 看代码，90% 看人。
+### 模式 13：Settings Sync（跨设备同步）
 
-| 维度 | 状态 |
-|---|---|
-| 治理模式 | 待查（GOVERNANCE.md） |
-| 维护者 | 待查（MAINTAINERS.md） |
-| RFC 流程 | 待查（docs/rfcs/） |
-| 沟通渠道 | 待查（README） |
-| 议题活跃 | 173k+ star 量级 |
+**问题场景**：开发者多设备（笔记本/台式机），需要同步设置/快捷键/扩展/片段。
 
-**[反例警示]**：只看代码不看人 → 投奔 BDFL 跑路项目；不看 issue 响应 → 项目其实已死；不看 RFC → 错过"为什么改 API"的讨论。
+**解决方案**：`Settings Sync` 用 GitHub/微软账号同步，存为 JSON 状态机。`workbench.extensions.supportUntrustedWorkspaces` 等配置跨设备同步。冲突用 last-write-wins 解决。
 
----
+**关键参数**：
+- 同步内容：设置/快捷键/片段/扩展
+- 存储后端：GitHub Gist/微软
+- 冲突：last-write-wins
+- `workbench.settings.sync`
+- 加密敏感项
 
-## 12. 教训总结（What To Steal / What To Avoid）
+**最佳实践**：用 Settings Sync 跨设备；用 GitHub 同步（隐私可控）；扩展/设置分两组；监控同步状态；用 `workbench.extensions.autoUpdate` 自动更新扩展。
 
-### 12.1 必偷的 3 件事
+### 模式 14：Remote Development（SSH/Container/WSL）
 
-```markdown
-1. **扩展 API + workbench 架构 + LSP**（vscode 的核心）
-   - 实现思路：该方向在 编辑器 领域已被广泛验证，兼顾性能、可维护性与生态
-   - 应用场景：扩展 API
-   - 自己项目：可借鉴到 商业版（Vim sponsor / VSCode 商业）
+**问题场景**：代码在远程服务器（生产 K8s 集群/开发机），本地编辑器——文件同步延迟大问题。
 
-2. **扩展 API**（架构设计）
-   - 解耦了什么/怎么解耦
-   - 借鉴到自己的分层架构
+**解决方案**：Remote Development 扩展用 SSH/WSL/Container 在远程跑 server，本地只跑 UI。所有操作（Git/调试/扩展/LSP）在远程执行，本地无压力。
 
-3. **workbench 多面板**（性能/可用性）
-   - 关键技巧：语言服务协议 (LSP)
-   - 用到自己的热点路径
-```
+**关键参数**：
+- `vscode-remote-ssh`
+- `vscode-remote-wsl`
+- `vscode-remote-containers`
+- Remote Server 装在远端
+- 端口转发
 
-### 12.2 必避的 3 个坑
+**最佳实践**：远程开发必装 `vscode-remote-ssh`；本地装薄 UI 扩展，远程装语言服务；用 `devcontainer.json` 容器化；端口转发配 `forwardPorts`。
 
-```markdown
-1. **过度设计**（编辑器 常见）
-   - 症状：抽象层叠层叠
-   - 解决：先跑起来再抽象
+### 模式 15：Telemetry 与崩溃报告
 
-2. **配置硬编码**
-   - 解决：12-factor + 显式配置
+**问题场景**：编辑器需要了解真实世界使用模式（哪些命令常用/哪些扩展崩溃）——但又要保护隐私。
 
-3. **同步阻塞调用链**
-   - 解决：context + async/await
-```
+**解决方案**：VS Code 用 `telemetry` 模块收集匿名数据，发送至 `vscode-telemetry`。`crashReporter`（Electron）收集 C++ 崩溃堆栈。两者都可在 `telemetry.telemetryLevel` 设置关闭。
 
-### 12.3 7 天复刻路线图
+**关键参数**：
+- `telemetry.telemetryLevel: "all"/"error"/"off"`
+- 匿名数据：事件名 + 属性
+- 不收集：文件内容、路径、代码
+- `crashReporter` C++ 崩溃
+- A/B 测试数据
 
-```markdown
-## 7 天复刻路径（以 vscode 为例）
-- D1: 跑起来 → 混个脸熟
-- D2: 读 extensions/git/src/main.ts → 理解启动流程
-- D3: 读核心目录 `src/vscode-dts`, `src/vs/workbench/api/common`, `extensions/copilot/src/platform/notebook/test/node/fixtures`, `src/vs/editor/test/common/viewLayout/__snapshots__`, `src/vs/base/common`, `extensions/vscode-colorize-tests/test/colorize-fixtures` → 理解主流程
-- D4: 跑测试 + 改一处 → 理解可扩展点
-- D5: 自己写个 200 行的 mini-vscode（只保留核心）
-- D6: 把 扩展 API + workbench 架构 + LSP 用到自己的项目
-- D7: 写一篇博客把 5 天串起来
-```
+**最佳实践**：用户隐私优于数据收集；用 `telemetryLevel: "off"` 关闭；扩展用 `reporter.sendTelemetryEvent`；不要发送 PII；用 A/B 测试做产品决策。
 
-### 12.4 项目打分卡
+## 第四段：实战范式
 
-| 维度 | 1 分 | 3 分 | 5 分 | vscode 自评 |
-|---|---|---|---|---|
-| 代码质量 | 凑合 | 工业级 | 教科书 | ⭐⭐⭐⭐ |
-| 文档完整 | 没有 | 有 README | 完整 + RFC | ⭐⭐⭐⭐ |
-| 社区活跃 | 死了 | 有 issue 响应 | 繁荣 | ⭐⭐⭐⭐⭐ |
-| 设计优雅 | 能用 | 合理 | 艺术 | ⭐⭐⭐⭐ |
-| 可借鉴 | 抄不抄无所谓 | 部分可抄 | 必抄 | ⭐⭐⭐⭐ |
+### 模式 16：扩展开发最佳实践
 
----
+**问题场景**：扩展 API 多（500+），如何写出稳定、兼容、不卡顿的扩展。
 
-## 13. 学习萃取（Cheat Sheet）
+**解决方案**：
+- 用 `disposable` 清理
+- 用 `when` 表达式延迟激活
+- 用 `deactivate` 钩子清理
+- 用 `ExtensionContext` 持久化
+- 不用 `eval` / `Function` / 同步 IO
 
-```markdown
-# 《vscode》学习卡片
+**关键参数**：
+- `ExtensionContext.subscriptions`
+- `deactivate()` 钩子
+- `context.globalState` 持久化
+- `context.workspaceState` 工作区
+- `context.extensionPath` 路径
 
-## 一句话价值
-> 微软开源的现代代码编辑器
+**最佳实践**：所有资源用 `disposable` 包；用 `when` 表达式按需激活；用 `deactivate` 清理资源；用 `globalState`/`workspaceState` 持久化；不用同步 IO（卡 Extension Host）。
 
-## 3 个核心洞察
-1. 扩展 API + workbench 架构 + LSP：该方向在 编辑器 领域已被广泛验证，兼顾性能、可维护性与生态
-2. 扩展 API：workbench 多面板
-3. 语言服务协议 (LSP)：可直接借鉴到自己的项目
+### 模式 17：测试与发布
 
-## 5 段必读代码
-1. extensions/git/src/main.ts — 启动流程
-2. extensions/git/src/commands.ts — 核心实现
-3. extensions/terminal-suggest/src/shell/fishBuiltinsCache.ts — 关键算法
-4. extensions/html-language-features/server/lib/jquery.d.ts — 性能优化
-5. extensions/terminal-suggest/src/shell/zshBuiltinsCache.ts — 边界处理
+**问题场景**：扩展需要单测/E2E 测试、发布到 Marketplace、维护版本。
 
-## 1 个反模式
-- 编辑器 常见过度设计
+**解决方案**：
+- 单测：`@vscode/test-electron` 跑 Extension Tests
+- E2E：`vscode-extension-tester` Selenium-like
+- 发布：`vsce publish` 发到 Marketplace
+- 版本：`package.json#version` 遵循 semver
+- License：`LICENSE` 必填
 
-## 1 个可复用模式
-- 扩展 API + workbench 架构 + LSP 实现方式
+**关键参数**：
+- `@vscode/test-electron`
+- `vsce publish`
+- `package.json#engines.vscode`
+- `categories`/`keywords`
+- 验证：`vsce package` 打 .vsix
 
-## 我能马上用的 3 件事
-1. [ ] 把 扩展 API + workbench 架构 + LSP 拆成 3 个步骤
-2. [ ] 学 扩展 API 写一个 mini-vscode
-3. [ ] 把 workbench 多面板 用到自己的 商业版（Vim sponsor / VSCode 商业）
-```
+**最佳实践**：必跑 `@vscode/test-electron` 单测；用 `vsce package` 本地打 .vsix；`engines.vscode` 声明最低版本；用 `categories` 分类；`vsce publish` 一次发布到 Marketplace。
 
----
+### 模式 18：性能分析与优化
 
-## 14. 项目特点速查（编辑器 类）
+**问题场景**：扩展激活慢、命令卡顿、内存占用大——性能问题难定位。
 
-> vscode 作为 编辑器 类项目，它的独特看点：
+**解决方案**：
+- `Developer: Show Running Extensions` 看激活耗时
+- `Developer: Profile Extensions` CPU profile
+- `Developer: Show Process Explorer` 看进程
+- `extension.startup` 测启动时间
+- `vscode-extension-benchmark` 基准
 
-- **扩展 API + workbench 架构 + LSP** → 该方向在 编辑器 领域已被广泛验证，兼顾性能、可维护性与生态
-- **扩展 API** → workbench 多面板
-- **语言服务协议 (LSP)** → 可借鉴的工程实践
+**关键参数**：
+- 激活耗时 < 100ms
+- 命令响应 < 50ms
+- 内存 < 50MB
+- `performance.mark`/`measure` API
+- `deactivate` 释放资源
 
-**与同类的对比**：
-vs Sublime / Atom：免费 + 扩展 + LSP
+**最佳实践**：激活 < 100ms（用 `when` 延迟）；命令 < 50ms（重活放后台）；用 `Developer: Show Running Extensions` 排查；用 Profile Extensions 找 CPU 热点；用 `disposable` 释放。
 
----
+### 模式 19：多语言支持（Localization）
+
+**问题场景**：VS Code 全球用户，需要本地化（i18n）——但不要每个扩展都重新发明。
+
+**解决方案**：`vscode-nls` Node 库做 i18n；`package.nls.json` 英文，`package.nls.zh-CN.json` 中文。`vscode.l10n.t("key")` 调翻译。VS Code Core 也是同套机制。
+
+**关键参数**：
+- `vscode-nls` 库
+- `package.nls.json` 翻译
+- `vscode.l10n.t`
+- `localize("key", "fallback")` 兜底
+- `bundle.l10n` 自动加载
+
+**最佳实践**：用 `vscode-nls` 国际化；所有 UI 文本走 `localize`；`package.nls.json` 维护翻译；用 `l10n.t` 调（新版）；贡献给 `vscode-loc` 翻译社区。
+
+### 模式 20：扩展生态与商业模式
+
+**问题场景**：VS Code 是免费开源的，但生态如何变现？
+
+**解决方案**：
+- **个人扩展免费**：作者用捐赠/Sponsor
+- **企业扩展付费**：通过 Marketplace 销售
+- **服务支持**：企业版订阅、咨询
+- **SaaS 集成**：扩展引流到云服务（如 GitHub Copilot）
+- **OEM 定制**：VS Code 是开源（MIT），可定制（Code OSS）
+
+**关键参数**：
+- Marketplace 50% 抽成（个人）/30%（企业）
+- Sponsor（GitHub Sponsors）
+- OEM：Cursor/Windsurf 基于 Code OSS
+- GitHub Copilot 集成
+- 企业 Marketplace
+
+**最佳实践**：个人扩展走 Sponsor/Open Collective；企业扩展走 Marketplace；用 OEM 思路做垂直 IDE（Cursor 是范例）；SaaS 扩展引流；监控 Marketplace 评分。
 
 ## 附：仓库元信息
 
 | 字段 | 值 |
-|---|---|
-| 文件 | 项目\vscode-main.zip |
-| 大小 | 50.4 MB |
-| 总文件 | 18999 |
-| 解析时间 | 2026-06-01 |
-
----
-
-## 一句话总结
-
-> 解析 vscode = 计划书 + 框架图 + 扩展 API + workbench 架构 + LSP + 跑起来 + 偷过来。
+|------|----|
+| 路径 | `G:\实战案例\GitHub顶尖项目\vscode\` |
+| 主语言 | TypeScript + Electron |
+| License | MIT |
+| 解析时间 | 2026-06-02 |
+| 核心模块 | `src/vs/workbench/`、`src/vs/editor/`、`src/vs/platform/`、`extensions/` |
+| 关键基础设施 | Electron、LSP、DAP、Extension Host、Multi-process 架构 |

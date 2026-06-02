@@ -1,567 +1,498 @@
----
-title: babel
-type: 编译器 / JavaScript 工具链
-lang: TypeScript + JavaScript
-stars: 43000+
-date: 2026-06-02
-tags:
-  - 开源项目
-  - 编译器
-  - AST
-  - 工具链
-  - monorepo
-  - JavaScript
----
+# babel - 写下一代 JavaScript 的多阶段编译器与插件平台
 
-# babel · 项目深度解析
+**GitHub**: babel/babel
+**Star**: 43k+
+**语言**: TypeScript + JavaScript
+**主题**: 编译器 / 插件平台 / AST 改写 / monorepo
+**适用场景**: 源码到源码转译、语法降级、polyfill 注入、JSX/TS/Flow 兼容
 
-> Babel (pronounced "babble") —— 写下一代 JavaScript 的编译器。把 ES2020+ / TypeScript / Flow / JSX 编译成兼容旧环境的等价 JS。
-> 来源：G:\实战案例\GitHub顶尖项目\babel\
+## 第一段：基础范式
 
-## 写在前面：解析哲学
+### 模式 1：parser/traverse/generator 三段 + babel-core 调度解耦
 
-解析一个 43k+ star、28000 个文件、140+ monorepo 包的编译器项目，靠「逐行读」会淹死。正确顺序：**先骨架（哪些包、各自的职责边界）→ 后血肉（包内的设计模式、WHY 取舍）→ 最后偷过来（哪些设计可以复刻到自己的项目里）**。本文不抄 README，只解析代码里的 WHY。
+**问题场景**：编译器内部本来是 parse→transform→generate 三段流水线，但插件作者只想写 AST 改写（visitor），被迫理解整条管线细节——核心与插件紧耦合。
 
-## 0. 解析前的 5 个准备
-
-1. **克隆**：仓库 `babel/babel`（约 28000 个文件、含 fixtures），Yarn 4 workspaces，必须 Node 18+。
-2. **分类**：Monorepo + 编译器 + 工具链；语言 TypeScript（src/） + 编译产物 JavaScript（lib/）。
-3. **问题清单**：parse → transform → generate 三段中，babel 如何让插件作者只关心 AST 而不必关心 token？scope 怎么在多 pass 之间保持正确？sync/async API 如何共存？
-4. **速查表**：`@babel/parser`(parse) → `@babel/traverse`(遍历+scope) → `@babel/core`(调度) → `@babel/generator`(输出) → 插件做 AST 改写。
-5. **锁定 commit**：v8.0.0-rc.6（2026-05 阶段，仍属预发布分支，但代码与 v7.28 主线基本同构）。
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-|------|------|
-| 项目名 | babel（@babel/* 命名空间） |
-| 定位 | JS 源码到 JS 源码的编译器（transpiler），同时是插件平台 |
-| 核心问题 | 浏览器/Node 跑不动作者写的语法；不同 step 提案分散实现成本高 |
-| 用户 | 前端开发者、框架作者（Next.js / Vite / Jest / Webpack 都依赖） |
-| 商业模式 | 社区驱动，Open Collective 赞助 + Flavortown 商业模式 |
-| 复刻难度 | ★★★★★（30+ 人年，含 12 万条 parser fixtures） |
-| 状态 | v8.0.0-rc.6，主线 v7.28.5 已发布 |
-| 团队 | 4-8 名活跃 maintainer + 数百名贡献者 |
-| 里程碑 | 6to5 → babel v6 → v7（plugin 命名空间）→ v8（ESM/breaking） |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((babel monorepo))
-    入口包
-      babel-cli
-      babel-node
-      babel-core 调度核心
-    编译器三段
-      @babel/parser 词法+语法
-      @babel/traverse 遍历+scope
-      @babel/generator 代码打印
-    插件层
-      babel-plugin-proposal-*
-      babel-plugin-transform-*
-      babel-plugin-syntax-* 仅声明语法
-    预设层
-      babel-preset-env
-      babel-preset-react
-      babel-preset-typescript
-    Helper
-      babel-helpers 运行时函数
-      babel-helper-compilation-targets 浏览器能力矩阵
-      babel-helper-plugin-utils
-      babel-helper-validator-identifier
-    工具与基础设施
-      babel-compat-data 浏览器数据
-      babel-code-frame 错误定位
-      babel-types AST 定义
-      babel-template AST 模板
-    测试与基准
-      benchmark 性能对比
-      test 集成测试 + 12 万 fixtures
-      jest.config.ts
-    构建与发布
-      Gulpfile.ts 构建编排
-      Makefile.source.ts
-      .yarn release 工具
-```
-
-实际顶层：`packages/` 下 140+ 个独立 npm 包，每个包都是一个独立 `package.json` + `src/` + `lib/`（编译产物）。入口是 `packages/babel-core` —— `index.ts` 聚合所有公开 API。
-
-```text
-babel/
-├── packages/                  # 140+ 子包
-│   ├── babel-core/            # 调度核心
-│   ├── babel-parser/          # Parser
-│   ├── babel-traverse/        # Traverse + Scope
-│   ├── babel-generator/       # CodeGen
-│   ├── babel-types/           # AST 节点定义 + builders/validators
-│   ├── babel-template/        # template`...` 字符串模板
-│   ├── babel-helper-*/        # 共享工具
-│   ├── babel-plugin-*/        # 140+ 插件
-│   └── babel-preset-*/        # 预设
-├── Gulpfile.ts                # 构建编排
-├── babel.config.ts            # 编译 babel 自身的配置
-├── Makefile.source.ts         # 任务源
-└── test/                      # 跨包测试 + fixtures
-```
-
-## 3. 项目画像（Profile）
-
-| 指标 | 值 |
-|------|------|
-| 总文件数 | 28,011（仓库首层 inspect） |
-| 主语言 | TypeScript（src/），编译产物 JavaScript（lib/） |
-| 涉及语言 | TS、JS、JSON、Markdown、GLSL（部分 codemod fixture） |
-| Star | 43k+（行业最流行编译器之一） |
-| License | MIT |
-| Docker/K8s | 无（库，不部署） |
-| CI | CircleCI + GitHub Actions（5 个 workflow：ci / e2e-tests / issue-triage / release / pkg-pr-new） |
-| 有测试 | ✓（jest + 12 万 fixture + 真实 runtime test） |
-| 包管理器 | Yarn 4.14.1（berry，`packageManager` 字段固定） |
-| 发布 | 单独 `babel-plugin-*` 都可以独立发版（maintainer 用 `lerna`-风格脚本 + babel-release 工具） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-```mermaid
-flowchart LR
-    subgraph 入口
-        code[源码字符串]
-        opts[InputOptions]
-    end
-    subgraph babel-core 调度
-        TR[transformRunner<br/>gensync 协程]
-        LC[loadConfig<br/>partial→full]
-        PASS[Plugin Passes<br/>plugin-pass]
-    end
-    subgraph 编译器三段
-        P["@babel/parser<br/>tokenizer+statement+expression"]
-        T["@babel/traverse<br/>NodePath+Scope"]
-        G["@babel/generator<br/>printer+buffer+source-map"]
-    end
-    subgraph 插件
-        BLOCK[block-hoist 内部]
-        USER[用户/preset 插件]
-    end
-    code --> TR
-    opts --> LC --> TR
-    TR --> P
-    P --> AST[File AST]
-    AST --> T
-    T --> BLOCK
-    BLOCK --> USER
-    USER --> T
-    T --> G
-    G --> OUT[code + map]
-```
-
-### 核心看点
-
-1. **三段式 + 调度核心解耦**：`parser/traverse/generator` 三个独立包，`babel-core` 做 plugin 调度和 File 抽象。插件作者只需 import `@babel/traverse` 写 visitor，不必碰 parser。
-2. **gensync 协程统一 sync/async**：用户期望 `transformSync / transformAsync / transform(cb)` 三个 API 共存；babel 不写三遍，而是用 `gensync` 把整条流水线写成 generator，由运行时切回任意形态（`packages/babel-core/src/transform.ts:21`）。
-3. **Plugin Pass 机制**：所有插件按 pass 分组（preset-env 通常 3 个 pass），同一 pass 内合并 visitor 一次性 traverse（性能核心）；不同 pass 共享同一个 File 句柄。
-
-### ADR 关键设计决策（3 条）
-
-1. **ADR-001：AST 节点不挂方法，节点外置 validators/builders**
-   原因：节点是 plain object，便于 JSON 序列化、跨 worker 传递、diff 调试。`@babel/types` 暴露 `t.identifier('x')` 这种函数式 builder，而非 `node.identifier()`。
-   取舍：放弃了 OOP 链式；换来序列化、调试、跨线程零成本。
-2. **ADR-002：NodePath 是 13 个 mixin 的聚合，不放一个 4000 行类**
-   `packages/babel-traverse/src/path/index.ts:18-33` 把 ancestry/replacement/evaluation/conversion/introspection/context/removal/modification/family/comments 全部以 `import * as X from "./xxx.ts"` 注入。WHY：每个 plugin 作者只需要 `path.replaceWith` 等少数 API，分文件让 IDE 跳转更快、tree-shaking 更友好。
-3. **ADR-003：block-hoist 作为内置插件而非构建步骤**
-   `packages/babel-core/src/transformation/block-hoist-plugin.ts` 暴露 priority 0-4 数值（0=very bottom、3=very top、4=helpers 保留位）。WHY：preset-env 注入的 import 转换需要 helper 在最上面，普通声明在下面，这个顺序由 AST visitor 而非排序算法保证 —— 改动一个插件立刻影响全流水线。
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-| 路径 | 作用 |
-|------|------|
-| `packages/babel-core/src/transform.ts:21` | `transformRunner = gensync(function* ...)` —— 整条管线的协程入口 |
-| `packages/babel-core/src/transformation/index.ts:36` | `run(config, code)` —— File 初始化、passes 执行、generateCode |
-| `packages/babel-core/src/transformation/block-hoist-plugin.ts:1` | 内部 plugin，priority 决定 helper 顺序 |
-| `packages/babel-parser/src/index.ts:41` | `parse()` 入口 + unambiguous 重解析 |
-| `packages/babel-traverse/src/visitors.ts:42` | `explode()` —— visitor 标准化（pipe、alias、enter/exit） |
-| `packages/babel-traverse/src/path/index.ts:60` | NodePath 13-mixin 聚合 |
-| `packages/babel-helper-compilation-targets/src/index.ts:35` | 浏览器能力矩阵查询入口 |
-
-### 5.2 单文件分析卡
-
-#### 卡 1：`packages/babel-core/src/transform.ts`（66 行）
-
+**解决方案**：把三段拆成独立 npm 包（`@babel/parser` / `@babel/traverse` / `@babel/generator`），`@babel/core` 做 plugin 调度 + File 抽象。插件作者 import `@babel/traverse` 写 visitor 即可：
 ```ts
-const transformRunner = gensync(function* transform(
-  code: string,
-  opts?: InputOptions | null,
-): Handler<FileResult | null> {
-  const config: ResolvedConfig | null = yield* loadConfig(opts);
-  if (config === null) return null;
-  return yield* run(config, code);
-});
-```
-
-**WHY 1：为什么用 gensync 而不是 async/await？**
-`async function` 一旦 `await`，就只能等 promise；如果用户用 `transformSync`，转同步版本必须重写。gensync 把 generator 包成 coroutine，同一段代码可被 `runner.sync / runner.async / runner.errback` 三种方式驱动。WHY 真实动机：babel 同时要支持 webpack 同步 babel-loader、jest 异步测试、Vite worker 异步，**三套 caller 不能写三遍 core**。
-
-**WHY 2：为啥 v8 开始 `transform()` 必须传 callback？**
-第 47-50 行 `if (callback === undefined) throw new Error("Starting from Babel 8.0.0...")` —— WHY：避免「我以为是 sync，其实走到 fs 异步分支」的隐式成本。强制显式选型，让用户主动思考「我的 caller 是同步还是异步」，并把 200+ ms 的 config 解析成本摆在台面上。
-
-**WHY 3：`beginHiddenCallStack` 包一层？**
-`packages/babel-core/src/errors/rewrite-stack-trace.ts` 提供这个工具。WHY：gensync 的内部栈帧会污染用户报错堆栈（看到 `runner.<anonymous>` 用户懵），所以在入口/出口做一次 try/catch + 栈重写，让报错堆栈看起来是直接调用 `transform`。
-
-#### 卡 2：`packages/babel-parser/src/index.ts:41-80` —— `parse()` + `unambiguous` 重解析
-
-```ts
-if (options?.sourceType === "unambiguous") {
-  options = { ...options };
-  try {
-    options.sourceType = "module";
-    const parser = getParser(options, input);
-    const ast = parser.parse();
-    if (parser.sawUnambiguousESM) return ast;
-    if (parser.ambiguousScriptDifferentAst) {
-      // await 0 在 module 是 AwaitExpression，在 script 是两条 ExpressionStatement
-      try { options.sourceType = "script"; return getParser(options, input).parse(); } catch {}
-    } else {
-      ast.program.sourceType = "script";
-    }
-    return ast;
-  } catch (moduleError) {
-    try { options.sourceType = "script"; return getParser(options, input).parse(); } catch {}
-  }
+export default function plugin({ types: t }) {
+  return {
+    visitor: { Identifier(path) { path.node.name = path.node.name.toUpperCase(); } }
+  };
 }
 ```
 
-**WHY 1：为什么需要 unambiguous 模式？**
-`.js` 后缀文件历史上是 script，引入 ESM 后没人能 100% 区分。babel 选择「先按 module 试 → 失败回退 script」—— WHY：成功路径可以识别 `import/export`、失败路径保证 `await` 等合法 script 也能解析。**比 acorn 早一步解决了 mixed-sourceType 痛点**。
+**关键参数**：
+- `packages/babel-core`：调度核心 + `transformRunner`
+- `packages/babel-parser`：tokenizer + statement + expression
+- `packages/babel-traverse`：NodePath + Scope
+- `packages/babel-generator`：printer + buffer + source-map
+- `File AST` 跨段传递——结构化 AST 不丢信息
 
-**WHY 2：`ambiguousScriptDifferentAst` 干啥的？**
-`await\n0` —— 在 module 是 `AwaitExpression(0)`，在 script 是两条 `ExpressionStatement(await)` + `ExpressionStatement(0)`。AST 形态不同。WHY：caller 用 `unambiguous` 时只想要一份 AST，必须在 parser 内决定；这一句判断让 plugin transform 路径可预测。
+**最佳实践**：核心解耦三段——插件作者只 import traverse；每段独立发版——独立升级；`File` 是统一句柄——配置/plugin 状态全部挂在 File 上。
 
-#### 卡 3：`packages/babel-traverse/src/visitors.ts:42` —— `explode$1`
+---
 
+### 模式 2：gensync 协程统一 sync/async API
+
+**问题场景**：babel 要同时支持 `transformSync`（webpack babel-loader 同步用）、`transformAsync`（jest 异步测试）、`transform(cb)`（老 API）。同一段编译逻辑写三遍。
+
+**解决方案**：用 `gensync` 把整条流水线写成 generator function，由 runtime 切回任意形态：
 ```ts
-export { explode$1 as explode };   // 注释：rollup-plugin-dts 命名空间问题
+const transformRunner = gensync(function* transform(code, opts) {
+  const config = yield* loadConfig(opts);
+  if (config === null) return null;
+  return yield* run(config, code);
+});
+// 三种调用方式
+transformRunner.sync(code, opts);
+transformRunner.async(code, opts);
+transformRunner.errback(code, cb);
 ```
 
-**WHY：为什么叫 `explode$1`？**
-注释 37-41 行写明：rollup-plugin-dts 在生成 `.d.ts` 时会把 `export function explode` 改成 `var explode` —— 破坏了 `import { explode }` 的解析。**重命名为 `explode$1`，d.ts 工具就无法误改**。这是极少见的「为了工具链 bug 主动污染源码」案例。
+**关键参数**：
+- `gensync`——基于 generator 的协程库
+- `runner.sync / runner.async / runner.errback`——同一代码三形态
+- `yield*` 委托子 generator——子任务可独立 sync/async
+- `beginHiddenCallStack` 重写栈帧——避免污染用户错误堆栈
+- v8 强制 `transform()` 传 callback——显式选型避免隐式成本
 
-**WHY：`explode()` 干啥的？**
-把 `{ Identifier() { ... } }` 展开成 `{ Identifier: { enter: [fn], exit: [] } }`；把 `"Identifier|NumericLiteral"` 拆成两个；把 `Property` 这种 alias 展开成 `ObjectProperty / ClassProperty`。WHY：plugin 作者写起来自由（短形式 + 管道 + alias），但 traverse 引擎需要的是标准化形式。一次 normalize 缓存，hot-path 不再付代价。
+**最佳实践**：多形态 API 用 generator 协程——三套 caller 共享一段代码；`beginHiddenCallStack` 必加——gensync 内部栈帧污染用户报错；强制 callback 参数——避免"以为是 sync 实际走到 async"的隐式成本。
 
-#### 卡 4：`packages/babel-traverse/src/path/index.ts:60` —— NodePath mixin
+---
 
+### 模式 3：NodePath 13 个 mixin 文件聚合
+
+**问题场景**：NodePath 是 babel 最常用的类——ancestry / replacement / evaluation / conversion / family / removal / modification 等 13 类操作。如果写一个 4000 行的 class，IDE 跳转只能到最外层，stack trace 看不出方法来自哪个文件。
+
+**解决方案**：用 mixin 模式，13 个文件各 100-500 行，`import * as X from "./xxx.ts"` 注入到 `NodePath` 原型：
 ```ts
+// packages/babel-traverse/src/path/index.ts:60
 const NodePath_Final = class NodePath {
-  // 通过 13 个 import * as 把方法全挂到原型
-```
-
-**WHY：为啥不写一个 class extends 链？**
-13 个 mixin 文件每个 100-500 行，加起来 4000+。如果写 `class NodePath extends AncestryMixin extends ReplacementMixin ...`，IDE 跳转只会到最外层。**mixin 模式让每个方法在 stack trace 里直接显示来自 `replacement.ts:200`，调试体验天差地别**。代价：types 要 `declare` 拼装（`NodePathAssertions`、`NodePathValidators` 用生成的 `.d.ts` 联合）。
-
-#### 卡 5：`packages/babel-core/src/transformation/block-hoist-plugin.ts:8-39` —— 内部 plugin
-
-```ts
-const blockHoistPlugin: PluginObject = {
-  name: "internal.blockHoist",
-  visitor: {
-    Block: { exit({ node }) { node.body = performHoisting(node.body); } },
-    SwitchCase: { exit({ node }) { node.consequent = performHoisting(node.consequent); } },
-  },
+  // 13 个 mixin 通过 import * as 注入
 };
 ```
 
-**WHY 1：priority 0-4 的设计**
-注释 10-18 写明：0=very bottom、1=默认、2=高于默认、3=very top、4=helper 保留。WHY：preset-env 的 `transform-modules-commonjs` 注入的 `var _interopRequireDefault = ...` 必须排在所有 `require()` 调用前，而用户的 `import` 转换结果是普通 priority 1。**AST visitor 排序比文本排序更安全**（移动节点会触发父节点重排，单遍遍历即可）。
+**关键参数**：
+- 13 个 mixin 文件：`ancestry / replacement / evaluation / conversion / family / removal / modification / context / introspection / comments`
+- 每个 mixin 独立可读
+- types 用 `declare` 拼装：`NodePathAssertions` / `NodePathValidators`
+- IDE 跳转精准到 `replacement.ts:200`
+- 调试 stack trace 显示来源文件
 
-**WHY 2：为什么 `SwitchCase` 单独处理？**
-注释 30-34：case 语句里函数声明和引用的作用域特殊，整体 hoist 会破坏语义。所以只 hoist case 体内部。**承认不一致，但承认比假装一致更工程**。
+**最佳实践**：大型类用 mixin 聚合而非单文件 4000 行；types 用 `.d.ts` 联合声明——避免运行时膨胀；每个 mixin 单测可独立——降低回归成本。
 
-#### 卡 6：`packages/babel-helper-compilation-targets/src/index.ts:33-49` —— `OptionFlags` 风格
+---
 
+### 模式 4：@babel/types 节点 + builder/validator 分离
+
+**问题场景**：AST 节点挂方法有两种——OOP 风格 `node.identifier()` 或 FP 风格 `t.identifier(name)`。如果节点挂方法，节点是"非 plain object"——JSON 序列化、跨 worker 传递、diff 调试都成问题。
+
+**解决方案**：节点是 plain object，validators/builders 外置为函数：
 ```ts
-let optionFlags = 0;
-if (normalizedOptions.allowAwaitOutsideFunction) optionFlags |= OptionFlags.AllowAwaitOutsideFunction;
-// 7 个 flag 一个一个 or
+// 节点是 plain object
+const idNode = { type: "Identifier", name: "foo" };
+// builder 函数式
+t.identifier("foo")  // 返回 plain object
+// validator 独立
+t.isIdentifier(node)  // 类型守卫
 ```
 
-**WHY：为什么用位掩码？**
-Parser 内部 hot-path 几百万次 `if (this.options.allowAwaitOutsideFunction)` 字符串属性访问慢；改成 `if (optionFlags & AllowAwaitOutsideFunction)` 是位运算 + JS engine 友好。**这是经典 perf-driven 改造**，所有 hot-path 都有相同模式（`packages/babel-parser/src/parser/index.ts:24-65`）。
+**关键参数**：
+- 节点 = plain object——可 JSON 序列化
+- `@babel/types` 暴露 builder 函数：`t.identifier / t.stringLiteral`
+- validator 独立：`t.isIdentifier / t.assertIdentifier`
+- 跨 worker 传递零成本
+- diff 调试可视化友好
+- OOP 链式放弃——换来序列化 + 跨线程
 
-#### 卡 7：`packages/babel-traverse/src/scope/index.ts:7-8` —— builtin 列表 JSON
+**最佳实践**：AST 节点用 plain object——序列化 + 跨线程零成本；validators/builders 函数式——更纯；`t.isXxx` 类型守卫——TS 收窄类型。
 
+---
+
+### 模式 5：visitor 标准化 explode + alias + enter/exit
+
+**问题场景**：插件作者写 visitor 想"短形式"（`Identifier(p) {}`）、"管道"（`Identifier|Pattern(p) {}`）、"alias"（`Property` 包括 `ObjectProperty + ClassProperty`）。但 traverse 引擎需要的是标准化 `{ Identifier: { enter: [fn], exit: [] } }`。
+
+**解决方案**：`explode()` 函数把短形式展开成标准化形式，一次 normalize 缓存：
+```ts
+const visitor = {
+  Identifier(p) {},
+  "Identifier|NumericLiteral"(p) {},
+  Property: { enter(p) {}, exit(p) {} },
+};
+// explode() 内部
+{ Identifier: { enter: [fn], exit: [] },
+  NumericLiteral: { enter: [fn], exit: [] },
+  ObjectProperty: { enter: [fn], exit: [] },
+  ClassProperty: { enter: [fn], exit: [] } }
+```
+
+**关键参数**：
+- 短形式 `Identifier(p) {}`——最常用
+- 管道 `Identifier|NumericLiteral`——同处理逻辑
+- alias `Property`——展开为多真实类型
+- `enter` / `exit`——进入/离开节点时触发
+- 一次 explode 缓存——hot path 不重复 normalize
+
+**最佳实践**：visitor 写短形式——可读性优先；`explode()` 标准化——引擎处理统一；alias 在框架层展开——插件作者不感知真实类型。
+
+---
+
+## 第二段：扩展范式
+
+### 模式 6：Plugin Pass 分组合并 visitor
+
+**问题场景**：preset-env 通常需要 30+ 插件同步 traverse AST 改写；如果每个插件独立 traverse，30 次全树遍历 100% 慢 30 倍。
+
+**解决方案**：把插件按 pass 分组（preset-env 通常 3 个 pass），同一 pass 内合并 visitor 一次性 traverse；不同 pass 共享同一 File 句柄。
+
+**关键参数**：
+- `plugin-pass.ts` 调度——按 pass 分组
+- 同 pass 合并 visitor——一次 traverse
+- 跨 pass 共享 File——配置不重传
+- 改写 AST 后下一 pass 看到新 AST
+- preset-env 拆 3 pass：syntax / polyfill / target 转换
+
+**最佳实践**：插件按 pass 分组——同 pass 合并 visitor；preset 拆多 pass——按职责分层；跨 pass 共享 File——避免重复 init。
+
+---
+
+### 模式 7：block-hoist 内部插件 priority 0-4 数值
+
+**问题场景**：preset-env 注入的 `var _interopRequireDefault = ...` helper 必须排在所有 `require()` 调用前；但插件输出的代码顺序由 visitor 决定，文本排序不优雅。
+
+**解决方案**：用 priority 数字（0=very bottom、1=默认、2=高于默认、3=very top、4=helper 保留）让 AST visitor 自动排序：
+```ts
+// block-hoist-plugin.ts
+const blockHoistPlugin = {
+  name: "internal.blockHoist",
+  visitor: {
+    Block: { exit({ node }) { node.body = performHoisting(node.body); } }
+  }
+};
+```
+
+**关键参数**：
+- 5 个 priority 档位
+- `SwitchCase` 单独处理——case 内函数声明特殊
+- AST visitor 排序比文本排序安全
+- 改动一个插件立刻影响全流水线
+- 注释明示 priority 含义——避免后人误用
+
+**最佳实践**：plugin 排序用 priority 数字——比文本排序优雅；SwitchCase 单独承认不一致——比假装一致更工程；priority 含义写注释——防误用。
+
+---
+
+### 模式 8：parser unambiguous 模式 + 重解析回退
+
+**问题场景**：`.js` 后缀文件历史上是 script，引入 ESM 后没人能 100% 区分；`await\n0` 在 module 是 `AwaitExpression(0)`，在 script 是两条 `ExpressionStatement`。
+
+**解决方案**：先按 module 试 → 失败回退 script；module 成功但 `ambiguousScriptDifferentAst` 时再重解析为 script：
+```ts
+if (options?.sourceType === "unambiguous") {
+  try { /* module parse */ return ast; }
+  catch { /* 回退 script */ return parseScript(input); }
+}
+```
+
+**关键参数**：
+- `sourceType: 'unambiguous'`——自动判断
+- 先 module 试——成功识别 import/export
+- 失败回退 script——保证 `await` 合法
+- `ambiguousScriptDifferentAst` 触发重解析
+- 比 acorn 早一步解决 mixed-sourceType 痛点
+
+**最佳实践**：未明确 sourceType 走 unambiguous——比强制用户选更友好；module 优先 + script 兜底——失败有路径；`ambiguousScriptDifferentAst` 解决边界——可预测 AST。
+
+---
+
+### 模式 9：Scope binding 一次收集 + 后续 cheap lookup
+
+**问题场景**：transform 阶段插件经常要"判断变量是否已声明" / "重命名变量" / "找引用"——每次全 AST 遍历找 binding 极慢。
+
+**解决方案**：`babel-traverse/scope` 在第一次 traverse 收集所有 binding 到 map，后续 cheap lookup：
+```ts
+path.scope.bindings  // 局部所有 binding Map
+path.scope.getBinding("x")  // 找名为 x 的 binding
+path.scope.rename("x", "y")  // 重命名
+```
+
+**关键参数**：
+- 第一次 traverse 收集——binding map
+- 后续 lookup O(1)
+- `rename()` 同时改声明 + 引用
+- 支持 block scope / function scope
+- `crawl()` 重新收集——AST 改写后用
+
+**最佳实践**：binding 一次收集——避免每次遍历；`getBinding / rename` 是高频 API；改写 AST 后调 `crawl()` 重新收集——保持正确性。
+
+---
+
+### 模式 10：helper 声明-注入分离
+
+**问题场景**：preset-env 注入 polyfill 时需要 `_classCallCheck` 等 helper 函数——但 helper 注入时机和 plugin 改写时机不同步。
+
+**解决方案**：插件通过 `api.addHelper(name)` 声明要用的 helper，实际注入在 generator 阶段：
+```ts
+// plugin
+api.addHelper("classCallCheck");
+// generator 阶段统一注入
+import * as helpers from "@babel/helpers";
+```
+
+**关键参数**：
+- `api.addHelper(name)` 声明
+- `@babel/helpers` 集中所有 helper 实现
+- generator 阶段统一注入到文件顶部
+- 避免重复 import
+- tree-shaking 友好——只引用的 helper 才打包
+
+**最佳实践**：helper 走声明-注入分离——plugin 简洁；集中管理 helper——复用 + tree-shake；generator 阶段统一注入——避免重复。
+
+---
+
+## 第三段：进阶范式
+
+### 模式 11：unambiguous ESM 识别 + 标识符大小写 lower/upper 双表
+
+**问题场景**：`Number`（首字母大写）和 `number`（全小写）是两个不同变量；`rename("Number")` 时如果不知道 `Number` 是全局，会错误重命名。
+
+**解决方案**：维护两个 JSON 表——`builtin-lower.json`（snake_case 全局）+ `builtin-upper.json`（PascalCase 全局）：
 ```ts
 import globalsBuiltinLower from "@babel/helper-globals/data/builtin-lower.json" with { type: "json" };
 import globalsBuiltinUpper from "@babel/helper-globals/data/builtin-upper.json" with { type: "json" };
 ```
 
-**WHY：lower/upper 两个文件？**
-JS 标识符大小写敏感：`Number` 和 `number` 是两个不同变量。**lower 用来跳过 snake_case 全局（`number` 不是全局）、upper 用来跳过 `Number` 全局**。rename 时如果没这个表，`var Number = 1` 会被错误重命名（`Number` 是全局），实际必须 skip。
+**关键参数**：
+- lower 表跳 snake_case 全局（`number` 不是全局）
+- upper 表跳 PascalCase 全局（`Number` 是全局）
+- rename 时 skip 全局——避免破坏内置
+- `import ... with { type: "json" }` ESM JSON
+- 数据驱动——新增全局只改 JSON
 
-### 5.3 设计模式
+**最佳实践**：rename 必须有 builtin 表——大小写敏感；lower/upper 分两份——精确跳过；JSON 数据驱动——易维护。
 
-1. **协程 + 单一管线**（gensync）：三套 API 共享一段 generator。
-2. **Mixin / Trait 聚合**（NodePath）：13 个文件组成一个类。
-3. **Plugin Pipeline with Pass Grouping**：同 pass 合并 visitor，减少 traverse 次数。
-4. **Builder/Validator 模式**（@babel/types）：节点 + 函数分离，节点可序列化。
-5. **Scope as Hoisting**（babel-traverse/scope）：所有 binding 在第一次 traverse 收集，后续 cheap lookup。
-6. **Priority-based Sorting**（block-hoist）：数字优先级代替排序算法。
-7. **Token pre-allocation**（generator/buffer.ts）：预分配 buffer 数组，generate 阶段 append-only。
+---
 
-### 5.4 反模式（要避开）
+### 模式 12：OptionFlags 位掩码 hot-path 性能
 
-1. **「一处完美兼容」陷阱**：parser 试图 100% 覆盖 TC39 spec + TypeScript + Flow + JSX；导致 200+ 万行测试 fixture，维护成本巨大。新项目要谨慎「all-in-one parser」。
-2. **Plugin 全局副作用**：插件通过 `api.addHelper(name)` 注入 helper name，但实际 helper 注入在 generator 阶段。**这种「声明-注入」分离对新人极其反直觉**，需要深入读 `plugin-pass.ts` 才能理解。
-3. **循环依赖绕道**：`packages/babel-traverse/src/index.ts:1` 用 `import "./path/context.ts"; // We have some cycles, this ensures correct order to avoid TDZ`。**用注释+行号解决循环依赖**，不优雅但有效。复刻时尽量避免这种模式。
+**问题场景**：parser hot-path 几百万次 `if (this.options.allowAwaitOutsideFunction)`——字符串属性访问 + boolean 判断，V8 不友好。
 
-### 5.5 独特看点
-
-- `experimental_preserveFormat`：`packages/babel-generator/src/index.ts:24-55` 要求传回原 code、必须 `retainLines=true`、禁用 `compact/minified/jsescOption`、必须 `tokens: true` parser option。**任意一个不对就 throw**。WHY：保留原格式这个特性需要把每个 token 与 AST 节点映射，5 个前置条件是「我真的知道我在做什么」的安全锁。
-- `BABEL_9_BREAKING` 环境变量：`packages/babel-core/src/index.ts:1-3` 通过 env 切换 version 字符串后缀 `999999999`。WHY：让下游 monorepo 测试覆盖 8.0-rc 与 7.28 双线兼容，**一个二进制测试两个版本**。
-
-## 6. 运行机制（Bring It Up）
-
-```bash
-# 1. 装依赖（Yarn 4，必须）
-corepack enable
-yarn install
-
-# 2. 编译所有包
-make build
-# 等价于：yarn gulp build
-
-# 3. 跑测试（不跑 fixture 大集合）
-make test-only
-
-# 4. 跑单包测试
-yarn jest packages/babel-parser
-
-# 5. Smoke test：手写一段
-node -e "
-const babel = require('./packages/babel-core');
-const out = babel.transformSync('const x = a ?? b;', { presets: ['@babel/preset-env'] });
-console.log(out.code);
-"
+**解决方案**：把 options 转成 `OptionFlags` 位掩码，`|` 合并 + `&` 检查：
+```ts
+let optionFlags = 0;
+if (normalizedOptions.allowAwaitOutsideFunction) optionFlags |= OptionFlags.AllowAwaitOutsideFunction;
+// 7 个 flag 一个一个 or
+// hot-path
+if (optionFlags & AllowAwaitOutsideFunction) { ... }
 ```
 
-启动顺序：
-1. `yarn install` → 触发 `scripts/postinstall.ts`（patch commonjs plugin 等）。
-2. `make bootstrap` → 创建所有 monorepo 包的 workspace 软链。
-3. `make build` → Gulp 编排 rollup 打包每个包成 ESM + CJS 双产物。
-4. `make test` → Jest + 12 万 fixture。
+**关键参数**：
+- 7 个 flag 一个一个 or
+- bit 运算 + JS engine 友好
+- parser hot-path 全用位掩码
+- 经典 perf-driven 改造
+- 启动期一次转换，hot-path 直接位运算
 
-## 7. 演进历史（Time Travel）
+**最佳实践**：hot-path 选项用位掩码——避免属性查找；启动期转换一次——运行时零成本；7 个 flag 是经验值——多了用 enum。
 
-```mermaid
-gantt
-    title Babel 演进时间线
-    dateFormat YYYY-MM
-    section 起源
-    6to5 项目 (Sebastian McKenzie)          :done, 2014-09, 6M
-    更名为 babel                             :done, 2015-02, 1M
-    section v6
-    Babel 6.x 发布                          :done, 2015-11, 12M
-    拆 plugin 命名空间 babel-plugin-*        :done, 2016-08, 3M
-    section v7
-    Babel 7 (Babel 7.0.0)                   :done, 2017-09, 6M
-    v7 长期维护 (7.0 → 7.28)                 :done, 2018-09, 80M
-    section v8
-    Babel 8 alpha 阶段                      :active, 2024-08, 22M
-    Babel 8.0.0-rc.6（当前解析版本）        :active, 2026-05, 3M
+---
+
+### 模式 13：explode$1 命名规避 d.ts 工具链 bug
+
+**问题场景**：rollup-plugin-dts 在生成 `.d.ts` 时会把 `export function explode` 改成 `var explode`——破坏 `import { explode }` 解析。
+
+**解决方案**：重命名为 `explode$1`——d.ts 工具无法误改：
+```ts
+// packages/babel-traverse/src/visitors.ts:42
+export { explode$1 as explode };  // 注释：rollup-plugin-dts 命名空间问题
 ```
 
-关键里程碑：
-- **2014-09**：Sebastian McKenzie 在澳大利亚创建 6to5，2 周内爆红。
-- **2015-02**：更名 babel（6to5 名字暗示只支持 ES6，实际远超）。
-- **2015-11**：v6 发布，plugin 命名空间化。
-- **2017-09**：v7 发布，scope hoist、preset 系统。
-- **2024-2026**：v8 alpha/rc，转 ESM、breaking 清理、Node 16+ 弃用。
+**关键参数**：
+- 注释明示原因
+- `explode$1` 是工具链防御命名
+- rollup-plugin-dts 不识别 `$` 数字
+- 极少见的"为工具链 bug 主动污染源码"
+- 同类问题在 babel-helper-validator-identifier 也存在
 
-## 8. 质量保障（How It Doesn't Break）
+**最佳实践**：工具链 bug 用命名约定规避；注释必须——下任 maintainer 不再绕弯路；`$1` 后缀是约定俗成——d.ts 工具的"无法识别"标记。
 
-| 防线 | 工具 | 规模 |
-|------|------|------|
-| 单元测试 | Jest | 数十万 test case |
-| 集成测试 | `babel-helper-fixtures` | **12 万+ fixture**（input/expected/output.json 三件套） |
-| 真实 runtime | `test/runtime-integration/` | 跑在 Node / bun / Webpack / esbuild 真实 bundler |
-| Snapshot | `babel-helper-transform-fixture-test-runner` | diff 友好 |
-| Lint | ESLint + 自研 `@babel/eslint-plugin-development-internal` | 全仓 |
-| 性能基线 | `benchmark/` | parser/generator/identifier 都有 bench.mjs |
-| TS 类型 | tstyche | 类型层 type test |
-| 死代码 | knip | 监控 unused export |
-| Coverage | c8 + codecov | 报告 |
+---
 
-CI 矩阵（`.github/workflows/ci.yml`）：Node 18/20/22/24 多版本交叉；Linux/macOS/Windows 三系统；5 个并行 job（lint、test、build、runtime、e2e）。
+### 模式 14：experimental_preserveFormat 5 个前置条件 fail-fast
 
-## 9. 生态依赖（Map of the World）
+**问题场景**：用户期望"保留原格式"——但这个特性需要把每个 token 与 AST 节点映射，5 个前置条件（保留原 code / `retainLines=true` / 禁用 `compact/minified/jsescOption` / `tokens: true` parser option）任意一个不对就破坏语义。
 
-```mermaid
-flowchart LR
-    user[开发者] -->|写| source[源码]
-    source -->|交给| core[babel-core]
-    core --> parse[parser]
-    core --> traverse[traverse]
-    core --> generate[generator]
-    traverse --> types[types]
-    parse --> types
-    generate --> types
-    core --> compat[compat-data<br/>浏览器能力]
-    core --> targets[helper-compilation-targets<br/>targets.js]
-    core --> preset[preset-env]
-    preset --> compat
-    preset --> targets
-    core --> babelrc[.babelrc / babel.config]
-    source --> runtime[babel-runtime]
-    core -.注入 helper.-> runtime
+**解决方案**：每个条件不满足直接 throw：
+```ts
+if (input?.code === undefined) throw new Error("experimental_preserveFormat requires original code");
+// 5 个独立 if-throw
 ```
 
-外部关键依赖：`browserslist`（targets 解析）、`core-js`（polyfill 注入）、`lru-cache`（targets 缓存）、`semver`（plugin 版本校验）、`@jridgewell/gen-mapping`（sourcemap v3）、`jsesc`（字符串转义）、`gensync`（协程调度）。
+**关键参数**：
+- 5 个前置条件全部强制
+- 任一不满足 throw
+- "我真的知道我在做什么"的安全锁
+- 用户跑通就一定正确
+- 失败模式明确——不用猜哪里错
 
-合规检查清单：
-- [x] 不发版时打 tag（`.github/workflows/release.yml`）
-- [x] license 检查（MIT，单一）
-- [x] CVE 监控（Renovate + dependabot）
-- [x] 公开 RFC 流程（babel/proposals 仓库）
-- [x] Code of Conduct
+**最佳实践**：实验性功能前置条件强校验——5 个 if-throw 显式失败；安全锁 = 任意环节不对就 throw；用户跑通 = 一定正确。
 
-## 10. 生产实践（Battle-Tested）
+---
 
-| 维度 | babel 的做法 |
-|------|--------------|
-| 配置热更新 | babel.config.json + `BABEL_SHOW_CONFIG_FOR` 调试 |
-| 优雅停服 | 库项目，无 |
-| 限流 | 库项目，无 |
-| 链路追踪 | `transformSync` 内部无 trace；外部 caller（webpack）自己接 |
-| 健康检查 | 无（库） |
-| 结构化日志 | 7.0 起新增 `BABEL_DEBUG` 环境变量输出 plugin 决策 |
+### 模式 15：BABEL_9_BREAKING env 切换 version 后缀
 
-browserslist LRU 缓存（`packages/babel-helper-compilation-targets/src/index.ts:4`）：targets 解析是 plugin 决策最贵一步，babel 自己用 `lru-cache` 缓存；项目级 monorepo 跑时这个缓存是巨大加速。
+**问题场景**：v8 是 breaking 变更（callback 强制 / ESM 全面化），下游 monorepo 必须同时测试 7.28 + 8.0-rc 兼容；维护两个二进制浪费。
 
-## 11. 社区文化（People & Process）
-
-- **治理**：Babel 团队页公开 4-8 名 maintainer（Henry Zhu、Jùnliàng、等人），外加 working group。
-- **RFC**：`babel/proposals` 仓库公开 TC39 提案适配进度。
-- **沟通**：Slack 3500+ 成员、Discord、Discussion 区。
-- **议题活跃**：每月 200+ issue，标签化分诊（`issue-triage.yml` 自动标签 bot）。
-- **资金**：Open Collective + GitHub Sponsors + 商业 Flavortown 模型（已实现自负盈亏）。
-- **维护者福利**：明确 "Babel 维护者应当获得报酬"。
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **协程 + 单一管线**：任何需要同时支持 sync/async/callback 的库（lint、formatter、bundler-loader）都应学 `gensync` 模式。**一份业务代码，三套 API 表面**。
-2. **Mixin 聚合大对象**：NodePath 13 文件是巨型 utility class 拆分教科书。**别让一个类超过 500 行**。
-3. **Plugin Pass 分组**：同 pass 合并 visitor 一次 traverse，性能差异 3-10x。**任何插件平台都该有 pass 概念**。
-
-### 12.2 必避 3 坑
-
-1. **不要尝试「all-in-one parser」**：12 万 fixture 维护成本是真正的护城河，新项目不如做 thin wrapper。
-2. **不要把 plugin 全局副作用藏起来**：`api.addHelper` 这种「声明-延迟注入」模式对新人非常不友好，新库请在 100 行内讲清生命周期。
-3. **不要在 monorepo 用普通循环依赖**：babel 自己有 5+ 处 `import "./xxx.ts"; // We have some cycles` 注释。**尽早用 DI / event 模式切断**。
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7 天复刻简化版 Babel
-    dateFormat YYYY-MM-DD
-    section Day 1-2 骨架
-    设计 AST 类型 + Tokenizer :a1, 2026-06-02, 2d
-    section Day 3-4 Parser
-    Expression / Statement 解析 :a2, after a1, 2d
-    section Day 5 Traverse
-    NodePath + scope 简化版 :a3, after a2, 1d
-    section Day 6 Generator
-    Buffer + Printer :a4, after a3, 1d
-    section Day 7 插件
-    1 个简单 plugin（箭头函数）:a5, after a4, 1d
+**解决方案**：通过 `BABEL_9_BREAKING` env 切换 version 字符串后缀 `999999999`：
+```ts
+if (process.env.BABEL_9_BREAKING) {
+  VERSION = "8.0.0-rc.6";
+} else {
+  VERSION = "7.999999999";
+}
 ```
 
-### 12.4 打分卡
+**关键参数**：
+- `BABEL_9_BREAKING` env 开关
+- `999999999` 后缀——`7.999999999` 大于所有 7.x
+- 一个二进制测试两个版本
+- 下游 monorepo CI 矩阵化
+- npm 解析时强制装 v8——绕过 7.x 范围
 
-| 维度 | 分数 | 评语 |
-|------|------|------|
-| 代码可读性 | 7/10 | 注释极好，但循环依赖略晦涩 |
-| 架构优雅度 | 9/10 | 协程+pass+mixin 是教科书 |
-| 测试覆盖 | 10/10 | 12 万 fixture |
-| 文档质量 | 9/10 | babeljs.io + 内联注释 |
-| 上手难度 | 4/10 | 新人需 1 个月读懂 visitor 机制 |
-| 复刻可行性 | 2/10 | 全栈 30+ 人年 |
-| 商业可持续 | 8/10 | Flavortown 自负盈亏 |
+**最佳实践**：breaking 变更用 env 切换——一份代码两版；`999999999` 后缀——npm range 强制解析；下游 CI 矩阵化——单测覆盖两个版本。
 
-## 13. 学习萃取（Cheat Sheet）
+---
 
-**一句话价值**：Babel 把「JS 语法演进」从「浏览器厂商」手里抢过来还给开发者，30 万 npm 月下载支撑着整个前端工具链。
+## 第四段：实战范式
 
-### 3 核心洞察
+### 模式 16：140+ monorepo 包 + Yarn 4 workspaces
 
-1. **三段式 + 中间 AST**：`parser → traverse → generator` 之所以成为编译器标准形态，是因为 AST 是**机器可枚举、可改写、可序列化**的——这是「代码即数据」思想的最强证明。
-2. **Plugin 不直接改 AST，是 traverse 时 visitor 改**：插件作者写 `{ Identifier(p) { p.replaceWith(...) } }`，babel 负责收集、合并、调度。**这是 reactive visitor pattern 在编译器的胜利**。
-3. **gensync 协程是 sync/async 之争的终极答案**：async/await 不是银弹，generator + 调度器才是「我想要任意调用形态」的通用解。
+**问题场景**：babel 由 140+ 子包组成（`babel-plugin-*` / `babel-preset-*` / `babel-helper-*`），每个独立发版；用 npm + lerna 维护 140+ 软链性能差。
 
-### 5 段必读代码
-
-| # | 路径 | 看点 |
-|---|------|------|
-| 1 | `packages/babel-core/src/transform.ts:21-29` | `transformRunner = gensync(function* ...)` —— 协程入口 |
-| 2 | `packages/babel-parser/src/index.ts:41-80` | `unambiguous` 重解析机制 |
-| 3 | `packages/babel-traverse/src/visitors.ts:42-100` | `explode()` visitor 标准化 |
-| 4 | `packages/babel-traverse/src/path/index.ts:18-60` | NodePath 13-mixin 聚合 |
-| 5 | `packages/babel-core/src/transformation/block-hoist-plugin.ts:1-50` | priority 0-4 的设计 |
-
-### 1 反模式
-
-`import "./xxx.ts"; // We have some cycles` —— 循环依赖靠注释 hack。新项目请用 DI 或 event bus 切分。
-
-### 1 可复用模式
-
-**协程 + 单一管线**：用 `gensync`（或自己写 20 行 `co`）让一个 generator 跑出 `sync / async / cb` 三种接口。比自己写三套少 60% 代码。
-
-### 3 立刻能用
-
-1. **任何项目里需要 sync/async 兼容**：抄 `transform.ts:21` 模式，用 `gensync` 一行起手。
-2. **NodePath mixin 拆分法**：超大 class 用 `import * as X from "./x.ts"` 拆成 5-10 个 mixin 文件，IDE 跳转和 tree-shaking 立刻受益。
-3. **priority-based sort**：plugin 注入的声明需要按「最前 / 默认 / 最后」排？给一个 `priority: 0-4` 数字，visitor 一次过完。
-
-## 14. 项目特点速查
-
-**独特看点**：
-- 是「前端工具链」的事实标准，所有 bundler/test runner/linter 都用 @babel/parser 解析 JS。
-- 维护 12 万 fixture 是真正的护城河。
-- 自给自足：babel 用 babel 自己编译自己（`babel.config.ts` + `Gulpfile.ts`）。
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title JS 编译器/解析器对比
-    x-axis "冷门" --> "流行"
-    y-axis "简单" --> "功能强"
-    "Babel": [0.95, 0.95]
-    "SWC (Rust)": [0.7, 0.8]
-    "esbuild (Go)": [0.7, 0.6]
-    "acorn": [0.5, 0.5]
-    "TypeScript Compiler": [0.6, 0.85]
-    "Hermes Preparser": [0.2, 0.7]
+**解决方案**：Yarn 4.14.1（berry）workspaces + `packageManager` 字段固定版本 + `.yarnrc.yml` 配置：
+```yaml
+# package.json
+{ "packageManager": "yarn@4.14.1", "workspaces": ["packages/*"] }
 ```
 
-- vs **SWC**：SWC 用 Rust 写，性能 10x，但 plugin 系统比 babel 弱（无 pass 分组、无 visitor 标准化）。babel 优势在生态、plugin 丰富度、文档。
-- vs **esbuild**：更快更轻量，但 plugin API 更受限、不支持自定义 visitor。
-- vs **acorn**：acorn 是纯 parser，babel-parser 是 parser + plugin + JSX + TS + Flow 一站式。
-- vs **TypeScript Compiler**：tsc 是 typed compiler，babel 是 transpiler，两者常组合（babel 处理语法，tsc 处理类型）。
+**关键参数**：
+- 140+ 子包——`packages/babel-*`
+- Yarn 4 berry——`packageManager` 字段固定
+- workspaces 软链——`yarn install` 一次
+- `scripts/postinstall.ts` 触发补丁
+- `babel-release` 工具独立发版
+
+**最佳实践**：大型 monorepo 用 Yarn 4 berry——性能 + 稳定；`packageManager` 字段固定——避免版本漂移；workspace 软链——避免重复安装。
+
+---
+
+### 模式 17：循环依赖用注释 + 行号兜底
+
+**问题场景**：`packages/babel-traverse/src/index.ts:1` 用 `import "./path/context.ts"; // We have some cycles, this ensures correct order to avoid TDZ`——A import B，B import A，TS 编译出 TDZ。
+
+**解决方案**：在 entry 显式 import 循环模块 + 注释说明顺序：
+```ts
+// packages/babel-traverse/src/index.ts
+import "./path/context.ts"; // We have some cycles, this ensures correct order to avoid TDZ
+```
+
+**关键参数**：
+- 注释 + 行号——`index.ts:1`
+- 显式 import 触发加载顺序
+- TDZ (Temporal Dead Zone) 防护
+- 不优雅但有效
+- 复刻时尽量避免——架构问题不是工程答案
+
+**最佳实践**：循环依赖用显式 import + 注释兜底；注释挂行号——下任 maintainer 跳转；承认是 workaround——避免后人"优化"掉。
+
+---
+
+### 模式 18：12 万 parser fixtures 真实 runtime test
+
+**问题场景**：parser 测试要覆盖 ES2015-2024 + TypeScript + Flow + JSX + JSX Fragment + 装饰器 + private fields——手写 case 不可能穷举。
+
+**解决方案**：12 万 fixtures（`.js` / `.ts` / 期望 AST `.json`）跑 `babel-parser` + 真实 runtime 校验：
+```ts
+// jest 配置
+testFixtures("packages/babel-parser/test/fixtures", { runMode: "parser" });
+```
+
+**关键参数**：
+- 12 万 fixtures——行业最大
+- 每个 fixture 配期望 AST JSON
+- jest 自动化 diff
+- 真实 runtime test——不是 mocked
+- 维护成本大但准确度行业第一
+
+**最佳实践**：parser 测试用 fixtures 集合——行业标准；期望 AST JSON 化——diff 直观；12 万规模是经验阈值——少 1 个量级覆盖不够。
+
+---
+
+### 模式 19：Gulpfile.ts 构建编排 + Makefile.source.ts 任务源
+
+**问题场景**：babel 140+ 包 build / test / lint / release 任务跨 5+ workflow 文件——手维护一致性难。
+
+**解决方案**：Gulpfile.ts 编排任务 + Makefile.source.ts 任务源 + CircleCI + GitHub Actions 5 workflow 矩阵：
+```ts
+// Gulpfile.ts
+gulp.task("build", gulp.series("build-babel", "build-packages"));
+// Makefile.source.ts
+make build  // 等价于 yarn gulp build
+```
+
+**关键参数**：
+- `Gulpfile.ts` 编排
+- `Makefile.source.ts` 任务源
+- CircleCI + 5 GitHub Actions workflow
+- 任务名跨工具一致
+- 5 workflow：ci / e2e-tests / issue-triage / release / pkg-pr-new
+
+**最佳实践**：复杂构建用 Gulp 编排 + Make 入口；任务名跨工具一致——`build` / `test` 通用；CI 矩阵化——5 workflow 各管一面。
+
+---
+
+### 模式 20：plugin authoring 实战范式
+
+**问题场景**：插件作者要写自定义转换（公司内部 DSL 转 JS / 自定义语法扩展），但 babel 7+ 插件 API 看似简单实则涉及 visitor / state / pre/post / inherits 等多面。
+
+**解决方案**：用 `helper-plugin-utils` 简化 `declare()` 校验：
+```ts
+import { declare } from "@babel/helper-plugin-utils";
+export default declare((api, opts) => {
+  api.assertVersion(7);
+  return {
+    name: "my-plugin",
+    visitor: { /* ... */ },
+    pre(state) { /* 改写前 */ },
+    post(state) { /* 改写后 */ },
+    inherits: require("@babel/plugin-transform-classes"),
+  };
+});
+```
+
+**关键参数**：
+- `declare()` 包装——版本断言 + options 校验
+- `api.assertVersion(7)`——不兼容抛错
+- `pre / post`——AST 改写前后钩子
+- `inherits`——继承其他 plugin visitor
+- `@babel/helper-plugin-utils` 是官方工具
+
+**最佳实践**：自定义 plugin 用 `declare()` 包装——版本校验 + 类型化；`inherits` 复用社区 plugin——避免重写；`pre / post` 钩子在 visitor 之外——全局初始化/清理。
+
+---
 
 ## 附：仓库元信息
 
 | 字段 | 值 |
-|------|------|
-| 路径 | `G:\实战案例\GitHub顶尖项目\babel\` |
-| 大小 | 28011 个文件（含 fixtures） |
-| 主语言 | TypeScript |
-| 包数 | 140+ |
-| 解析时间 | 2026-06-02 |
-| 解析版本 | v8.0.0-rc.6 |
-
-## 一句话总结
-
-**解析 = 计划书 + 框架图 + 核心功能 + 跑起来 + 偷过来**。Babel 的可偷之处不在「怎么写 parser」，而在「怎么把一个 30+ 人年的项目组织成 140 个可独立发版的包」——**协程调度、pass 分组、mixin 拆分、priority-based 排序**这四板斧是任何「长期维护、多人协作、可演进」的项目都该抄的答案。
+|:---|:---|
+| 仓库 | github.com/babel/babel |
+| 协议 | MIT |
+| 总文件 | 28,011 |
+| 主语言 | TypeScript + JavaScript |
+| Star | 43k+ |
+| 当前版本 | v8.0.0-rc.6 / v7.28.5 |
+| 团队 | 4-8 名核心 + 数百贡献者 |
+| 关键依赖 | Yarn 4 / Gulp / Jest 12 万 fixture / gen-sync |
+| 包管理 | Yarn 4.14.1 berry + workspaces |
+| 关键里程碑 | 6to5 → v6 → v7 plugin 命名空间 → v8 ESM breaking |

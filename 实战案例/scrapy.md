@@ -1,512 +1,338 @@
----
-title: scrapy
-type: web-scraping-framework
-lang: python
-stars: 54000
-date: 2026-06-02
-tags:
-  - 开源项目
-  - web-scraping-framework
-  - python
-  - async
-  - twisted
+# scrapy - Twisted + asyncio 双栈 Python 异步爬虫框架
+
+**GitHub**: scrapy/scrapy
+**Star**: 54k+
+**语言**: Python / Twisted / asyncio
+**主题**: web-scraping-framework / async / twisted / production-crawler
+**适用场景**: 学习 Twisted→asyncio 迁移、Middleware 链设计、整站抓取架构、持久化去重
+
 ---
 
-# scrapy · 项目深度解析
-
-> 跨平台、事件驱动的 Python 异步爬虫框架，Twisted + asyncio 双栈调度，业界最成熟的整站抓取解决方案。
-> 来源：G:\实战案例\GitHub顶尖项目\scrapy\
-
-## 写在前面：解析哲学
-
-解析一个被引用了十多年的老牌框架，**不能用「看 README 就开干」的速食法**。先看它怎么把 Twisted 的 Deferred 演化到原生 asyncio，再看它怎么把「去重/限流/重试/中间件」这些横切关注点抽象成可插拔契约，最后才回头验证：30 多个 downloader middleware、20 多个 extension、4 个不同 entry point（CrawlerProcess/CrawlerRunner/AsyncCrawlerProcess/AsyncCrawlerRunner）——这些庞大的表面，是同一个 ExecutionEngine 在 14 年里长出来的必要复杂度，还是设计妥协？
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone https://github.com/scrapy/scrapy` （git 仓库位于 G:\实战案例\GitHub顶尖项目\scrapy\）
-2. **分类**：Web Scraping Framework / Python / Apache-2.0 / 54k+ stars
-3. **问题清单**：引擎如何调度？Twisted→asyncio 迁移怎么兼容？dupefilter 怎么持久化？middleware 链怎么异步串起来？
-4. **速查表**：版本 2.14+（截至 2026-06）；Python 3.10+；依赖 Twisted + lxml + w3lib + queuelib
-5. **锁定 commit**：master 分支 6 月初快照，~625 个源码文件
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 值 |
-|---|---|
-| 项目名 | scrapy |
-| 定位 | 生产级 Python 异步爬虫框架 |
-| 核心问题 | 让开发者以声明式 DSL（Spider + Selector）写出能跑、能停、能恢复、可水平扩展的整站抓取任务 |
-| 目标用户 | 数据工程师 / 爬虫工程师 / 跨境电商情报采集团队 / SEO/SERP 监控 |
-| 商业模式 | 母公司 Zyte（前 Scrapinghub）卖 Scrapy Cloud + 商业 Smart Proxy；Scrapy 本体 Apache-2.0 免费 |
-| 复刻难度 | 极高（Twisted + asyncio 双栈 + 20+ 中间件 + 5+ 下载后端） |
-| 状态 | 活跃维护，最近一个 minor 2.14 引入 `start_async`/`stop_async`/`close_async` 全异步化 |
-| 团队 | Zyte 核心团队 + 700+ 贡献者 |
-| 里程碑 | 0.24 (2012) → 1.0 (2015) → 1.5 asyncio 支持 → 2.0 移除 Python 2 → 2.6 内置 HTTP/2 → 2.11 asyncio 默认 → 2.14 全 async API |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((scrapy/))
-    core
-      engine
-      scheduler
-      scraper
-      downloader
-      spidermw
-    http
-      request
-      response
-      headers
-      cookies
-    downloadermiddlewares
-      retry
-      redirect
-      cookies
-      httpcache
-      httpproxy
-      robotstxt
-    spidermiddlewares
-      depth
-      httperror
-      offsite
-      referer
-    pipelines
-      images
-      files
-      media
-    extensions
-      corestats
-      logstats
-      telnet
-      memusage
-      feedexport
-    spiders
-      Spider基类
-      CrawlSpider
-      SitemapSpider
-      XMLFeedSpider
-    utils
-      defer(Defer↔asyncio桥)
-      asyncio(reactor管理)
-      reactor
-      signal
-    commands
-      crawl
-      fetch
-      runspider
-      genspider
-      shell
-```
-
-**配置入口**：`scrapy.cfg`（项目级）+ `settings/default_settings.py`（默认值，549 行）
-**代码入口**：`scrapy/cmdline.py::execute()` 触发 `scrapy crawl` → `commands/crawl.py` → `CrawlerProcess.crawl()` → `Crawler.crawl()` → `ExecutionEngine.open_spider_async()` → `start_async()`
-**主要代码入口类**：`Crawler` (`scrapy/crawler.py:57`) / `ExecutionEngine` (`scrapy/core/engine.py:102`) / `Scheduler` (`scrapy/core/scheduler.py:127`) / `Scraper` (`scrapy/core/scraper.py:102`)
-
-## 3. 项目画像（Profile）
-
-| 指标 | 值 |
-|---|---|
-| 总文件数 | ~625（scrapy 源码） + ~370 测试 |
-| 主语言 | Python（100%） |
-| 涉及语言 | Python / reStructuredText / YAML / Make / Shell |
-| Star | 54k+（GitHub 公开数据） |
-| License | BSD-3-Clause（早期 BSD，README 标注 Apache-2.0 二级） |
-| Docker | 官方无镜像，社区维护 docker-scrapy |
-| K8s | 需用户自己编排（推荐 scrapyd + k8s job） |
-| CI | GitHub Actions：ubuntu/macos/windows 三平台 + 覆盖率上传 codecov |
-| 测试 | pytest + 自研 `CrawlerProcess` / `AsyncCrawlerProcess` 集成用例约 200 个 |
-| 类型提示 | `py.typed` 标记，全量 mypy 可检查 |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-```mermaid
-flowchart LR
-    Spider[start<br/>async gen] -->|yield Request| Engine[ExecutionEngine]
-    Engine -->|schedule| Sched[Scheduler<br/>+ DupeFilter]
-    Sched -->|next_request| Engine
-    Engine -->|process_request| DLM[DownloaderMiddleware<br/>chain]
-    DLM -->|fetch| H1[Twisted HTTP/1.1]
-    DLM -->|fetch| H2[HTTP/2]
-    DLM -->|fetch| HX[httpx]
-    DLM -->|fetch| FTP
-    H1 & H2 & HX & FTP -->|Response| Engine
-    Engine -->|enqueue_scrape| Scraper[Scraper]
-    Scraper -->|process_spider_input| SLM[SpiderMiddleware<br/>chain]
-    SLM -->|parse| Spider
-    Spider -->|yield Item/Request| SLM
-    SLM -->|Item| Pipes[ItemPipeline<br/>Manager]
-    Pipes -->|Feeds| Ext[FeedExport<br/>extension]
-    Pipes -->|stats| Stats
-    Scraper -->|spider_idle| Engine
-```
-
-**核心架构看点**：
-
-1. **四层单向数据流**：Spider → Scheduler → Downloader → Scraper → Spider。Request 是货币，Response 是回执；Engine 永远在中间调停，避免 Spider 直接调 Downloader 造成状态混乱
-2. **元类校验的中间件契约**：`scrapy/middleware.py:35` `MiddlewareManager` 基类只是个 ABC，但 `Scheduler` 用 `BaseSchedulerMeta.__subclasscheck__` 鸭子类型校验 `has_pending_requests/enqueue_request/next_request` 三方法存在 — 把"接口是否实现"从运行期挪到导入期
-3. **Defer ↔ Coroutine 桥**：`scrapy/utils/defer.py` 用 `ensure_awaitable`/`deferred_from_coro`/`maybe_deferred_to_future` 三件套，让一个 `process_spider_output` 链既能接受用户写 `async def`，也能接受老代码 `return Deferred`。这是 Scrapy 在 1.5 → 2.11 → 2.14 三次 asyncio 化没翻车的根因
-
-**ADR 关键设计决策**（章节末尾核心看点）：
-
-- **D1**：保持 Twisted reactor 兼容（`TWISTED_REACTOR_ENABLED` 默认 True），但允许 `TWISTED_REACTOR_ENABLED=False` 时用纯 asyncio + httpx（`_apply_reactorless_default_settings`）。**为什么**：10 年生态包袱丢不起，但新用户不想学 Twisted
-- **D2**：dupefilter 与 scheduler 解耦，dupefilter 只问 `request_seen()`，scheduler 自己管理队列。**为什么**：换 Redis 布隆过滤器时不动 scheduler
-- **D3**：Scraper 维护 `Slot` 对象（deque + active set + active_size 字节计数），用 `needs_backout()` 字节背压替代传统并发数限制。**为什么**：抓 50KB JSON 和 5MB PDF 用同一 CONCURRENT_REQUESTS 是不合理的
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-入口链：`scrapy/cmdline.py` → `commands/crawl.py` → `Crawler.crawl()` → `ExecutionEngine.start_async()` → 事件循环里 `scheduler.next_request()` ↔ `downloader.fetch()` ↔ `scraper.enqueue_scrape()`
-
-### 5.2 单文件分析卡
-
-**5.2.1 `scrapy/core/engine.py` (687 行, 27KB)**
-**WHY**：
-- `ExecutionEngine.__init__` 一次性把 `downloader` / `scheduler_cls` / `scraper` 三个核心组件全部 `load_object` + `build_from_crawler`（L132-149），并在 `except` 块里调 `self.downloader.close()`（L150-153）—— **资源获取即初始化（RAII）模式**：构造失败时不留半截对象
-- `start_async` L176-203 中 `asyncio.ensure_future(coro)` 与 `Deferred.fromCoroutine(coro)` 二选一（L196-201），**WHY**：避免 Twisted issue #12470 描述的 cancellation 死锁
-- `_Slot` 嵌套类（L65-99）把"inprogress 请求集合 + 关闭延迟 + 心跳定时器"绑成一个原子单位，**WHY**：让 Slot 概念 = 抓取上下文，方便后续多爬虫并行（虽然现在没用到）
-- `crawl()` 用 `inlineCallbacks` 协程包装（`crawler.py:171`），新旧 API 复用同一段业务逻辑
-
-**5.2.2 `scrapy/core/scheduler.py` (499 行)**
-**WHY**：
-- `BaseSchedulerMeta` 元类 L33-49 是项目最有意思的一行 `__subclasscheck__`：检查子类的 `has_pending_requests/enqueue_request/next_request` 是否 callable。**WHY**：不强制继承，子类可以是 duck-typed，实现类只需声明方法
-- `Scheduler` 默认实现拆出 `mq`（内存优先级队列）和 `dq`（磁盘优先级队列，L127-），`enqueue_request` 走内存优先、磁盘兜底。**WHY**：99% 的爬取放内存就够了，JOBDIR 用户才用磁盘；磁盘 → 内存用 `moved_to_disk` 信号
-- 调度顺序是 LIFO 栈（同优先级倒序），但 `_new_enqueue_request` 文档说 "LIFO except start requests"，**WHY**：默认 DFO 顺序更符合"先深后广"的爬虫直觉
-
-**5.2.3 `scrapy/middleware.py` (166 行)**
-**WHY**：
-- `_process_chain` L131-153 是个干净的串行链：拿 `self.methods[methodname]` 的 deque，逐个 `await ensure_awaitable(method(obj, *args))`。**WHY**：middleware 链是顺序敏感的（重试必须排在 cookies 之后），deque 支持 `appendleft` 让用户可以插队
-- `add_spider` vs `always_add_spider` 标志 + `_mw_methods_requiring_spider` 集合：检测老式 `def process_spider_output(self, response, spider)` 签名（带 spider 参数），发出 deprecation 警告。**WHY**：渐进式迁移，不破坏老插件
-- `from_crawler` 加载机制 L88-114 顺序：读 settings → `load_object` 字符串路径 → `build_from_crawler` 注入 crawler → 捕获 `NotConfigured` 异常。**WHY**：用户 middleware 抛 `NotConfigured` 是显式退订，比 `None` 哨兵好
-
-**5.2.4 `scrapy/dupefilters.py` (139 行)**
-**WHY**：
-- `RFPDupeFilter` 用 `Path.open("a+", buffering=1, write_through=True)` L89-92 写 "requests.seen"：**WHY** — 行缓冲 + write_through 保证每次 `add()` 都刷盘，进程崩溃不丢去重状态；这是 `JOBDIR` 续跑能正确去重的关键
-- 指纹计算委托给 `RequestFingerprinterProtocol`（`scrapy/utils/request.py`），不在 dupefilter 里硬编码 sha1。**WHY**：HTTP/2 时代 fingerprint 逻辑会变（method、scheme、authority、path），把它当可插拔契约
-- `log()` 第一次被调用时把 `logdupes` 翻成 False（L135）：**WHY** — 1 万条重复只打一条日志，避免日志风暴
-
-**5.2.5 `scrapy/pipelines/media.py` (326 行)**
-**WHY**：
-- `MediaPipeline` 用 `SpiderInfo` 嵌套类（L62-68）维护每个 spider 的 `downloading: set`、`downloaded: dict`、`waiting: defaultdict[bytes, list[Deferred]]`，**WHY**：同一文件被多个 item 引用时去重；同一文件的多个等待者能复用一次下载
-- `_key_for_pipe` L103-117 子类化时自动把 setting key 升级为 `IMAGES_STORE` / `FILES_STORE` 之类，**WHY**：子类化 MediaPipeline 写 ImagePipeline 时 setting 不打架
-- `process_item` 用 `asyncio.gather` + `DeferredList` 双轨（L136-148），**WHY**：与异步改造同向，Twisted 项目里跑得了，纯 asyncio 也跑得了
-
-### 5.3 设计模式
-
-- **Chained Middleware**：`_process_chain` 是经典 pipeline pattern 的异步版
-- **Builder via Settings**：所有组件通过 `load_object(settings["XXX"])` 字符串路径构造，运行时多态
-- **Meta-class Interface Check**：`BaseSchedulerMeta.__subclasscheck__` = 鸭子类型 + 接口契约
-- **Backpressure via Memory**：Scraper.Slot 用 `active_size` 字节数背压，避免突发大响应把内存吃光
-- **Stateful Coroutine Bridge**：`scrapy/utils/defer.py` 的 `parallel_async` 用 `MutableAsyncChain` 序列化异步迭代器喂给 Twisted `Cooperator`
-
-### 5.4 反模式
-
-- **过度泛型化**：`ScrapyArgumentParser._parse_optional` 自定义 argparse 解析只是为了支持 `-o -:json` 这种怪选项。值得，但增加认知负担
-- **`# pragma: no cover`**：在每个 deprecation 兼容方法上贴 L156-L211 一片，表明测试覆盖盲区太多。**WHY**：测一次老 API 成本高，但留着不删是有"插件生态"考量
-- **隐式全局 reactor**：`from twisted.internet import reactor` 在多处出现（`defer.py:61`），破坏依赖注入的纯粹性，但 Twisted 历史上就这么干的
-
-### 5.5 独特看点
-
-- **`Slot` 抽象在 Scheduler 和 Scraper 里各有一份**（`scheduler.py:_Slot` vs `scraper.py:Slot`）：两边都需要 "inprogress 集合 + 关闭同步"，但语义不同，前者是请求级、后者是响应级。**说明**：框架作者也犯过"应该抽一个基类" vs "两个组件职责差异大"的纠结，最终选择复制
-- **`ScrapyDeprecationWarning` 大量使用**：几乎每个新版本都给老 API 加显式警告，是"渐进式破坏"的典范
-
-## 6. 运行机制（Bring It Up）
-
-```mermaid
-sequenceDiagram
-    participant U as 开发者
-    participant CLI as scrapy CLI
-    participant CP as CrawlerProcess
-    participant C as Crawler
-    participant E as ExecutionEngine
-    participant S as Scheduler
-    participant D as Downloader
-    participant SC as Scraper
-    U->>CLI: scrapy crawl myspider
-    CLI->>CP: execute()
-    CP->>CP: configure_logging + install_reactor
-    CP->>C: crawl('myspider')
-    C->>C: _create_spider()
-    C->>C: _apply_settings()
-    C->>E: ExecutionEngine(crawler)
-    C->>E: open_spider_async
-    E->>S: scheduler.open(spider)
-    E->>D: downloader.open(spider)
-    E->>SC: scraper.open_spider_async
-    E-->>C: closewait Deferred
-    C->>E: start_async
-    E->>E: _start_request_processing
-    E->>S: has_pending_requests
-    loop 抓取循环
-        E->>S: next_request
-        S-->>E: Request
-        E->>D: fetch(request, spider)
-        D-->>E: Response/Failure
-        E->>SC: enqueue_scrape
-        SC->>SC: process_spider_input chain
-        SC->>Spider: parse(response)
-        Spider-->>SC: yield Item/Request
-        SC->>SC: process_spider_output chain
-        SC->>Pipes: process_item
-        SC->>S: schedule(new_request)
-    end
-    E->>S: close(reason)
-    E-->>C: signal spider_closed
-```
-
-**启动脚本**：
-```bash
-# 安装
-pip install scrapy
-
-# 初始化项目
-scrapy startproject mybot
-cd mybot
-scrapy genspider example example.com
-
-# 本地起服务
-scrapy crawl example -o output.json
-
-# 不需要项目直接跑
-scrapy runspider my_spider.py
-```
-
-**Smoke test**：
-```bash
-# 用官方 tutorial 验证
-scrapy shell "https://quotes.toscrape.com"
->>> response.css("title::text").get()
-'Quotes to Scrape'
-```
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-    title Scrapy 重大版本里程碑
-    dateFormat YYYY-MM
-    section 早期
-    0.24 首次发布              :done, 2012-01, 6M
-    1.0  稳定版                 :done, 2015-06, 12M
-    section asyncio 迁移
-    1.5  可选 Twisted reactor 切换 :done, 2018-01, 12M
-    2.0  移除 Python 2           :done, 2020-04, 6M
-    2.6  内置 HTTP/2             :done, 2022-05, 12M
-    section 现代期
-    2.11 asyncio 默认           :done, 2024-07, 8M
-    2.12 AddonManager           :done, 2025-01, 6M
-    2.13 async start()          :done, 2025-07, 6M
-    2.14 全 async API           :active, 2026-01, 6M
-```
-
-**已知里程碑**（从 `NEWS` 推断）：
-- **2012**：MySQL-ama 创始团队从 Zyte 内部工具开源
-- **2015**：1.0 稳定
-- **2018**：1.5 引入 `TWISTED_REACTOR_ENABLED`
-- **2020**：2.0 砍 Python 2
-- **2024**：2.11 asyncio 默认
-- **2026**：2.14 全 `*_async()` 命名空间，老 `start/stop/close` 标 deprecation
-
-## 8. 质量保障（How It Doesn't Break）
-
-四道防线：
-
-1. **测试**：`tests/` 下 370+ 文件，分 `test_*.py` 单测 + `tests/CrawlerProcess/` 集成测试（每个测试就是一个独立 Scrapy 入口脚本，模拟真实命令行）
-2. **CI**：`.github/workflows/tests-{ubuntu,macos,windows}.yml` 三平台并行；`checks.yml` 跑 lint + type check
-3. **Lint**：`pyproject.toml` 配置 ruff + `.pre-commit-config.yaml`（黑名单 PR 自动 close via `auto-close-llm-pr.yml`）
-4. **性能基准**：`extras/qps-bench-server.py` + `extras/qpsclient.py` 测 QPS；`docs/topics/benchmarking.rst` 文档化
-
-```mermaid
-flowchart LR
-    PR[GitHub PR] --> Ruff[ruff check]
-    PR --> MyPy[pyright/mypy]
-    PR --> Test[pytest 三平台]
-    PR --> LLMCheck[auto-close-llm]
-    Test --> Codecov[codecov 覆盖]
-    Codecov --> Gate[覆盖率门禁]
-```
-
-## 9. 生态依赖（Map of the World）
-
-**核心依赖**（来自 `pyproject.toml`）：
-- `twisted`：网络事件循环
-- `lxml`：HTML/XML 解析（默认）
-- `w3lib`：URL 规范化 + 编码处理
-- `queuelib`：磁盘优先队列
-- `cssselect`：CSS selector
-- `pyOpenSSL`：TLS
-- `cryptography`：现代 TLS
-- `itemloaders`：Item Loader 抽象
-- `service_identity`：证书校验
-- `requests` / `urllib3` / `httpx`：可选下载后端
-- `parsel`：lxml 之上更友好的选择器 API
-- `scrapy-poet`：可选，基于 Page Object 的注入式爬取
-
-**合规检查清单**：
-- [x] 无硬编码密钥
-- [x] 无 SQL/NoSQL 注入面（无内置 DB）
-- [x] `robots.txt` 内置中间件（`robotstxt.py`）
-- [x] User-Agent 可配置
-- [x] 限流内置（`AutoThrottle` + `DownloadDelay`）
-- [x] 缓存可关闭（`HTTPCACHE_ENABLED=False`）
-- [x] cookie 隔离（每个 spider 一份 `CookieJar`）
-
-## 10. 生产实践（Battle-Tested）
-
-| 关注点 | 实现 | 文件 |
-|---|---|---|
-| 配置热更新 | `Settings` 重新加载（无热重载，靠 `scrapy crawl` 进程级重启） | `scrapy/settings/__init__.py` |
-| 优雅停服 | `Crawler.stop_async()` 排空 in-flight 请求 | `crawler.py:246` |
-| 限流 | `AutoThrottle` extension + `DOWNLOAD_DELAY` | `extensions/throttle.py` |
-| 链路追踪 | `request_id` 走 `request.meta`，可通过 SpiderMiddleware 注入 OpenTelemetry | （需自定义） |
-| 健康检查 | 内置无（推荐 scrapyd 暴露 health 端点） | — |
-| 结构化日志 | `LOG_FORMAT=json` 自带；或接 `loguru` | `utils/log.py` |
-| 内存保护 | `memusage.py` 周期性检查，超过阈值自杀 | `extensions/memusage.py` |
-| 持久化续跑 | `JOBDIR=...` 保存队列/指纹/状态 | `utils/job.py` |
-| Telnet 调试 | `extensions/telnet.py` 暴露 `est()` 看引擎状态 | `extensions/telnet.py` |
-
-## 11. 社区文化（People & Process）
-
-```mermaid
-mindmap
-  root((Scrapy 社区))
-    治理
-      BDFL弱化
-      Zyte公司主导
-      700+贡献者
-    维护
-      核心团队3-5人
-      Zyte员工+外部
-      PR需过CI+review
-    文档
-      ReadTheDocs托管
-      22个topic RST
-      中文社区翻译
-    RFC
-      SEP(Scrapy Enhancement Proposal)
-      sep-001到sep-020+
-    沟通
-      GitHub Issues为主
-      Discord/stackoverflow
-      不定期线上meetup
-```
-
-- **官方仓库**：`github.com/scrapy/scrapy`
-- **官方文档**：`docs.scrapy.org`
-- **官方网站**：`scrapy.org`
-- **商业方**：Zyte（前 Scrapinghub），提供 Scrapy Cloud + Smart Proxy Manager
-- **治理模型**：开源核心 + 商业增强；核心 maintainers 都在 Zyte 名单
-- **议题活跃度**：每月 ~50-100 issues，长期保持
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **元类接口检查**：`BaseSchedulerMeta.__subclasscheck__` 的 duck-typing + 接口验证模式，比 `isinstance(x, ABC)` 灵活，比 `hasattr` 严谨。**适用场景**：所有用"字符串配置 + 动态加载"做插件化的框架（Airflow Operator、Kubernetes Controller 都可借鉴）
-2. **Defer ↔ Coroutine 桥接层**：`scrapy/utils/defer.py` 的 `ensure_awaitable` / `deferred_from_coro` 模式，可以原样搬到任何想"老异步 + 新异步"共存的代码库
-3. **字节级背压**：Scraper.Slot 的 `active_size` 比单纯并发数更精准。**适用场景**：HTTP 代理、消息队列消费者、视频流下载器
-
-### 12.2 必避 3 坑
-
-1. **过度 deprecation 警告**：每个旧方法都贴 `# pragma: no cover` + `ScrapyDeprecationWarning`，测试覆盖盲区巨大。**教训**：要么一步到位砍掉，要么把"兼容层"独立到 `compat.py` 隔离噪音
-2. **Twisted 全局 reactor 隐式依赖**：`from twisted.internet import reactor` 在 `defer.py:61` 这种工具函数里出现，让单元测试必须 `unittest.TestCase` 而不是裸 `pytest`。**教训**：依赖注入优于全局单例
-3. **代码入口路径硬编码**：`commands/crawl.py:31` 的 `self.crawler_process.crawl()` 假设了 `CrawlerProcess` 子类，限制了可组合性
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7 天复刻迷你 Scrapy
-    dateFormat YYYY-MM-DD
-    section 设计
-    画数据流图 + ADR           :a1, 2026-06-02, 1d
-    section 骨架
-    写 Engine + Scheduler + DupeFilter :a2, after a1, 1d
-    section 协议
-    加 Downloader + Twisted fetch   :a3, after a2, 1d
-    section 业务
-    Spider + Item + Pipeline     :a4, after a3, 1d
-    section 扩展
-    中间件链 + 设置系统          :a5, after a4, 1d
-    section 工具
-    scrapy CLI + runspider 入口  :a6, after a5, 1d
-    section 收尾
-    集成测试 + 文档 + benchmark  :a7, after a6, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数 (1-10) |
-|---|---|
-| 代码质量 | 9 |
-| 架构清晰度 | 8 |
-| 文档完整度 | 10 |
-| 可测试性 | 7 |
-| 可扩展性 | 9 |
-| 性能 | 8 |
-| 易用性 | 8 |
-| 生产就绪 | 9 |
-| 社区活跃 | 9 |
-| 学习价值 | 10 |
-
-**总分**：87/100
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：Scrapy 用一个 ExecutionEngine 把"网络 I/O 并发 + 调度 + 去重 + 中间件"四件大事装进一个 27000 行的 Python 包，是异步框架设计的范本。
-
-**3 个核心洞察**：
-1. 异步代码里**接口契约必须静态**（元类检查），因为运行时错误代价高
-2. 复杂异步系统**背压优先于并发**（Scraper.Slot 的字节计数）
-3. **deprecation 比删除更难**——scrapy 用了 5 年（1.5→2.14）才把 Deferred 迁完
-
-**5 段必读代码**：
-1. `scrapy/core/engine.py:65-99` — `_Slot` 嵌套类（心跳 + 关闭同步）
-2. `scrapy/core/scheduler.py:33-49` — `BaseSchedulerMeta` 元类接口检查
-3. `scrapy/middleware.py:131-153` — `_process_chain` 串行链异步化
-4. `scrapy/dupefilters.py:89-113` — `RFPDupeFilter` 行缓冲去重写盘
-5. `scrapy/crawler.py:94-152` — `_apply_settings` 三大组件装配
-
-**1 个反模式**：`scrapy/utils/defer.py:61,82,115` 隐式 `from twisted.internet import reactor` 破坏可测试性
-**1 个可复用模式**：`Engine → Scheduler → Downloader → Scraper` 四段单向数据流（任何批处理系统都可套）
-**3 个立刻能用**：
-1. 用 `scrapy fetch --nolog https://example.com` 快速验证 CSS/XPath
-2. 用 `JOBDIR=/tmp/crawl-state` 启停可续
-3. 用 `scrapy parse --spider=myspider -d 3 -c parse_item <url>` 调试回调
-
-## 14. 项目特点速查
-
-**独特看点**：
-- 14 年还在主升，Twisted + asyncio 双栈迁移没翻车
-- 插件系统不用 setuptools entry_points，直接 `COMMANDS_MODULE` + `ADDONS`
-- Spider Middleware 链的"插入/追加"语义设计得最清晰
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title 爬虫框架对比
-    x-axis 学习曲线陡 --> 学习曲线平
-    y-axis 性能低 --> 性能高
-    "Scrapy": [0.6, 0.85]
-    "BeautifulSoup": [0.9, 0.3]
-    "Playwright": [0.7, 0.55]
-    "Puppeteer": [0.5, 0.6]
-    "Crawlee(Python)": [0.65, 0.7]
-    "Colly(Go)": [0.55, 0.9]
-```
-
-## 附：仓库元信息
-
-| 项 | 值 |
-|---|---|
-| 路径 | G:\实战案例\GitHub顶尖项目\scrapy\ |
-| 大小 | ~80 MB（含 sample_data） |
-| 总文件 | ~625 源码 + ~370 测试 |
-| 解析时间 | 2026-06-02 |
-| 工具 | mcp__hex-line__inspect_path / read_file / outline |
+## 第一段：基础范式
+
+### 模式 1：Twisted→asyncio 渐进迁移
+
+**问题场景**：Twisted Deferred 难学、async/await 是 Python 3.5+ 标配；老项目绑 Twisted 难换。
+
+**解决方案**：scrapy 用 5 年（2015-2020）走完迁移——1.5 加 asyncio 支持（双栈共存）、2.0 移除 Python 2、2.6 HTTP/2、2.11 asyncio 默认、2.14 全 async API。
+
+**关键参数**：
+- 1.5 = asyncio 支持（保留 Twisted 默认）
+- 2.0 = 移除 Python 2 兼容代码
+- 2.6 = HTTP/2 支持
+- 2.11 = asyncio 默认 reactor
+- 2.14 = `start_async` / `stop_async` / `close_async` 全异步
+
+**最佳实践**：异步库迁移用"共存 → 默认 → 唯一"三步走——强制升级会激怒老用户，逐步切换比 big-bang 重写更稳。
+
+### 模式 2：ExecutionEngine 调度核心
+
+**问题场景**：爬虫的"抓取 → 解析 → 入库"循环怎么调度？怎么把 spider / downloader / scheduler / pipeline 串起来？
+
+**解决方案**：`scrapy/core/engine.py` 的 ExecutionEngine 是 14 年长出的核心——`open_spider / start / schedule / download / response / spider_idle / close_spider` 7 状态机。
+
+**关键参数**：
+- 7 状态 = open → schedule → download → response → spider_idle → close
+- 心跳 = `_spider_idle` 回调决定继续 / 停止
+- 中间件链 = `process_request` / `process_response` / `process_exception`
+- 并发控制 = `CONCURRENT_REQUESTS` + `CONCURRENT_REQUESTS_PER_DOMAIN`
+- 持久化 = `JOBDIR` 断点续爬
+
+**最佳实践**：长生命周期框架的核心是"状态机 + 事件回调"——别用 if-else 堆逻辑，让状态显式转换。
+
+### 模式 3：Downloader Middleware 链
+
+**问题场景**：30+ 横切关注点（retry / redirect / cookies / proxy / cache / robotstxt）——怎么组织才能不污染核心代码？
+
+**解决方案**：30+ Downloader Middleware 链式——`process_request` / `process_response` / `process_exception` 3 个钩子，开发者可通过 `DOWNLOADER_MIDDLEWARES` dict 启停/排序。
+
+**关键参数**：
+- 链式 = `settings.getwithbase('DOWNLOADER_MIDDLEWARES')` 排序
+- 优先级 = 数字小先执行（默认 500）
+- 返回值 = `None` 继续 / `Response` 短路 / `Request` 重试 / `raise IgnoreRequest` 跳过
+- 自定义 = 写 `process_request(self, request, spider)` 即可
+- 顺序敏感 = cookies 在 redirect 之前
+
+**最佳实践**：横切关注点用 middleware 链实现（vs. 继承）——按数字排序、可插拔、不污染核心。
+
+### 模式 4：DupeFilter 持久化去重
+
+**问题场景**：整站抓取 URL 千万级——内存去重爆、崩溃后重启重复抓。
+
+**解决方案**：`scrapy/dupefilters.py` RFPDupeFilter——默认用 `set()` 内存去重，2.0+ 支持 `RFPDupeFilter` 持久化到 SQLite（通过 `JOBDIR`）。
+
+**关键参数**：
+- 默认 = Python set（O(1) hash）
+- 持久化 = SQLite（`from_crawler` 钩子）
+- 指纹 = `request_fingerprint(request)` = sha1(method + url + body + headers)
+- 跨爬虫 = `DUPEFILTER_DEBUG = True` 输出日志
+- 自定义 = 继承 `BaseDupeFilter` 实现 `request_seen` / `open` / `close`
+
+**最佳实践**：去重要带指纹（vs. 整 URL）——同一 URL 的不同 query 参数可能代表不同内容。
+
+### 模式 5：Spider + Selector 声明式 DSL
+
+**问题场景**：爬虫逻辑（解析 + 跟 URL）怎么组织才清晰？怎么让业务开发只关注"怎么解析"，不关注"怎么调度"？
+
+**解决方案**：`Spider` 子类 + `Selector`（CSS / XPath）——`parse` 方法 yield Request / Item，框架负责调度。
+
+**关键参数**：
+- `name` = 唯一标识
+- `start_urls` = 入口 URL 列表
+- `parse(response)` = 解析入口，yield Request / Item
+- `allowed_domains` = offsite 中间件过滤
+- `rules` = CrawlSpider 自动跟链接（LinkExtractor）
+- Selector = `response.css('h1::text').get()` / `response.xpath('//h1/text()').get()`
+
+**最佳实践**：爬虫业务用 Spider + Selector DSL 写——框架处理调度、去重、限流，业务只关注解析。
+
+---
+
+## 第二段：扩展范式
+
+### 模式 6：Item Pipeline 数据后处理
+
+**问题场景**：抓到的 Item 需要清洗（去 HTML / 标准化日期 / 翻译字段） + 入库（MongoDB / PostgreSQL / S3）——怎么组织？
+
+**解决方案**：`Item Pipeline` 链——`process_item(self, item, spider)` 顺序执行，可丢弃 / 修改 / 抛出 DropItem。
+
+**关键参数**：
+- 链式 = `ITEM_PIPELINES` dict 排序（数字小先）
+- 返回 = `Item` 继续 / `raise DropItem` 丢弃
+- 入库 = 末尾 pipeline 写数据库
+- 清洗 = 中间 pipeline 去 HTML / 标准化
+- 异常 = `from_crawler(cls, crawler)` 初始化
+
+**最佳实践**：数据处理用 Pipeline 链（vs. 在 spider 里写）——关注点分离（解析 / 清洗 / 入库）。
+
+### 模式 7：Extension 扩展点
+
+**问题场景**：框架统计 / 日志 / telnet / memusage / 关闭理由——这些"非业务"功能放哪？
+
+**解决方案**：`Extension` 抽象——`from_crawler(cls, crawler)` + `item_scraped` / `spider_closed` 等事件钩子。
+
+**关键参数**：
+- 20+ extension = corestats / logstats / telnet / memusage / closespider / throttle
+- 事件 = `item_scraped(item, response, spider)` / `spider_idle(spider)`
+- 启停 = `EXTENSIONS` dict 排序
+- 自定义 = 继承 `BaseExtension` 实现钩子
+- 关闭 = `CloseSpider` 异常触发优雅停止
+
+**最佳实践**：框架的"非业务"功能用 Extension 抽象（vs. 混入核心）——用户按需启停，不污染主路径。
+
+### 模式 8：FEEDS 多格式导出
+
+**问题场景**：抓取结果导出 JSON / JSONL / CSV / XML——怎么支持多格式且不污染 spider？
+
+**解决方案**：`FEEDS` 设置 + FeedExporter——`FEEDS = {'output.json': {'format': 'json', 'overwrite': True}}` 集中配置。
+
+**关键参数**：
+- 格式 = json / jsonl / csv / xml / pickle / marshal
+- 输出 = 本地文件 / S3 / FTP / SFTP（`URI` + `STORAGE`）
+- 配置 = `overwrite` / `append` / `item_filter` / `fields`
+- 触发 = 抓取结束 / 周期 / 手动 close_spider
+- 性能 = 异步 IO + 缓冲
+
+**最佳实践**：导出数据用 FEEDS 设置（vs. 写 pipeline）——格式无关，业务 pipeline 只管数据处理。
+
+### 模式 9：robots.txt 与 crawl politeness
+
+**问题场景**：整站抓取触发反爬 / 法律问题——怎么尊重 robots.txt + 降低服务器压力？
+
+**解决方案**：`RobotsTxtMiddleware` + `AutoThrottle`——读 robots.txt 控制爬取节流（并发 / 延迟 / 自动调速）。
+
+**关键参数**：
+- robots.txt = 强制遵守（`ROBOTSTXT_OBEY = True`）
+- 下载延迟 = `DOWNLOAD_DELAY = 1` 秒
+- AutoThrottle = `AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0` 动态调速
+- 域名限流 = `CONCURRENT_REQUESTS_PER_DOMAIN = 8`
+- 错误响应 = 遇到 429 自动 backoff
+
+**最佳实践**：爬虫必装 robots.txt + AutoThrottle——商业抓取（电商情报）尊重规则避免法律风险。
+
+### 模式 10：Scrapy Cloud 与水平扩展
+
+**问题场景**：单机爬到瓶颈（CPU / 网络 / 存储）——怎么水平扩展？
+
+**解决方案**：Scrapy Cloud（Zyte 商业）——提交 spider + 资源（CPU / 内存）即可，平台负责调度 / 去重 / 监控。
+
+**关键参数**：
+- 提交 = `shub deploy`
+- 资源 = 选 1x / 4x / 8x 计算单元
+- 存储 = 云端 S3 / 自有 S3
+- 监控 = 抓取速度 / 错误率 / Item 计数
+- 替代 = 自建 K8s + scrapy-redis（共享队列）
+
+**最佳实践**：商业项目用 Scrapy Cloud 起步，量大后自建 K8s + scrapy-redis——避免过早重造轮子。
+
+---
+
+## 第三段：进阶范式
+
+### 模式 11：scrapy-redis 分布式
+
+**问题场景**：单机抓 100 万 URL 太慢——怎么多机分摊？
+
+**解决方案**：scrapy-redis——把 Scheduler / DupeFilter / Item Pipeline 替换为 Redis 后端，多机共享队列 + 指纹 + 结果。
+
+**关键参数**：
+- Scheduler = Redis Sorted Set（score = 优先级）
+- DupeFilter = Redis Set（O(1) 指纹）
+- Pipeline = Redis List / Pub-Sub
+- 启动 = `scrapy runspider` 多机并行
+- 监控 = Redis 队列长度 / Item 计数
+
+**最佳实践**：分布式爬虫用 Redis 共享队列 + 指纹——比自研协调服务简单 10x，运维成本低。
+
+### 模式 12：HTTP/2 支持
+
+**问题场景**：单连接并发 HTTP/1.1 触发反爬（head-of-line blocking）——HTTP/2 多路复用更隐蔽。
+
+**解决方案**：2.6+ 集成 `scrapy-http2`——基于 `h2` 库，配置 `DOWNLOAD_HANDLERS` 启用。
+
+**关键参数**：
+- 协议 = `https://` 走 HTTP/2
+- 配置 = `scrapy.utils.http2.H2DownloadHandler`
+- 限制 = 反代需支持（Cloudflare / Akamai 默认支持）
+- 性能 = 单连接多路复用，减少指纹
+- 风险 = 旧版 CDN 不支持
+
+**最佳实践**：现代爬虫优先 HTTP/2——减少连接数 + 降低被反爬识别概率。
+
+### 模式 13：Spider Contracts 测试
+
+**问题场景**：spider 改一行可能坏整条抓取链——怎么自动化测试？
+
+**解决方案**：`spider contracts` 装饰器——`@contracts(bounces='OK')` 等契约定义，spider 跑通即测试通过。
+
+**关键参数**：
+- 内置契约 = `returns` / `scrapes` / `bounces` / `follows`
+- 自定义 = `scrapy.contracts.defaults` 子类
+- 触发 = `check` 命令
+- 持续集成 = `scrapy check spider_name`
+- 优势 = 不需要 mock，spider 真实跑一遍
+
+**最佳实践**：spider 关键路径加 contracts——一行装饰器确保业务回归，CI 自动跑。
+
+### 模式 14：Scrapy-Redis vs Frontera
+
+**问题场景**：scrapy-redis 用 Redis 集中队列，瓶颈在 Redis IO；Frontera 分布式更彻底但配置复杂。
+
+**解决方案**：选型决策——中等规模（10 台以内）用 scrapy-redis，简单稳定；大规模（百台）用 Frontera（基于 Kafka / ZeroMQ）。
+
+**关键参数**：
+- scrapy-redis = Redis 共享队列
+- Frontera = Kafka 队列 + 独立 frontier / crawler / storage 服务
+- 性能 = Frontera 高吞吐 / scrapy-redis 低延迟
+- 运维 = scrapy-redis 简单 / Frontera 复杂
+- 适用 = scrapy-redis < 10M URL / Frontera > 10M URL
+
+**最佳实践**：分布式爬虫 80% 用 scrapy-redis 就够，过早选 Frontera 是过度工程。
+
+### 模式 15：关闭理由（Close Reasons）
+
+**问题场景**：spider 跑完 / 触限 / 出错——怎么知道为什么停？
+
+**解决方案**：`CloseSpider` 异常 + `closespider` extension——`raise CloseSpider('finished')` 触发优雅停止，reason 写入 stats。
+
+**关键参数**：
+- 触发 = `CloseSpider(reason)` 异常 / 阈值（item count / time / error count）
+- 输出 = `stats.spider_exited/closespider_<reason>`
+- 监控 = Scrapy Cloud 仪表盘
+- 自定义 = `closespider_settings` 改阈值
+- 调试 = 日志 `Spider closed: finished`
+
+**最佳实践**：spider 关闭必带 reason——日志 + 监控能快速定位异常停止 / 正常完成。
+
+---
+
+## 第四段：实战范式
+
+### 模式 16：Scrapy vs BeautifulSoup + requests
+
+**问题场景**：小项目（千级 URL）用 BeautifulSoup + requests 简单，大项目（百万级）怎么办？
+
+**解决方案**：规模决策——<10k URL 用 requests + BS4（简单）；10k-1M 用 Scrapy（异步 + 去重 + 限流内置）；>1M 用 Scrapy + 分布式（scrapy-redis / Frontera）。
+
+**关键参数**：
+- requests + BS4 = 同步、简单、慢
+- Scrapy = 异步、内置中间件、可扩展
+- Scrapy 分布式 = 多机 + Redis / Kafka
+- 上手 = requests 5 分钟 / Scrapy 1 小时
+- 适用 = 抓一次 / 长期监控 / 整站爬取
+
+**最佳实践**：10k URL 阈值是分水岭——以下 requests，以上 Scrapy。
+
+### 模式 17：Splash / Playwright 渲染
+
+**问题场景**：JS 渲染页面（React SPA）——requests 拿到空壳 HTML，Scrapy 默认只处理静态。
+
+**解决方案**：集成 Splash（Scrapy 官方）/ Playwright（推荐）——Splash 是 HTTP 代理 + JS 引擎，Playwright 是真实 Chromium 自动化。
+
+**关键参数**：
+- Splash = `scrapy-splash`，HTTP API 调用
+- Playwright = `scrapy-playwright`，`meta={'playwright': True}`
+- 性能 = Splash 快但功能弱 / Playwright 慢但 100% 真实
+- 反爬 = Playwright stealth 模式
+- 成本 = Playwright 吃 CPU
+
+**最佳实践**：简单 JS 用 Splash，复杂 SPA 用 Playwright——按真实需求选择，不盲目上 Playwright。
+
+### 模式 18：指纹伪装与反爬对抗
+
+**问题场景**：电商 / 票务网站 WAF 检测爬虫——IP 限频 + User-Agent 黑白 + 浏览器指纹。
+
+**解决方案**：`scrapy-fake-useragent` + 代理池 + 浏览器指纹随机化——`AUTOTHROTTLE` + 中间件替换 UA + Cookies。
+
+**关键参数**：
+- UA 池 = `scrapy-fake-useragent` 随机
+- 代理 = `scrapy-rotating-proxies` 失效检测
+- 指纹 = `playwright-stealth` 隐藏 webdriver
+- 节流 = `DOWNLOAD_DELAY = random.uniform(1, 3)`
+- 反检测 = Headless Chrome + 真实 Chrome Profile
+
+**最佳实践**：反爬对抗 3 件套——UA 池 + 代理池 + 节流；不要硬刚 WAF，伪装成正常用户。
+
+### 模式 19：数据入湖 / 入仓
+
+**问题场景**：Scrapy 抓到的数据怎么进数据湖（S3 / GCS）/ 数据仓库（BigQuery / Snowflake）？
+
+**解决方案**：`FEEDS` 配置 + 商业 scrapy-cloudwatch——输出到 S3 + Athena 查询；或 pipeline 写 BigQuery / Snowflake。
+
+**关键参数**：
+- S3 = `FEEDS = {'s3://bucket/output.json': {'format': 'json'}}`
+- BigQuery = `scrapy-bigquery` pipeline
+- Snowflake = `snowflake-connector-python` 自定义 pipeline
+- Iceberg = `pyarrow` 写 Parquet
+- 监控 = AWS Glue / Databricks
+
+**最佳实践**：数据入湖用 FEEDS 直接写 S3——比写本地再上传简单 5x，零中间环节。
+
+### 模式 20：7 天复刻 mini-scrapy 路线
+
+**问题场景**：想理解 Scrapy 架构但 625 文件读不完；想做 mini-scrapy 玩具练手。
+
+**解决方案**：7 天 MVP——Day 1-2 核心引擎（执行循环），Day 3 中间件链，Day 4 Spider + Selector，Day 5 Pipeline，Day 6 FEEDS 导出，Day 7 JOBDIR 持久化。
+
+**关键参数**：
+- 核心 = ExecutionEngine 7 状态机
+- 协议 = `Request` / `Response` / `Item` 3 数据结构
+- 中间件 = 链式钩子
+- 复用 = 30+ middleware 不需自己写
+- 复刻难度 = 核心 200 行可讲清楚，全栈要 5-7 天
+
+**最佳实践**：复刻 mini-scrapy 先做 ExecutionEngine + Spider + Selector——核心循环 300 行，2 周能出可用品。
+
+---
+
+## 附录：5 段必读代码
+
+1. `scrapy/core/engine.py` — ExecutionEngine 7 状态机（14 年长出的核心）
+2. `scrapy/core/downloader/middleware.py` — MiddlewareManager（链式钩子管理）
+3. `scrapy/dupefilters.py` — RFPDupeFilter 指纹 + 持久化去重
+4. `scrapy/extensions/feedexport.py` — FEEDS 多格式导出（S3 / FTP / 本地）
+5. `scrapy/core/scraper.py` — Scraper（Item Pipeline 链 + Spider 回调）
 
 ## 一句话总结
 
-解析 = 计划书（Charter） + 框架图（Skeleton） + 核心功能（Engine） + 跑起来（CLI） + 偷过来（Middlewares）。Scrapy 的精华不在某一个函数，而在它"如何让 600 个文件围绕一个 ExecutionEngine 有序协作"——这是异步框架的"分布式单体"模式，比微服务更适合复杂单机任务。
+scrapy = Twisted→asyncio 5 年渐进迁移 + ExecutionEngine 7 状态机调度 + 30+ Middleware 链式可插拔 + RFPDupeFilter 指纹去重 + JOBDIR 断点续爬，把"生产级爬虫"做到 14 年长盛不衰，Zyte 商业化 + scrapy-redis 分布式 + HTTP/2 + JS 渲染全栈覆盖。

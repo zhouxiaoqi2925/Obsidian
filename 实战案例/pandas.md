@@ -1,495 +1,338 @@
+# pandas - Python 标签化数据分析工具箱
+
+**GitHub**: pandas-dev/pandas
+**Star**: 45k+
+**语言**: Python + Cython + C
+**主题**: 开源项目、data-analysis、NumFOCUS
+**适用场景**: 数据科学、量化分析、ETL 工程、学术研究
+
 ---
-title: pandas
-type: data-analysis
-lang: Python
-stars: 45000+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - data-analysis
+
+## 一、基础范式
+
+### 模式 1 · DataFrame + Series + Index 三件套
+
+**问题场景**：R 语言的 `data.frame` 在 Python 缺位；NumPy ndarray 没有标签、不擅长异构列。
+
+**解决方案**：pandas 提供 3 大核心抽象：DataFrame（二维带标签表格）/ Series（一维带标签数组）/ Index（标签 + 对齐），让「带标签的表格数据」成为 Python 一等公民。
+
+**关键参数**：
+- `pd.DataFrame(data, index, columns)` 构造
+- `pd.Series(data, index)` 一维
+- `pd.Index(['a', 'b'])` 标签
+- `df.index` / `df.columns` 行列索引
+- `df.dtypes` 字段类型
+
+**最佳实践**：所有「带列名的异构数据」都走 DataFrame 而非 ndarray。
+
+### 模式 2 · BlockManager 按 dtype 分块存储
+
+**问题场景**：异构列（int / float / string）混存浪费内存，按列操作 O(n) 扫描。
+
+**解决方案**：`pandas/core/internals/managers.py` BlockManager 把同 dtype 的列合并为 Block（连续内存），按 dtype 分块存；按列操作只需访问对应 Block，零拷贝切片。
+
+**关键参数**：
+- BlockManager 顶层
+- Block by dtype
+- BlockManager.reindex() 重索引
+- Block.values ndarray
+- 内部 NumpyBlock / DatetimeBlock / ObjectBlock
+
+**最佳实践**：理解 BlockManager 才能理解 pandas 性能瓶颈，按 dtype 分块是核心。
+
+### 模式 3 · 索引对齐（自动 join）
+
+**问题场景**：手写 join 代码易错，索引不对齐数据错位。
+
+**解决方案**：pandas 所有二元操作（`+` / `merge`）自动按索引对齐，左对齐缺失补 NaN，错误不抛。
+
+**关键参数**：
+- `a + b` 自动按索引对齐
+- `df.add(b, fill_value=0)` 缺失值
+- `pd.merge(df1, df2, on='key')` SQL 风格
+- `df1.join(df2)` 索引 join
+- 算术对齐 `+ - * /`
+
+**最佳实践**：所有「两表关联」用 `pd.merge` 而非手写嵌套循环。
+
+### 模式 4 · 缺失数据 NaN / NaT
+
+**问题场景**：真实数据有缺失，numpy 难表达。
+
+**解决方案**：pandas 引入 `NaN`（float）/ `NaT`（datetime）/ `pd.NA`（v1.0+ 通用缺失）三件套，`isna()` / `dropna()` / `fillna()` 三件套处理。
+
+**关键参数**：
+- `np.nan` 浮点缺失
+- `pd.NaT` 时间缺失
+- `pd.NA` 通用缺失
+- `df.isna()` 检测
+- `df.fillna(0)` 填充
+
+**最佳实践**：时间序列缺失用 `pd.NaT`，数值缺失用 `np.nan`，v1.0+ 统一用 `pd.NA`。
+
+### 模式 5 · CSV / Excel / SQL / Parquet IO
+
+**问题场景**：数据分析第一步是读各种格式文件。
+
+**解决方案**：pandas 提供 20+ IO 函数：`read_csv` / `read_excel` / `read_sql` / `read_parquet` / `read_json` / `read_html` / `read_pickle` / `read_feather` / `read_stata` / `read_sas`，对应 `to_*` 写出。
+
+**关键参数**：
+- `pd.read_csv(file)` 文本
+- `pd.read_excel(file, sheet_name=0)` Excel
+- `pd.read_sql(query, conn)` SQL
+- `pd.read_parquet(file)` 列存
+- `chunksize=10000` 流式
+
+**最佳实践**：大数据集用 Parquet（列存 + 压缩），日志用 CSV，分析中间用 pickle。
+
 ---
 
-# pandas · 项目深度解析
-
-> Python 生态最主流的 DataFrame 库，让"带标签的表格数据"成为一等公民
-> 来源：G:\实战案例\GitHub顶尖项目\pandas\
-
-## 写在前面：解析哲学
-
-解析一个 350MB、1500+ Python 文件、核心 `frame.py` 单文件 19179 行的项目时，必须先克制"读完所有文件"的冲动。本文采用「先骨架后血肉，先 What 后 Why，最后 How to steal」的三段式：先用 5 步准备锁定边界与切入点；再讲清楚 DataFrame / Series / Index 的关系、BlockManager 的存储抽象、Cython 加速的边界；最后落到能立刻抄走的代码模式与必须避开的反模式。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone https://github.com/pandas-dev/pandas.git`，注意默认分支 `main` 已不再使用 Cython `.pyx` 全量编译，迁移到 Meson + subprojects（C++ 端口）
-2. **分类**：数据分析 / ETL 库 / NumFOCUS 资助项目 / C-extension 密集型
-3. **问题清单**：① DataFrame 在内存里怎么存？② Index 为何要单独抽出来？③ C 扩展和 Python 层的接口在哪？④ 缺失数据怎么高效表达？⑤ 算术对齐（alignment）的实现代价？
-4. **速查表**：`frame.py` (19k) · `series.py` (10k) · `internals/managers.py` (2.5k) · `internals/blocks.py` (2.4k) · `internals/construction.py` (1.1k) · `groupby/generic.py` (核心分组逻辑) · `arrays/` (ExtensionArray 子类)
-5. **锁定 commit**：本笔记基于仓库当前 main 分支的 meson 迁移版本（v3.0 dev 周期）
-
-## 1. 开发计划书（Project Charter）
-
-| 项 | 内容 |
-|---|---|
-| 项目名 | pandas |
-| 定位 | Python 标签化数据分析工具箱，提供 DataFrame / Series / Index 三大核心抽象 |
-| 核心问题 | R 语言的 `data.frame` 在 Python 缺位；NumPy ndarray 没有标签、不擅长异构列 |
-| 目标用户 | 数据科学家、量化分析师、ETL 工程师、学术研究者 |
-| 商业模式 | NumFOCUS 财政赞助 + 商业公司雇人全职开发（Two Sigma、Anaconda、Bloomberg 等） |
-| 复刻难度 | ★★★★★（BlockManager + 500+ Cython/CPP 文件 + 25 年演化） |
-| 状态 | 活跃（每月发布 minor 版本） |
-| 团队 | pandas-dev GitHub org，目前约 20 位核心维护者 + 100+ 贡献者 |
-| 里程碑 | 2008 Wes McKinney 起手 → 2009 开源 → 2015 0.16 加入 `categorical` → 2020 1.0 → 2022 Apache Arrow 互操作 → 2025 PyArrow 默认 backend → 2026 Meson 构建系统 |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-pandas 把"用户面"和"实现面"做了非常清晰的物理隔离：
-
-- `pandas/` 公开 API 包：用户 `import pandas as pd` 看到的就这一层
-  - `core/`：DataFrame / Series / Index 的 Python 实现（"皮"）
-  - `core/internals/`：BlockManager + Block，"肉"——按 dtype 分块存储
-  - `core/arrays/`：ExtensionArray 子类（Categorical / Sparse / Datetime / Period …），扩展点
-  - `core/groupby/`：split-apply-combine
-  - `core/computation/`：表达式求值引擎（`query()` / `eval()`）
-  - `core/window/`、`core/resample.py`：时序与滚动
-  - `io/`：CSV / Excel / SQL / Parquet / JSON / Stata / SAS
-  - `plotting/`：matplotlib 绑定
-  - `_libs/`：Cython 编译产物（.so / .pyd），性能关键路径
-  - `_testing/`、`tests/`：测试基础设施 + 单元测试
-  - `api/`：公开 API 的"白名单"（防止用户乱依赖内部符号）
-  - `util/`：杂项
-- 仓库根：构建脚本（`meson.build` / `pyproject.toml`）、基准（`asv_bench/`）、CI 配置（`ci/`）、文档（`doc/`）、类型存根（`typings/`）
-
-```mermaid
-mindmap
-  root((pandas))
-    公开API
-      pd.read_csv
-      pd.DataFrame
-      pd.Series
-      pd.Index
-    核心层 core
-      frame.py 19179行
-      series.py 10115行
-      generic.py
-      indexing.py
-    存储层 internals
-      BlockManager
-      Block by dtype
-      construction
-    扩展层 arrays
-      ExtensionArray基类
-      DatetimeArray
-      Categorical
-      StringArray
-    IO层
-      CSV
-      Parquet
-      Excel
-      SQL
-    C加速 _libs
-      groupby
-      join
-      rolling
-      hashtable
-```
-
-**代码入口**：`pandas/__init__.py` 的 `from pandas.core.api import (...)` 是用户能直接 `pd.DataFrame` 看到对象的关键一跳。`api/` 子包定义了 `EXTENSION_ARRAY_TYPES` 之类的入口白名单，新 dtype 接入必须先注册。
-
-## 3. 项目画像（Profile）
-
-| 指标 | 数值 / 描述 |
-|---|---|
-| 总文件数 | ~3000（仓库大小 355M，含 C++ 子项目 `subprojects/` 引用 Arrow/Boost 等） |
-| 主语言 | Python (~85% LOC) |
-| 涉及语言 | Python / Cython / C++ / Meson 构建脚本 / RST 文档 / TOML 配置 |
-| Star | 45k+（GitHub） |
-| License | BSD 3-Clause |
-| Docker | 官方无镜像，社区有 `jupyter/scipy-notebook` 内置 |
-| K8s | 库本身与 K8s 无关，作为依赖用于数据 pipeline |
-| CI | GitHub Actions（unit-tests / asv 性能 / lint / 文档构建） |
-| 有测试 | 是；`tests/` 规模 > 90k 行，配合 `pandas._testing` 提供 assertion 工具 |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-### 4.1 三层模型
-
-```mermaid
-flowchart LR
-  A[用户 df[col] > 0] --> B[frame.py: __getitem__]
-  B --> C[indexing.py: iLoc/iloc]
-  C --> D[internals/managers.py: BlockManager.getitem]
-  D --> E[internals/blocks.py: Block.take / Block.get_values]
-  E --> F[_libs: Cython indexer]
-  F --> G[返回 numpy ndarray / ExtensionArray]
-```
-
-每一层都把上层抽象"翻译"成下一层能理解的请求：
-- `frame.py` 知道列名、缺失值、dtype
-- `BlockManager` 知道"哪几列共享一个 dtype，可以一次算"
-- `Block` 知道 numpy 数组的连续内存布局
-- `_libs` 直接做指针级操作
-
-### 4.2 BlockManager——"按 dtype 分块的存储"
-
-这是 pandas 真正的核心创新。DataFrame 在内存里**不是**一个二维 ndarray（因为列可以是异构 dtype），而是一个 `BlockManager`，内部维护若干 `Block`，每个 `Block` 只装**相同 dtype** 的若干列。
-
-```mermaid
-classDiagram
-  class BlockManager {
-    +axes: Index
-    +blocks: list[Block]
-    +ndim: int
-    +getitem_column(col)
-    +reindex(indexer)
-    +apply(func, **kwargs)
-  }
-  class Block {
-    +ndim: int
-    +values: ndarray/ExtensionArray
-    +mgr_locs: BlockPlacement
-    +dtype
-    +get_values()
-    +set_values()
-  }
-  class NumericBlock {
-    +dtype: np.number
-  }
-  class DatetimeBlock {
-    +dtype: np.datetime64
-    +get_values() -> DatetimeArray
-  }
-  class ExtensionBlock {
-    +values: ExtensionArray
-  }
-  BlockManager o-- Block
-  Block <|-- NumericBlock
-  Block <|-- DatetimeBlock
-  Block <|-- ExtensionBlock
-```
-
-**WHY 用 Block**：向量化算术（`df + 1`）时，所有 float64 列可以一起算；如果按行存，会跨 dtype 来回转换。Block 设计让"同 dtype 整列算"成为内存局部性最优的形态。
-
-### 4.3 Index 的独立抽象
-
-`Index` 单独成类，而不是 `ndarray`，是有意识的设计决策：
-1. 标签哈希（`Index.get_loc`）用 `_libs/hashtable` 实现的 C 哈希表
-2. 支持 MultiIndex（笛卡尔积展开）
-3. 对齐（alignment）时 `Index.union` / `Index.intersection` 不必复制数据
-4. 配合 `DataFrame.align()` 提供 `join='outer'/'inner'`
-
-### 4.4 核心架构看点（3 条）
-
-1. **BlockManager + dtype-分块存储**：把"异构列的向量化"问题转成"同构 Block 的批量操作"，用空间换时间。
-2. **ExtensionArray 协议**：v0.24 引入的扩展点，让第三方 dtype（GeoPandas 的 Geometry、Apache Arrow 的 pyarrow Array）能挂到 pandas 的所有算子上而不改核心代码——这是 pandas 不被 DuckDB/Polars 颠覆的关键护城河。
-3. **双层索引器**：`frame.py` 的 `__getitem__` 委托给 `indexing.py` 的 `iLocIndexer` / `LocIndexer` / `AtIndexer` / `iAtIndexer` 4 个类，**永远不要在 frame.py 里直接 `self._mgr.values[col_idx]`**，这是性能和可维护性的关键纪律。
-
-### 4.5 关键 ADR（架构决策记录）
-
-- **2014**：决定不把 DataFrame 暴露为 numpy 的 subclass（避免 method 冲突和 PyObject_HEAD 损耗），而是组合
-- **2018**：把 NA 表达统一为 pd.NA（与 numpy 区分），但保留 NaN/NaT 兼容路径
-- **2022**：默认 backend 从 numpy 切到 PyArrow（2.0 实验，3.0 默认）
-- **2024**：构建系统从 setup.py + 大量 setup-cython 转向 Meson + subprojects，C++ 源码被直接编译进 wheel，CI 时间减半
-
-## 5. 代码深度解析（带 WHY）⭐
-
-### 5.1 找骨架代码
-
-入口逻辑链：`pandas/__init__.py` → `pandas/core/api.py` → `frame.py.DataFrame.__init__` → `frame.py._init_mgr` → `internals/construction.py.init_manager` → `BlockManager.__init__`。
-
-### 5.2 单文件分析卡
-
-#### `pandas/core/frame.py`（19k 行）
-
-不是"一个类有 19k 行"——它是整个 DataFrame 的"用户面"，包含：
-- `DataFrame` 类本身（~3k 行方法）
-- `__getitem__` 委托给 `iLocIndexer` / `LocIndexer` / `DataColIndexer` / `iDataColIndexer`
-- 模块级 `from_dict` / `from_records` 工厂
-- docstring 占了相当比例（所有公开 API 都有 NumPy 风格 doc）
-
-**WHY 单文件**：pandas 开发者偏好把所有 DataFrame 方法集中可见，方便一眼找 API；JIT / IDE 索引 / 重构工具今天都跟得上，没有拆分的紧迫性。
-
-#### `pandas/core/series.py`（10k 行）
-
-`Series = Index + ndarray + missing-handling`。`Series.__init__` 比 `DataFrame.__init__` 简单一个量级，因为它不需要列对齐——只有一个 `Index`。
-
-```python
-# series.py 第 209 行附近
-@property
-def _constructor(self):
-    return Series
-```
-
-每个 NDFrame 子类都实现 `_constructor`，下游调用（如 `Series.apply` 返回值）会通过这个钩子保持类型。这是 **"拷贝式多态"** 模式。
-
-#### `pandas/core/internals/managers.py`（2.5k 行）
-
-`BlockManager` 是 DataFrame 的"真身"：
-
-```python
-def getitem_column(self, key) -> Block:
-    # 通过 mgr_locs 索引到具体的 Block
-    n = self._known_consolidated
-    if not n:
-        ...
-```
-
-**WHY**：用 `mgr_locs`（Block 内部的相对列位置）而不是 Python list index，是为了把"列号"和"numpy 数组下标"解耦——做 `insert` / `delete` 时，Block 自己重排，BlockManager 只需更新 axes。
-
-#### `pandas/core/internals/blocks.py`（2.4k 行）
-
-每个 Block 持有：
-- `ndim`（1 或 2）
-- `values`（ndarray 或 ExtensionArray）
-- `mgr_locs`（`BlockPlacement`）
-- `dtype`
-
-`Block.get_values()` 决定是把 ndarray 直接返回，还是把 ExtensionArray"拆箱"到 ndarray。**WHY** 这个抽象层：因为算术运算（add / sub）需要在 numpy 世界里完成，但又不能让 dtype 信息丢失，所以 Block 同时持有"语义"和"数据"。
-
-#### `pandas/core/arrays/base.py`
-
-`ExtensionArray` 是第三方扩展的入口。任何想接入 pandas 的新 dtype（如 pyarrow 的 `ChunkedArray`）必须实现它的 22 个 protocol 方法。
-
-```python
-class ExtensionArray:
-    @property
-    def dtype(self) -> ExtensionDtype: ...
-    def __getitem__(self, item): ...
-    def __len__(self) -> int: ...
-    def isna(self) -> np.ndarray: ...
-    def take(self, indices, *, allow_fill=False, fill_value=None): ...
-```
-
-**WHY 22 个方法这么重**：pandas 的所有算子（groupby / rolling / join / merge）都依赖这套协议，**任何一处不实现都会导致"这个 dtype 在某个操作下会静默退化为 object 数组"**。
-
-### 5.3 设计模式
-
-- **Template Method + Hook Method**：`NDFrame._constructor` / `_constructor_sliced` / `_data`
-- **Composition over Inheritance**：`DataFrame` 不继承 `ndarray`，而是持有 `BlockManager`
-- **Null Object**：`pd.NaT`、`pd.NA`、空 Index 都是"空值哨兵"
-- **Strategy**：`ExtensionArray` 是 dtype 行为的策略对象
-
-### 5.4 反模式
-
-1. **`frame.py` 单文件 19k 行**：用户自定义 `DataFrame` 子类很难找到插入点。正确做法是 mixin 拆分（pandas 内部已经在 groupby / plotting 上这么做了，但 `frame.py` 本身没拆）
-2. **`from pandas._libs import *`**：在用户代码里引用 `_libs` 是 hack，**没有稳定 API 承诺**。一旦 2.x → 3.x 升级会爆
-3. **隐式 dtype 转换**：`df['col'] = 1.0` 会把整列转 float64，丢失原 dtype。正确做法是显式 `.astype()`
-4. **`SettingWithCopyWarning`** 的根源：链式索引（`df[df.x > 0]['y'] = 1`）是否复制取决于内存布局；这是 BlockManager 的副作用，不是 bug，但用户体验糟糕
-
-### 5.5 独特看点
-
-- **Cython 算术**：`pandas/_libs/ops.pyx` 直接对 Block.values 做 C 循环
-- **Consolidation**：连续 dtype 的 Block 会自动合并（`_consolidate_inplace`）以减少内存碎片
-- **Copy-on-Write**（3.0 实验）：所有 `df[k] = v` 默认不复制，只在修改时 COW，避免 SettingWithCopyWarning
-
-## 6. 运行机制（Bring It Up）
-
-### 6.1 本地构建
-
-```bash
-# Meson 时代（v3.0+）
-pip install -ve . --no-build-isolation -Ceditable-verbose=true
-# 旧 setup.py 方式
-python setup.py build_ext --inplace -j 4
-```
-
-### 6.2 Smoke test
-
-```python
-import pandas as pd
-import numpy as np
-
-df = pd.DataFrame({"a": [1, 2, np.nan], "b": pd.date_range("2026-01-01", periods=3)})
-assert df.shape == (3, 2)
-assert df["a"].sum() == 3.0
-assert df["b"].isna().sum() == 0
-print(df.groupby(df["b"].dt.month).agg({"a": "mean"}))
-```
-
-### 6.3 启动链路
-
-```mermaid
-sequenceDiagram
-  participant U as 用户
-  participant I as pandas/__init__.py
-  participant C as pandas.core.api
-  participant M as pandas.core.config_init
-  U->>I: import pandas as pd
-  I->>I: 检查 numpy/dateutil
-  I->>C: from pandas.core.api import DataFrame ...
-  C->>C: 触发 frame.py 加载
-  I->>M: import pandas.core.config_init
-  M->>M: 注册 display.precision 等 option
-  I-->>U: 全部就绪，模块导出
-```
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-  title pandas 关键里程碑
-  dateFormat YYYY
-  section 起源
-  Wes McKinney 起手 :done, 2008, 1y
-  开源 0.1 :done, 2009, 1y
-  section 核心抽象
-  DataFrame + Series 稳定 :done, 2011, 3y
-  Categorical 引入 :done, 2014, 1y
-  section 现代化
-  1.0 稳定版 :done, 2020, 1y
-  Apache Arrow 互操作 :done, 2022, 1y
-  section 当前
-  PyArrow 默认 backend :done, 2024, 1y
-  Meson 构建 :active, 2025, 1y
-  Copy-on-Write :2026, 1y
-```
-
-## 8. 质量保障
-
-- **单元测试**：`pandas/tests/` 约 9 万行；`hypothesis` 库做基于属性的测试
-- **类型检查**：`pyright` + `mypy`；`pandas._typing` 暴露 Protocol
-- **Lint**：`ruff`（取代 flake8/black/isort）+ `pre-commit`
-- **CI**：GitHub Actions 矩阵（Linux/macOS/Windows × Python 3.10-3.13 × numpy 1.x/2.x）
-- **性能基准**：`asv_bench/`（Airspeed Velocity），每次 PR 跑回归
-- **Property-Based Test**：`pandas._testing.assert_frame_equal` 工具齐全
-
-## 9. 生态依赖
-
-```mermaid
-flowchart LR
-  P[pandas] --> N[numpy]
-  P --> D[python-dateutil]
-  P --> Pytz
-  P --> TZ[tzdata]
-  P --> NTP[ntplib]
-  P -.可选.-> Numba
-  P -.可选.-> PyArrow
-  P -.可选.-> SciPy
-  P -.可选.-> matplotlib
-  P -.可选.-> openpyxl
-  P -.可选.-> SQLAlchemy
-  P -.可选.-> PyTables
-  P -.可选.-> boto3
-```
-
-合规检查：所有可选依赖都是 BSD/MIT/Apache 友好；只有 `openpyxl` 是 MIT，无 GPL 风险。
-
-## 10. 生产实践
-
-| 能力 | 是否支持 | 备注 |
-|---|---|---|
-| 配置热更新 | 是 | `pd.set_option` 运行时改 |
-| 优雅停服 | N/A | 库级别概念 |
-| 限流 | N/A | — |
-| 链路追踪 | N/A | — |
-| 健康检查 | N/A | — |
-| 结构化日志 | 否 | 库本身不打印 |
-| 并行 | 受限 | 内部有限用线程池（如 `eval(num_threads=4)`） |
-
-## 11. 社区文化
-
-- **治理**：pandas-dev GitHub org + CoC
-- **维护者**：20+ 核心，含 Wes McKinney（现 NVIDIA）、Jeff Reback、jbrockmendel
-- **RFC**：GitHub issue + `pandas/rfcs/` 子目录
-- **沟通**：Slack、Discourse、邮件列表
-- **议题活跃**：日均 50+ issue；月度 1.x 0.x minor 发布
-
-## 12. 教训总结
-
-### 12.1 必偷 3 件
-
-1. **dtype 分块存储**：任何"列式存储 + 异构 dtype"的库都该用 BlockManager 思路（ClickHouse、DuckDB 内部都是这个思想）
-2. **ExtensionArray 协议**：把"类型系统扩展点"做成一等公民，比"打补丁加 if-else"健壮
-3. **`_constructor` hook pattern**：用 method-resolution-time 钩子让子类保持类型，比 `__init_subclass__` 更优雅
-
-### 12.2 必避 3 坑
-
-1. **不要把 DataFrame 做成 ndarray 子类**：方法冲突 + 性能损耗
-2. **不要在 frame.py 单文件堆所有方法**：后期重构代价巨大
-3. **不要让 SettingWithCopyWarning 长期存在**：用户认知负担重，要么彻底 COW，要么彻底 in-place 文档化
-
-### 12.3 7 天复刻路线
-
-```mermaid
-gantt
-  title 7天复刻 mini-pandas
-  dateFormat YYYY-MM-DD
-  section 阶段
-  Day1 Index + ndarray 包装 :a1, 2026-06-01, 1d
-  Day2 Series + 算术 :a2, after a1, 1d
-  Day3 DataFrame + 列对齐 :a3, after a2, 1d
-  Day4 BlockManager :a4, after a3, 1d
-  Day5 groupby/merge :a5, after a4, 1d
-  Day6 IO (csv) :a6, after a5, 1d
-  Day7 性能优化 + 测试 :a7, after a6, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数 | 评语 |
-|---|---|---|
-| 架构清晰 | 9 | BlockManager 设计精妙 |
-| 代码可读 | 6 | 19k 行单文件，劝退新人 |
-| 文档 | 9 | pandas.pydata.org 业界标杆 |
-| 测试 | 9 | 9 万行测试 + 属性测试 |
-| 性能 | 8 | 大数据下 Polars/DuckDB 已超越 |
-| 上手难度 | 4 | API 复杂度高，文档熟读前难 |
-
-## 13. 学习萃取
-
-**一句话价值**：pandas 用 BlockManager 把"标签化的异构列数据"变成可向量化算术的对象，定义了 Python 数据分析的 DSL。
-
-### 3 核心洞察
-
-1. **dtype 分块 > 行列二维**：向量化运算的瓶颈是 dtype 一致性，不是维度
-2. **扩展点协议比硬编码重要**：ExtensionArray 22 个方法是 pandas 不被时代淘汰的关键
-3. **设置时复制（COW）不是免费的，但能根治一类 bug**
-
-### 5 段必读代码
-
-1. `pandas/core/internals/managers.py` —— BlockManager 主体，看懂就懂 pandas
-2. `pandas/core/internals/blocks.py` —— Block 的 numpy/ExtensionArray 桥
-3. `pandas/core/frame.py` 中 `_init_mgr` 方法 —— DataFrame 是怎么造出来的
-4. `pandas/core/arrays/base.py` —— ExtensionArray 协议（接入新 dtype 的入口）
-5. `pandas/_libs/hashtable.pyx` —— Index 哈希表的 C 实现，pandas 性能之源
-
-### 1 反模式
-
-- `from pandas._libs import *`：破坏 API 稳定性，升级必爆
-
-### 1 可复用模式
-
-- **dtype 分块 + ExtensionArray 协议**：可移植到任何列式分析引擎
-
-### 3 立刻能用
-
-1. 学会用 `df.memory_usage(deep=True)` 排查 OOM——比 `df.info()` 准确
-2. 分类列先 `astype('category')`，内存可压缩 10-100 倍
-3. 读 CSV 用 `pd.read_csv(..., dtype_backend='pyarrow_nullable')` 拿真 NA
-
-## 14. 项目特点速查
-
-- 独特看点：唯一把"标签 + 异构列 + 时间序列"三者在一套 API 里统一表达的库
-- 同类对比：
-
-```mermaid
-quadrantChart
-  title Python 数据分析库对比
-  x-axis 低性能 --> 高性能
-  y-axis 低表达力 --> 高表达力
-  "pandas": [0.6, 0.95]
-  "Polars": [0.95, 0.7]
-  "Dask": [0.7, 0.6]
-  "Modin": [0.8, 0.65]
-  "cuDF": [0.95, 0.5]
-```
+## 二、扩展范式
+
+### 模式 6 · Indexing 多轴选择
+
+**问题场景**：手写 `df[mask]` 选择数据不规范。
+
+**解决方案**：pandas 提供 `.loc[]`（标签）/ `.iloc[]`（位置）/ `.at[]`（单值）/ `.iat[]`（单值位置）/ `[]`（列选择）五种 indexing 方式，链式组合。
+
+**关键参数**：
+- `df.loc['row', 'col']` 标签
+- `df.iloc[0, 1]` 位置
+- `df.at['row', 'col']` 单值快
+- `df.query('col > 5')` 表达式
+- `df[mask]` 布尔 mask
+
+**最佳实践**：能用 `.loc` 不用 `.iloc`（标签语义稳定），单值用 `.at` / `.iat` 提速 10x。
+
+### 模式 7 · GroupBy split-apply-combine
+
+**问题场景**：分组聚合 SQL-like 难写。
+
+**解决方案**：`df.groupby('key').agg({'col1': 'sum', 'col2': 'mean'})` 一行搞定 split（按 key 分组）/ apply（每组聚合）/ combine（合并结果）三段式。
+
+**关键参数**：
+- `df.groupby('key')` 单键
+- `df.groupby(['k1', 'k2'])` 多键
+- `.agg({...})` 多聚合
+- `.transform(lambda x: ...)` 不改 shape
+- `.apply(custom_func)` 自定义
+
+**最佳实践**：所有「分组 + 聚合」都用 `groupby` + `agg`，比手写循环快 100x。
+
+### 模式 8 · Resample / Rolling / Expanding 时序
+
+**问题场景**：时间序列分析需要重采样 + 滚动窗口。
+
+**解决方案**：时序三件套：① `df.resample('D')` 按日重采样 ② `df.rolling(window=7).mean()` 7 日滚动 ③ `df.expanding().sum()` 累计。
+
+**关键参数**：
+- `resample('D' | 'H' | 'M')` 重采样
+- `rolling(7).mean()` 滚动
+- `expanding().sum()` 累计
+- `shift(1)` 错位
+- `diff()` 差分
+
+**最佳实践**：金融时序 rolling + shift 是核心，所有指标都能用 5 行写完。
+
+### 模式 9 · Pivot / Melt 长宽表转换
+
+**问题场景**：宽表（透视表）vs 长表（key-value）转换麻烦。
+
+**解决方案**：`df.pivot(index, columns, values)` 宽表化；`df.melt(id_vars, value_vars)` 长表化；`df.pivot_table(values, index, columns, aggfunc)` 带聚合的透视表。
+
+**关键参数**：
+- `pivot` 不聚合
+- `pivot_table` 聚合
+- `melt` 长表
+- `stack` / `unstack` 索引层级
+- `crosstab` 交叉表
+
+**最佳实践**：所有 BI 报表生成用 `pivot_table`，ETL 反规范化用 `melt`。
+
+### 模式 10 · Eval / Query 表达式引擎
+
+**问题场景**：`df[(df.a > 5) & (df.b < 10)]` 链式括号难写。
+
+**解决方案**：`df.query('a > 5 and b < 10')` 用表达式字符串；`df.eval('c = a + b')` 动态算列；内部用 Python AST 解析，NumExpr 后端加速 10x。
+
+**关键参数**：
+- `df.query(expr)` 过滤
+- `df.eval(expr)` 计算
+- `numexpr` 引擎
+- 表达式语法
+- 局部变量 `@var`
+
+**最佳实践**：复杂过滤用 `query` 而非链式 mask，10x 提速 + 可读性提升。
+
+---
+
+## 三、进阶范式
+
+### 模式 11 · Cython 加速 + Meson 迁移
+
+**问题场景**：纯 Python 慢，关键路径需要 C 加速。
+
+**解决方案**：早期 `.pyx` Cython 文件 + `setup.py` 编译；2025 迁移到 Meson + subprojects C++ 端口，构建更快 + ABI 稳定。
+
+**关键参数**：
+- `pandas/_libs/` Cython 编译产物
+- `.so` / `.pyd` 动态库
+- Meson 构建
+- C++ subprojects
+- Cython 3.0
+
+**最佳实践**：性能关键路径用 Cython 包装而非手写 C。
+
+### 模式 12 · ExtensionArray 扩展点
+
+**问题场景**：自定义 dtype（如 Categorical / Sparse / Datetime with TZ）需要独立内存管理。
+
+**解决方案**：`ExtensionArray` 是 pandas v0.24+ 引入的扩展点基类，`dtype` / `nbytes` / `isna` / `take` / `copy` 等 12+ 方法需实现。
+
+**关键参数**：
+- `ExtensionDType` 类型
+- `ExtensionArray` 数据
+- `arr._from_factorized(values)` 构造
+- `arr.isna()` 缺失检测
+- `register_extension_dtype()` 注册
+
+**最佳实践**：自定义 dtype 实现 `ExtensionArray` 接口，自动接入所有 pandas 算子。
+
+### 模式 13 · PyArrow backend（v2.0+）
+
+**问题场景**：pandas 默认 NumPy backend 在大数据集内存翻倍。
+
+**解决方案**：`pd.options.future.infer_string = True` 启用 PyArrow backend，string 数据用 Arrow 内存（30%+ 内存节省），`dtype_backend='pyarrow'` 显式启用。
+
+**关键参数**：
+- `dtype_backend='pyarrow'`
+- Arrow 字符串
+- 内存节省 30%
+- Polars 兼容
+- 默认开启
+
+**最佳实践**：大数据集（>10GB）启用 PyArrow backend，内存节省 + 与 Polars/DuckDB 互操作。
+
+### 模式 14 · MultiIndex 层级索引
+
+**问题场景**：多维数据需要多层级索引。
+
+**解决方案**：`pd.MultiIndex.from_tuples([('a', 1), ('a', 2)])` 创建多级索引；`df.set_index(['k1', 'k2'])` 升级；`df.unstack()` 透视。
+
+**关键参数**：
+- `MultiIndex.from_tuples`
+- `df.set_index([...])`
+- `df.stack() / unstack()`
+- `df.swaplevel()`
+- `df.xs(key, level=)` 跨级选择
+
+**最佳实践**：能用 1 级索引解决不用 MultiIndex，2 级以上考虑转长表。
+
+### 模式 15 · 与 NumPy / SciPy / scikit-learn 互操作
+
+**问题场景**：数据需要在 pandas 和 NumPy / scikit-learn 之间转换。
+
+**解决方案**：`df.values` 转 ndarray；`pd.Series(arr)` 转 Series；scikit-learn `fit(X, y)` 接受 `df.values`；`from sklearn.preprocessing import StandardScaler` 直接用。
+
+**关键参数**：
+- `df.values` ndarray
+- `pd.DataFrame(arr, columns=...)` 反向
+- sklearn `X = df[['f1', 'f2']].values`
+- `pd.Series(sklearn_output)`
+- `df.to_numpy()` v1.0+
+
+**最佳实践**：ML pipeline 用 `df[['feature_cols']].values`，不要传整个 DataFrame。
+
+---
+
+## 四、实战范式
+
+### 模式 16 · 7 件套启动模板
+
+**问题场景**：数据分析师第一周上手。
+
+**解决方案**：7 件套：① `pd.read_csv` 读数据 ② `df.head()` 检视 ③ `df.describe()` 统计 ④ `df.isna().sum()` 缺失统计 ⑤ `df.dtypes` 类型 ⑥ `df.groupby().agg()` 聚合 ⑦ `df.to_parquet` 落盘。
+
+**关键参数**：
+- `read_csv` / `read_parquet` IO
+- `head` / `info` / `describe` 检视
+- `isna` 缺失
+- `groupby` / `agg` 聚合
+- `to_parquet` 落盘
+
+**最佳实践**：所有分析任务都用 7 件套顺序上手，10 分钟摸清数据全貌。
+
+### 模式 17 · 性能优化 5 招
+
+**问题场景**：pandas 默认慢，大数据集卡顿。
+
+**解决方案**：5 招优化：① 选合适 dtype（`category` 替 string）② 用 `query` / `eval` 替链式 mask ③ 用 `numpy.where` 替 `apply` ④ 矢量化 ⑤ 启用 PyArrow backend。
+
+**关键参数**：
+- `astype('category')` 分类
+- `query` / `eval` 表达式
+- `numpy.where` 矢量化
+- `iterrows()` 慢 / `itertuples()` 快
+- PyArrow backend
+
+**最佳实践**：80% 性能问题在 `category` dtype + 向量化，剩下 20% 走 Polars / Dask。
+
+### 模式 18 · 与 Polars / Dask / Spark 对比
+
+**问题场景**：大数据集在 pandas 卡顿。
+
+**解决方案**：pandas 适合 < 10GB 数据集；Polars（Rust 引擎 + Arrow）适合 10-100GB；Dask 适合 100GB-1TB；Spark 适合 > 1TB。
+
+**关键参数**：
+- 体积：pandas < 10GB / Polars < 100GB / Dask < 1TB / Spark > 1TB
+- 性能：Polars > pandas > Dask > Spark
+- 学习曲线：pandas < Polars < Dask < Spark
+- 生态：pandas > Spark > Dask > Polars
+
+**最佳实践**：MVP 用 pandas，过 10GB 切 Polars，分布式需求切 Dask/Spark。
+
+### 模式 19 · 时间序列实战（金融 + 业务）
+
+**问题场景**：金融 / 业务时序数据需要 resample + rolling + shift + diff。
+
+**解决方案**：`df.set_index('date')` + `resample('D').agg()` + `rolling(7).mean()` + `shift(1)` 错位 + `pct_change()` 涨跌幅 + `diff()` 差分。
+
+**关键参数**：
+- `set_index('date')` 时间索引
+- `resample('D')` 按日
+- `rolling(7).mean()` 7 日均线
+- `shift(1)` 滞后
+- `pct_change()` 涨跌幅
+
+**最佳实践**：所有时序分析用 `set_index` + `resample` + `rolling` 三件套。
+
+### 模式 20 · 7 天复刻最小可跑内核
+
+**问题场景**：团队想 fork pandas 做内部数据工具。
+
+**解决方案**：7 天分 6 步：① DataFrame/Series 包装 ndarray ② Index + 对齐 ③ CSV/Parquet IO ④ groupby 聚合 ⑤ join/merge ⑥ 缺失数据处理。
+
+**关键参数**：
+- Day 1-2: DataFrame + Index
+- Day 3: 对齐 + IO
+- Day 4: groupby
+- Day 5: join/merge
+- Day 6: 缺失
+- Day 7: 文档
+
+**最佳实践**：7 天复刻只求「够用 80% 场景」，完整 pandas 复刻需要 1 年+。
+
+---
 
 ## 附：仓库元信息
 
-- 路径：G:\实战案例\GitHub顶尖项目\pandas\
-- 大小：355 MB
-- 总文件：~3000（含 subprojects C++ 源码与 .pixi 锁文件）
-- 解析时间：2026-06-02
+- **路径**: `G:\实战案例\GitHub顶尖项目\pandas\`
+- **大小**: ~350 MB
+- **总文件数**: 1500+ Python 文件
+- **关键 commit**: meson 迁移版本
+- **团队**: pandas-dev org + 20 核心维护者
+- **许可**: BSD-3-Clause
 
 ## 一句话总结
 
-解析 pandas = 读懂 BlockManager + 跑通 5 个测试 + 偷走 dtype 分块思想。
+pandas 用「DataFrame + Series + Index」三件套 + BlockManager 分块存储 + 自动索引对齐，让 Python 拥有 R 语言的 data.frame 体验，是数据科学家的瑞士军刀。

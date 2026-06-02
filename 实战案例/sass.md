@@ -6,11 +6,11 @@
 **主题**: language-spec / css-preprocessor / living-spec / embedded-protocol
 **适用场景**: 学习"规范仓库"组织方式、Literate Programming、Protobuf 跨语言 RPC、协议版本管理
 
-> sass-lang/sass 是 Sass 语言的规范 + RFC + Embedded Protocol 仓库，不含实现源码（Dart Sass / libSass 在独立仓库）。所有 Sass 编译器必须遵守的"宪法"、host 进程调用 compiler 的 RPC 契约、提案→接受→规范→实现的演进流水线都在这里。
+---
 
-## 第一段：基础范式（模式 1-5）
+## 第一段：基础范式
 
-### 模式 1 · 规范仓库的分层演进流
+### 模式 1：规范仓库的分层演进流
 
 **问题场景**：语言有多个实现（Dart Sass / libSass / JS），需要保证行为一致；语言本身要演进（新语法、新语义），又要给实现者"明确契约"——怎么组织？
 
@@ -23,9 +23,9 @@
 - 关系 = proposal RFC 接受后并入 spec
 - 90 个 accepted 文档 = 已稳定的语言特性
 
-**最佳实践**：规范仓库三层结构（proposal/accepted/spec）让"激进实验"和"稳定契约"解耦；新特性先在 proposal 跑通再合并 spec。
+**最佳实践**：规范仓库三层结构（proposal / accepted / spec）让"激进实验"和"稳定契约"解耦；新特性先在 proposal 跑通再合并 spec。
 
-### 模式 2 · Literate Programming 双源同步
+### 模式 2：Literate Programming 双源同步
 
 **问题场景**：规范文档需要展示 TypeScript 类型声明（`compile.d.ts`），但又要保持文档可读（不能光看代码块）——双源易漂移。
 
@@ -40,17 +40,11 @@
 
 **最佳实践**：规范 + 类型声明用 literate programming 写——人读的散文 + 机抽的代码块，单一来源零漂移。
 
-### 模式 3 · Algorithm Specification 过程伪码
+### 模式 3：Algorithm Specification 过程伪码
 
 **问题场景**：类型签名只说"输入输出"，不承诺执行顺序；但编译器对**副作用顺序**（`@use` 解析顺序、`!global` flag 定稿时机）极敏感。
 
 **解决方案**：用"let X be...then..."过程伪码定义语义，**而不是**类型签名或测试用例。三个实现（Dart / C++ / JS）能各自推导出等价执行序列。
-
-```
-Let module be an empty module with source file file.
-Let uses be an empty map from @use rules to modules.
-Execute each top-level statement as described in that statement's specification.
-```
 
 **关键参数**：
 - 风格 = ASN.1 / RFC 算法描述
@@ -61,17 +55,11 @@ Execute each top-level statement as described in that statement's specification.
 
 **最佳实践**：多实现语言规范用过程伪码描述行为（vs. 类型签名）——保证行为一致 + 实现自由。
 
-### 模式 4 · Embedded Protocol 跨语言 RPC
+### 模式 4：Embedded Protocol 跨语言 RPC
 
 **问题场景**：host 进程（webpack / vite / rspack）要用任意语言（Node / Python / Rust）调 Sass 编译器，怎么做跨语言通信？
 
 **解决方案**：Protocol Buffers over stdio——每条消息 = varint 长度 + 编译 ID + protobuf 负载。子进程跑 sass-embedded，host 用任意语言生成 stub。
-
-```
-+----------------+------------------+--------------------+
-| varint length  | Compilation ID   | Protobuf Message   |
-+----------------+------------------+--------------------+
-```
 
 **关键参数**：
 - 三段式 = 长度前缀 + 编译 ID + 负载
@@ -82,7 +70,7 @@ Execute each top-level statement as described in that statement's specification.
 
 **最佳实践**：跨语言 RPC 走 Protobuf over stdio（vs. JSON-RPC）——性能 10x + 跨语言零成本 + 协议向后兼容。
 
-### 模式 5 · YAML 单源 + Checksum 同步
+### 模式 5：YAML 单源 + Checksum 同步
 
 **问题场景**：deprecations 列表要同时出现在 spec 文档、JS API 文档、typedoc——三处手改易漂移。
 
@@ -97,9 +85,11 @@ Execute each top-level statement as described in that statement's specification.
 
 **最佳实践**：多副本数据用"单源 + Checksum"模式——源变更触发再生，指纹反向校验漂移。
 
-## 第二段：扩展范式（模式 6-10）
+---
 
-### 模式 6 · @use 模块系统（accepted/module-system.md）
+## 第二段：扩展范式
+
+### 模式 6：@use 模块系统
 
 **问题场景**：传统 `@import` 全局污染——变量/混合器/函数作用域不分；同名覆盖静默发生；大型项目维护崩溃。
 
@@ -114,7 +104,7 @@ Execute each top-level statement as described in that statement's specification.
 
 **最佳实践**：新项目用 `@use` 替代 `@import`——namespace 显式 + 作用域隔离 + 配置参数化。
 
-### 模式 7 · Plain CSS Nesting 兼容
+### 模式 7：Plain CSS Nesting 兼容
 
 **问题场景**：原生 CSS 在 2023 加入 Nesting（`& > .child { ... }`），但 Sass 的 nesting 语法（无 `&`）不兼容——怎么平滑过渡？
 
@@ -129,7 +119,7 @@ Execute each top-level statement as described in that statement's specification.
 
 **最佳实践**：CSS 标准追上来的特性（nesting / color-mix）逐步用原生写法 + 编译器兜底，渐进迁移。
 
-### 模式 8 · CSS Color 4 支持
+### 模式 8：CSS Color 4 支持
 
 **问题场景**：传统 Sass 颜色用 hex / rgb / hsl，色域窄；CSS Color 4 加 lab / lch / oklch + color() 函数 + 动态色——怎么集成？
 
@@ -144,7 +134,7 @@ Execute each top-level statement as described in that statement's specification.
 
 **最佳实践**：颜色处理走 CSS Color 4（oklch 色域更广）——做设计系统主题切换、动态对比度计算必备。
 
-### 模式 9 · Protocol Buffers 长度前缀分帧
+### 模式 9：Protocol Buffers 长度前缀分帧
 
 **问题场景**：stdio 流是无消息边界的字节流——直接写 protobuf 消息，接收方不知道一条消息在哪结束。
 
@@ -159,7 +149,7 @@ Execute each top-level statement as described in that statement's specification.
 
 **最佳实践**：跨进程 / 跨语言 RPC 用"长度前缀 + protobuf"分帧（vs. JSON-RPC）——性能 10x + 跨语言零成本。
 
-### 模式 10 · 版本号当 CI 数据
+### 模式 10：版本号当 CI 数据
 
 **问题场景**：Embedded Protocol 版本号要从 `3.1.0` 升到 `3.2.0`，改了 spec + CHANGELOG 但忘了改 `EMBEDDED_PROTOCOL_VERSION` 文件——CI 怎么强制？
 
@@ -174,19 +164,15 @@ Execute each top-level statement as described in that statement's specification.
 
 **最佳实践**：版本号用文件存储 + CI 强校验——比写在代码字符串里更难遗忘。
 
-## 第三段：进阶范式（模式 11-15）
+---
 
-### 模式 11 · TypeScript 模板字面量泛型
+## 第三段：进阶范式
+
+### 模式 11：TypeScript 模板字面量泛型
 
 **问题场景**：CustomFunction 同步返回 `Value`，异步返回 `Promise<Value>`；用户传错类型时想要 IDE 立刻报错。
 
 **解决方案**：`CustomFunction<sync extends 'sync' | 'async'>` 模板字面量泛型——`'sync'` 时返回 `Value`，`'async'` 时返回 `Promise<Value>`，编译期约束调用方。
-
-```ts
-export type CustomFunction<sync extends 'sync' | 'async'> = (
-  args: Value[]
-) => PromiseOr<Value, sync>;
-```
 
 **关键参数**：
 - 泛型 = `sync extends 'sync' | 'async'`
@@ -197,7 +183,7 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：sync/async 双签名 API 用模板字面量泛型——用户传错时 IDE 立刻报错，文档即类型。
 
-### 模式 12 · 死链 + 锚点 + 路径三层校验
+### 模式 12：死链 + 锚点 + 路径三层校验
 
 **问题场景**：规范文档互相引用（`[link](spec/foo.md#bar)`）——目标文件被删 / 锚点改了 / 相对路径不规范，怎么自动抓出？
 
@@ -212,7 +198,7 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：规范文档加 3 层链接校验（文件 + 锚点 + 路径）——文档镜像 / 路径变化自动抓住。
 
-### 模式 13 · Living Spec 不锁版本号
+### 模式 13：Living Spec 不锁版本号
 
 **问题场景**：ECMAScript 标准 4 段式（stage 0/1/2/3 + final）管理复杂；版本号爆炸；用户困惑"我现在能用哪个特性"。
 
@@ -227,7 +213,7 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：内部 DSL / 配置文件规范走 living spec（不分版本号）——避免版本爆炸 + 实现者主动追规范。
 
-### 模式 14 · 多实现 + 同一行为
+### 模式 14：多实现 + 同一行为
 
 **问题场景**：dart-sass（官方 Dart 实现） / libSass（C++ 实现） / sass-embedded（独立包）三个实现，行为必须一致——怎么约束？
 
@@ -242,7 +228,7 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：多实现语言规范只承诺行为——给实现者数据结构自由，行为靠 spec 强制。
 
-### 模式 15 · 提案→接受→规范流程
+### 模式 15：提案→接受→规范流程
 
 **问题场景**：社区想加新特性（`@extend` 改进、`@apply` 替代），怎么避免"主分支乱改"？
 
@@ -257,9 +243,11 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：语言演进走 3 阶段（proposal / accepted / spec）——避免主分支乱改，RFC 流程透明。
 
-## 第四段：实战范式（模式 16-20）
+---
 
-### 模式 16 · Sass Spec 工具链全景
+## 第四段：实战范式
+
+### 模式 16：Sass Spec 工具链全景
 
 **问题场景**：214 个文件（90 accepted + 64 spec）需要自动化维护——TOC 生成 / 链接检查 / 漂移检测 / Protobuf 生成。
 
@@ -275,7 +263,7 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：规范仓库必备"工具链 + 自检脚本 + CI"三件套——文档一致性问题自动化抓住。
 
-### 模式 17 · Sass Compiler 选型
+### 模式 17：Sass Compiler 选型
 
 **问题场景**：webpack / vite / rspack 集成 Sass 编译，用 dart-sass（官方 Dart） / libSass（C++，已弃用） / sass-embedded（独立子进程）哪个？
 
@@ -290,7 +278,7 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：新项目用 sass-embedded——性能好 + 跨语言 host + 协议稳定，避免 libSass 弃用陷阱。
 
-### 模式 18 · accepted/ 与 proposal/ 的差异
+### 模式 18：accepted/ 与 proposal/ 的差异
 
 **问题场景**：社区新提案可能改 10 次才稳定，规范冻结后不能改——怎么管理"灵活性"和"稳定性"？
 
@@ -305,7 +293,7 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：规范仓库分"暂稳定（accepted）+ 长期稳定（spec）"两层——给实现者明确承诺强度。
 
-### 模式 19 · spec.md 主入口 222 行
+### 模式 19：spec.md 主入口 222 行
 
 **问题场景**：规范文档动辄上千行，新人难找入口；spec 必须有"一句话定义 + 核心算法 + 子规范索引"。
 
@@ -320,55 +308,31 @@ export type CustomFunction<sync extends 'sync' | 'async'> = (
 
 **最佳实践**：规范主入口控制在 200-300 行——细节下沉子文档，新人 10 分钟能读完核心。
 
-### 模式 20 · 7 天复刻 mini-Sass-Spec 仓库
+### 模式 20：7 天复刻 mini-Sass-Spec 仓库
 
 **问题场景**：想做自己的"规范仓库"（内部 DSL / 配置文件 / 协议），但不知道从何入手。
 
 **解决方案**：7 天 MVP——Day 1-2 搭 spec/accepted/proposal 目录，Day 3 literate programming 工具，Day 4 link-check 脚本，Day 5 typedoc 集成，Day 6 CI 7 job，Day 7 镜像到 docs site。
 
-```
-Day 1-2: spec/ + accepted/ + proposal/ 目录结构 + RFC 模板
-Day 3: tool/tangle.ts literate 编织器（抽代码块）
-Day 4: test/link-check.ts 死链 + 锚点 + 路径校验
-Day 5: typedoc 集成（自动从 .d.ts 生成网站）
-Day 6: CI 7 job（lint/toc/link/proto/deprec/typedoc/heroku）
-Day 7: 镜像到 docs.example.com
-```
-
 **关键参数**：
 - 核心 = literate programming 工具（50 行）
-- 校验 = link/toc/deprecations 一致性
+- 校验 = link / toc / deprecations 一致性
 - CI = 至少 3 job（link / toc / drift）
 - 文档站 = typedoc / vuepress / docusaurus
 - 复刻难度 = 工具链不难，规范本身的设计哲学难
 
 **最佳实践**：复刻规范仓库先做 literate 工具 + 链接校验——文档一致性问题自动化，剩余靠规范设计哲学。
 
-## 项目速查
+---
 
-**仓库元信息**：
-- 路径：`G:\实战案例\GitHub顶尖项目\sass\`
-- 文件数：214
-- License：Apache 2.0
-- 协议版本：Embedded Protocol 3.2.0
+## 附录：5 段必读代码
 
-**核心目录**：
-- `spec/` = 64 个规范文档（spec.md / modules.md / syntax.md / at-rules / built-in-modules）
-- `accepted/` = 90 个已接受 RFC（含 module-system Draft 10，79KB）
-- `proposal/` = 讨论中 RFC
-- `js-api-doc/` = 28 个 tangle 后的 .d.ts
-- `tool/` = 4 个 TS 工具（tangle/untangle/sync-deprecations/toc）
-- `test/` = 4 个自检脚本（link/toc/js-api-doc/deprecations）
-- `.github/workflows/ci.yml` = 7 个 job
+1. `spec/spec.md` — 主规范入口（222 行，scope + compiling + executing）
+2. `accepted/module-system.md` — 最大 RFC（79KB / 1801 行 / Draft 10）
+3. `tool/tangle.ts` — literate programming 编织器（64 行核心）
+4. `test/link-check.ts` — 三层链接校验（文件 + 锚点 + 路径）
+5. `spec/EMBEDDED_PROTOCOL_VERSION` — 版本号文件（2 行 + CI 强校验）
 
-**3 核心洞察**：
-1. Living spec 不锁版本号 = 避免 ECMAScript 4 段式版本爆炸
-2. Literate programming 双源同步 = 规范 + 类型声明单一来源零漂移
-3. 过程伪码规范 = 多实现行为一致 + 数据结构自由
+## 一句话总结
 
-**1 反模式**：accepted/module-system.md 高达 79KB / 1801 行——单个 PR 难以通读，应拆分子文档。
-
-**3 立刻能用**：
-1. literate 工具抽 `<pre>` 块生成 .d.ts + SHA256 漂移检测
-2. CI 校验 `version 文件 == CHANGELOG 最新版本号`
-3. link-check 三层校验（文件 + 锚点 + 路径）防止文档镜像后死链
+sass 规范仓库 = proposal/accepted/spec 三层演进流 + Literate Programming 双源同步 + ASN.1 风格过程伪码 + Protocol Buffers 跨语言 RPC + Living Spec 不锁版本号，把"语言宪法"的演化做到"激进实验"和"稳定契约"解耦，dart-sass / libSass / sass-embedded 三实现行为一致。
