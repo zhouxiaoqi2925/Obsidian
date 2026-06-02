@@ -201,3 +201,24 @@ To github.com:zhouxiaoqi2925/Obsidian.git
  Obsidian Vault Auto Backup 
  周二 2026/06/02 23:01:57 
 ==================================== 
+fatal: could not write multi-pack-index: Permission denied
+error: failed to perform geometric repack
+error: task 'geometric-repack' failed
+[main af5b5ae9] auto: backup 周二 2-26-06 230159
+ 42 files changed, 13756 insertions(+), 17374 deletions(-)
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/B-\345\220\216\347\253\257\346\234\215\345\212\241/k8s.md"
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/B-\345\220\216\347\253\257\346\234\215\345\212\241/mysql.md"
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/B-\345\220\216\347\253\257\346\234\215\345\212\241/nginx.md"
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/B-\345\220\216\347\253\257\346\234\215\345\212\241/postgres.md"
+ create mode 100644 "\351\241\271\347\233\256\344\273\243\347\240\201\345\214\205/B-\345\220\216\347\253\257\346\234\215\345\212\241/prometheus.md"
+[INFO] Commit created: auto: backup 周二 2-26-06 230159 
+To github.com:zhouxiaoqi2925/Obsidian.git
+   e82dbe3a..af5b5ae9  main -> main
+[SUCCESS] Pushed to origin/main. 
+[INFO] Done: 23:02:10.26 
+==================================== 
+ 
+==================================== 
+ Obsidian Vault Auto Backup 
+ 周二 2026/06/02 23:12:10 
+==================================== 

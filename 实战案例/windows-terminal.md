@@ -1,814 +1,405 @@
----
-title: windows-terminal
-type: application
-lang: cpp
-stars: 97000
-date: 2026-06-02
-tags:
-  - 开源项目
-  - terminal
-  - windows
-  - winui
-  - cpp
-  - directx
----
-
-# windows-terminal · 项目深度解析
-
-> Windows Terminal 是微软新一代终端模拟器，融合 Cascadia（WinUI 3 前端）、TerminalCore（C++/WinRT 终端核心）、conhost（Windows 传统 Console 主机）、Atlas（DirectX 渲染引擎）四层架构，是终端模拟器领域"老兵重生、架构升维"的代表项目。本仓库为 microsoft/terminal 主线分支的镜像。
-> 来源：G:\实战案例\GitHub顶尖项目\windows-terminal\
-
-## 写在前面：解析哲学
-
-Windows Terminal 的核心问题域是"如何在 Windows 平台用现代 GPU 加速 + 现代 UI 框架重新实现一个支持多标签页、多 shell、GPU 文本渲染、ANSI/VT 转义序列、键盘自定义、主题配置的终端模拟器"。它不是单一程序——是 4 个独立可执行/库的协同：
-
-1. **`wt.exe`（Cascadia / WindowsTerminal）**——WinUI 3 桌面应用，前端 + 应用生命周期
-2. **`conhost.exe`（Console Host）**——Windows 传统控制台宿主，仍需保留向后兼容
-3. **`Microsoft.Terminal.Core.dll`（TerminalCore）**——平台无关的终端核心（buffer、状态机、调度）
-4. **`Microsoft.Terminal.Renderer.atlas.dll`（Atlas）**——Direct2D/DirectWrite/D3D11 渲染后端
-
-**先骨架后血肉**：仓库代码在 `src/` 下分 5 大块——`cascadia/`（UI 层）、`terminal/`（VT 解析与适配）、`renderer/`（渲染后端）、`host/`（conhost）、`buffer/`（文本缓冲）。**先 What 后 Why**：本解析聚焦 ① 终端核心 `Microsoft::Terminal::Core::Terminal` 的多接口继承契约；② `StateMachine` 状态机与 VT 转义解析；③ `AtlasEngine` DirectX 渲染同步点；④ `ActionMap` 键位 + 命令映射系统。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：已镜像在 `G:\实战案例\GitHub顶尖项目\windows-terminal\`
-2. **分类**：C++ 桌面应用（WinUI 3 + C++/WinRT + DirectX + C#）
-3. **问题清单**：本解析关注 TerminalCore 多接口、StateMachine VT 解析、AtlasEngine 渲染、ActionMap 键位
-4. **速查表**：
-   - 入口：`src/cascadia/WindowsTerminal/AppHost.cpp`（C# 入口）+ `src/host/host.sln`（conhost 入口）
-   - 终端核心：`src/cascadia/TerminalCore/Terminal.cpp`（66KB）+ `Terminal.hpp`（22KB）
-   - 状态机：`src/terminal/parser/stateMachine.cpp`（70KB）
-   - 渲染：`src/renderer/atlas/AtlasEngine.cpp`（52KB）+ `BackendD3D.cpp`（101KB）
-   - 设置模型：`src/cascadia/TerminalSettingsModel/ActionMap.cpp`（62KB）
-5. **锁定 commit**：HEAD（partial mirror）
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-|------|------|
-| 项目名 | microsoft/terminal |
-| 定位 | Windows 平台新一代终端模拟器（标签页 + GPU 渲染 + 多 shell + 主题 + Unicode） |
-| 核心问题 | 旧 conhost 缺乏 GPU 加速、Unicode 不完善、不可扩展；社区终端（ConEmu、cmder）功能强但 UI 体验差；需要一个"原生 + 现代 + 开源"的统一终端 |
-| 用户 | Windows 开发者、DevOps、数据科学家、终端重度用户 |
-| 商业模式 | MIT 开源；微软官方维护；微软商店分发 |
-| 复刻难度 | ★★★★★（WinUI 3 + C++/WinRT + DirectX + VT 解析 + 多进程 IPC + 旧 conhost 兼容） |
-| 状态 | 极活跃（每周 commit，月度 release） |
-| 团队 | Microsoft Windows Terminal 团队 + Dustin Howett（@DHowett，初始作者）+ 200+ 贡献者 |
-| 里程碑 | 概念原型（2016）→ 首次公开（2019，Build 大会）→ 1.0（2020，标签页 + 主题）→ 1.6（2021，Quake 模式）→ 1.10（2022，Atlas 渲染）→ 1.20+（2024-2026，持续） |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((microsoft/terminal))
-    src
-      cascadia UI 层 (WinUI 3)
-        WindowsTerminal 主程序入口
-          AppHost
-          WindowEx
-        TerminalApp 应用
-          App
-          WindowProperties
-          Tab
-          Pane 面板
-        TerminalControl 控件
-          TermControl
-          Search
-        TerminalCore 核心 C++/WinRT
-          Terminal
-          TerminalApi
-          TerminalSelection
-        TerminalConnection 连接器
-          ConhostConnection
-          AzureCloudShell
-          TelnetConnection
-        TerminalSettingsModel 设置
-          ActionMap 键位
-          ActionAndArgs 命令
-          AppearanceConfig
-          ColorScheme
-          CascadiaSettings
-        TerminalSettingsEditor 设置 UI
-        CascadiaPackage AppX 包
-        Remoting 跨进程
-        UIHelpers 帮助类
-        WinRTUtils WinRT 工具
-        UnitTests_*
-      terminal 终端协议
-        parser VT 状态机
-          stateMachine
-          OutputStateMachineEngine
-          InputStateMachineEngine
-        adapter 适配层
-          AdaptDispatch
-          termDispatch
-        input 输入
-          terminalInput
-          keyEvent
-      renderer 渲染
-        atlas Direct2D/DirectWrite
-          AtlasEngine
-          BackendD2D
-          BackendD3D
-        base IRenderEngine 基类
-        gdi GDI 后端（备用）
-        inc 内部接口
-        uia UIA 自动化
-      host conhost.exe
-        _stream.cpp
-        _output.cpp
-        alias.cpp
-        ConsoleArguments
-        AccessibilityNotifier
-        ApiRoutines
-      buffer 文本缓冲
-        out textBuffer
-        out textBufferCellIterator
-      server 服务
-      types 公共类型
-        inc Viewport
-        inc ColorFix
-        inc GlyphWidth
-      inc 公共头
-      til 模板库
-        til.h
-        generational
-        ticket_lock
-        hasher
-        unicode
-      audio 音频
-      winconpty ConPTY 伪终端
-      interactivity win32 交互
-      propslib lib 工具
-      res 资源
-      tools 工具
-        ColorTool
-        fuzz 测试
-      testlist 测试清单
-    doc 文档
-    samples 示例
-    scratch 草稿
-    build 构建配置
-    OpenConsole.slnx 解决方案
-    Directory.Build.props MSBuild
-    .config 私有配置
-    .github GitHub Actions
-    oss 第三方声明
-```
-
-**入口与关键文件**：
-
-- 主程序入口：`src/cascadia/WindowsTerminal/AppHost.cpp`（C#，XAML 启动）
-- conhost 入口：`src/host/host.sln`（C++，Console 主机）
-- 终端核心：`src/cascadia/TerminalCore/Terminal.cpp`（66KB）
-- 状态机：`src/terminal/parser/stateMachine.cpp`（70KB）
-- 渲染：`src/renderer/atlas/AtlasEngine.cpp`（52KB）+ `BackendD3D.cpp`（101KB）
-- 设置模型：`src/cascadia/TerminalSettingsModel/ActionMap.cpp`（62KB）
-
-## 3. 项目画像（Profile）
-
-| 指标 | 值 |
-|------|----|
-| 总文件数 | 数千（C++ + C# + IDL + HLSL + XAML） |
-| 主语言 | C++（85%）+ C#（10%）+ HLSL/XAML/IDL（5%） |
-| 涉及语言 | C++、C#、HLSL（着色器）、XAML、IDL（WinRT 接口） |
-| Star | ~97k |
-| License | MIT |
-| 包大小 | `wt.exe` 安装包 ~150MB（含依赖） |
-| CI | Azure Pipelines（`terminal-ci.yml`） |
-| 有测试 | 是（`UnitTests_*` 多套 + `ft_fuzzer` 模糊测试） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-```mermaid
-flowchart TB
-    subgraph 用户
-        WT[wt.exe Cascadia 主程序]
-        CH[conhost.exe 旧 Console 主机]
-    end
-    subgraph Cascadia UI 层
-        APP[TerminalApp App + Window]
-        CTRL[TermControl 控件]
-        TAB[Tab + Pane 多标签]
-    end
-    subgraph TerminalCore 核心
-        TC[Terminal 类]
-        SEL[TerminalSelection 选区]
-        API[TerminalApi VT API]
-    end
-    subgraph terminal 协议
-        SM[StateMachine 状态机]
-        OD[OutputStateMachineEngine]
-        AD[AdaptDispatch VT 适配]
-    end
-    subgraph renderer 渲染
-        AT[AtlasEngine 同步点]
-        BD3D[BackendD3D D3D11]
-        BD2D[BackendD2D D2D]
-        BAS[base IRenderEngine]
-    end
-    subgraph buffer 缓冲
-        TB[textBuffer]
-        ROW[textBufferRow]
-    end
-    subgraph host conhost
-        HOS[_stream.cpp 屏幕流]
-        ARG[ConsoleArguments 命令行]
-    end
-    WT --> APP
-    WT --> CTRL
-    APP --> TAB
-    CTRL --> TC
-    TC --> SEL
-    TC --> API
-    TC --> TB
-    API --> AD
-    AD --> SM
-    SM --> OD
-    TC --> AT
-    AT --> BD3D
-    AT --> BD2D
-    BD3D --> BAS
-    BD2D --> BAS
-    CH --> HOS
-    HOS --> ARG
-    CH --> TB
-    WT <-->|ConPTY| CH
-```
-
-**Cascadia + conhost 双宿主**：Windows Terminal 的关键架构决策是"保留 conhost.exe + 新增 Cascadia wt.exe"。**WHY 双宿主**：
-
-- 旧版 Windows 应用程序通过 Win32 Console API 与 `conhost.exe` 通信，**这套契约必须保留**——不能破坏兼容性
-- 新版 Cascadia 通过 ConPTY（Windows Pseudo Console API，Win10 1809+）与 conhost 通信，**新应用和旧应用都支持**
-- ConPTY 是 Windows 10 1809 引入的伪终端 API，让 Cascadia 可以"包装"任意 conhost 子进程——**这是架构的关键解耦点**
-
-**终端核心 `Microsoft::Terminal::Core::Terminal` 的多接口继承**：
-
-```cpp
-class Microsoft::Terminal::Core::Terminal final :
-    public Microsoft::Console::VirtualTerminal::ITerminalApi,
-    public Microsoft::Terminal::Core::ITerminalInput,
-    public Microsoft::Console::Render::IRenderData
-```
-
-**WHY 多接口继承**：
-
-- `ITerminalApi`——VT 适配器调用（"写一个字符"、"移动光标"、"设置颜色"）
-- `ITerminalInput`——输入层调用（"用户按了 Ctrl+C"）
-- `IRenderData`——渲染层读取（"当前屏幕"、"光标位置"）
-- 三层接口分离 → 核心 Terminal 类的职责清晰：**持有 buffer 状态、接受 VT/输入、暴露渲染数据**
-
-**Cascadia UI 与 Core 的 WinRT 桥接**：
-
-```cpp
-// TerminalCore 提供 ICoreSettings.idl 接口
-// Cascadia 通过 winrt::Microsoft::Terminal::Core::ICoreSettings 与 Core 通信
-```
-
-**WHY 单独的 `ICoreSettings.idl`**：TerminalCore 暴露的是 C++/WinRT 接口（不是直接 C++ 类），让 Cascadia（WinUI 3 / C#）能用同一套 ABI 调用 Core。**这是 WinRT 组件化的标准做法**——C++ 实现 + IDL 定义 + WinRT ABI，让 C#/Rust/JS 都能调用。
-
-**StateMachine 与 VT 解析**：VT（Virtual Terminal）序列是终端的"机器码"——`\x1b[31m` 表示红色、`\x1b[2J` 表示清屏。Windows Terminal 用经典的"状态机 + 引擎"模式：
-
-```cpp
-class StateMachine final {
-    std::unique_ptr<IStateMachineEngine> _engine;
-public:
-    void Parse(wchar_t wch);
-    void ParseString(const std::wstring_view& string);
-};
-```
-
-**WHY 状态机**：VT 序列是有状态的（CSI 序列起始 `\x1b[` → 数字参数 → 终止符），用状态机解析是教科书做法。**WHY Engine 抽象**：Output（处理程序输出）和 Input（处理用户输入）共用一套状态机框架，但 `IStateMachineEngine` 实现的 Action 不同。
-
-**AtlasEngine 渲染同步点**：
-
-```cpp
-// AtlasEngine.cpp 顶部注释：
-// This file should only contain methods that are only accessed by the caller of Present() (the "Renderer" class).
-// Basically this file poses the "synchronization" point between the concurrently running
-// general IRenderEngine API (like the Invalidate*() methods) and the Present() method
-```
-
-**WHY 同步点设计**：渲染引擎有两套调用——`IRenderEngine` API（Invalidate* 方法，标记脏区）和 `Present()`（实际 GPU 提交）。两者来自不同线程，必须有同步点交换数据。AtlasEngine 通过 `_p`（present 时数据）和 `_api`（API 调用时数据）两个数据快照实现。
-
-**ADR 关键设计决策**：
-
-1. **为什么保留 conhost.exe 而不是完全重写？**  
-   答：向后兼容——Windows 上百万应用依赖 Win32 Console API；ConPTY API 是"渐进式升级"的桥梁。
-
-2. **为什么用 Direct2D + DirectWrite + D3D11 三件套而不是单一 GDI/Direct3D？**  
-   答：Direct2D 提供矢量绘制 API；DirectWrite 处理复杂文本（双向、CJK、字形替换）；D3D11 提供自定义着色器管线（如自定义背景模糊 shader）——三者结合是"现代 Windows 文本渲染"的事实标准。
-
-3. **为什么用 C++/WinRT 而不是纯 C#？**  
-   答：核心 buffer 路径对性能极度敏感（每字符写入），C++/WinRT 零开销 ABI + 内存管理可控；UI 层 Cascadia 用 C#/XAML 提升开发效率。
-
-### 核心架构看点（3 条具体设计决策）
-
-1. **Cascadia + conhost 双宿主 + ConPTY 桥接**：保留向后兼容的同时支持现代 GPU 渲染——这是 Windows 终端架构的关键创新。
-2. **Terminal 多接口继承（ITerminalApi + ITerminalInput + IRenderData）**：用接口契约分离 VT 适配、输入、渲染三层关注点——让 Core 类可独立测试。
-3. **AtlasEngine 同步点设计**：用 `_p`（present 数据）和 `_api`（API 数据）双快照，规避多线程渲染的竞态——是高性能 UI 渲染的通用模式。
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-- **终端核心**：`src/cascadia/TerminalCore/Terminal.cpp`（66KB）+ `Terminal.hpp`（22KB）+ `TerminalSelection.cpp`（39KB）
-- **状态机**：`src/terminal/parser/stateMachine.cpp`（70KB）+ `OutputStateMachineEngine.cpp`（42KB）
-- **渲染**：`src/renderer/atlas/AtlasEngine.cpp`（52KB）+ `BackendD3D.cpp`（101KB）+ `BackendD2D.cpp`（42KB）
-- **设置模型**：`src/cascadia/TerminalSettingsModel/ActionMap.cpp`（62KB）+ `ActionAndArgs.cpp`（20KB）
-- **ConPTY**：`src/winconpty/` + `src/host/`
-- **til 库**：`src/til/`（hasher、ticket_lock、generational、unicode 等）
-
-### 5.2 单文件分析卡
-
-#### `src/cascadia/TerminalCore/Terminal.hpp`
-
-```cpp
-class Microsoft::Terminal::Core::Terminal final :
-    public Microsoft::Console::VirtualTerminal::ITerminalApi,
-    public Microsoft::Terminal::Core::ITerminalInput,
-    public Microsoft::Console::Render::IRenderData
-{
-    using RenderSettings = Microsoft::Console::Render::RenderSettings;
-
-public:
-    static constexpr bool IsInputKey(WORD vkey)
-    {
-        return vkey != VK_CONTROL &&
-               vkey != VK_LCONTROL &&
-               vkey != VK_RCONTROL &&
-               vkey != VK_MENU &&
-               vkey != VK_LMENU &&
-               vkey != VK_RMENU &&
-               vkey != VK_SHIFT &&
-               vkey != VK_LSHIFT &&
-               vkey != VK_RSHIFT &&
-               vkey != VK_LWIN &&
-               vkey != VK_RWIN &&
-               vkey != VK_SNAPSHOT;
-    }
-
-    void Create(til::size viewportSize,
-                til::CoordType scrollbackLines,
-                Microsoft::Console::Render::Renderer& renderer);
-    void CreateFromSettings(winrt::Microsoft::Terminal::Core::ICoreSettings settings,
-                            Microsoft::Console::Render::Renderer& renderer);
-    void UpdateSettings(winrt::Microsoft::Terminal::Core::ICoreSettings settings);
-```
-
-**WHY `final` 关键字**：`final` 表示这是"叶子类"，不允许被继承——编译器可以内联优化，避免虚表查找。**WHY `Microsoft::Terminal::Core` 三段命名空间**：`Microsoft`（公司）+ `Terminal`（产品）+ `Core`（子模块）——Windows 代码库的标准三段命名。
-
-**WHY `IsInputKey` 静态函数**：排除修饰键（Ctrl/Alt/Shift/Win/PrintScreen）作为"独立按键"。普通 `KeyDown` 事件里如果用户按 Ctrl+A，`IsInputKey(VK_A) = true`、`IsInputKey(VK_CONTROL) = false`——避免 Ctrl 自己单独触发事件。
-
-**WHY `til::size`/`til::CoordType`**：`til` 是 Windows Terminal 内部的"模板库"（Type-templated Inline Library），类似 Chromium 的 `base`。`size`/`CoordType` 替代 Windows SDK 的 `SIZE`/`LONG`——类型安全（没有符号混淆）、跨平台（`int` vs `long`）。
-
-**WHY `CreateFromSettings` 与 `UpdateSettings` 分开**：初始化用 `CreateFromSettings`（创建 buffer），运行中用 `UpdateSettings`（修改 buffer）——生命周期不同。
-
-**WHY `#ifdef UNIT_TESTING` 前向声明**：
-
-```cpp
-#ifdef UNIT_TESTING
-namespace TerminalCoreUnitTests
-{
-    class TerminalBufferTests;
-    class TerminalApiTest;
-    class ScrollTest;
-};
-#endif
-```
-
-`UNIT_TESTING` 宏在编译测试时定义。**WHY 这套机制**：让测试类（`TerminalBufferTests`）可以 `friend` 访问 `Terminal` 私有成员，但又不让测试代码进入生产二进制——是大型 C++ 项目的标准做法。
-
-#### `src/cascadia/TerminalSettingsModel/ActionMap.cpp`
-
-```cpp
-static InternalActionID Hash(const Model::ActionAndArgs& actionAndArgs)
-{
-    til::hasher hasher;
-    const auto action = actionAndArgs.Action();
-
-    if (const auto args = actionAndArgs.Args())
-    {
-        hasher = til::hasher{ gsl::narrow_cast<size_t>(args.Hash()) };
-    }
-    else
-    {
-        size_t hash = 0;
-        switch (action)
-        {
-#define ON_ALL_ACTIONS_WITH_ARGS(action)                               \
-    case ShortcutAction::action:                                       \
-    {                                                                  \
-        static const auto cachedHash = gsl::narrow_cast<size_t>(       \
-            winrt::make_self<implementation::action##Args>()->Hash()); \
-        hash = cachedHash;                                             \
-        break;                                                         \
-    }
-                ALL_SHORTCUT_ACTIONS_WITH_ARGS
-                INTERNAL_SHORTCUT_ACTIONS_WITH_ARGS
-#undef ON_ALL_ACTIONS_WITH_ARGS
-            default:
-                break;
-        }
-        hasher = til::hasher{ hash };
-    }
-
-    hasher.write(action);
-    return hasher.finalize();
-}
-```
-
-**WHY X-Macro 模式（`ON_ALL_ACTIONS_WITH_ARGS`）**：
-
-```cpp
-#define ON_ALL_ACTIONS_WITH_ARGS(action) \
-    case ShortcutAction::action: { ... }
-
-ALL_SHORTCUT_ACTIONS_WITH_ARGS  // 展开所有带 args 的 action
-INTERNAL_SHORTCUT_ACTIONS_WITH_ARGS
-#undef ON_ALL_ACTIONS_WITH_ARGS
-```
-
-`ALL_SHORTCUT_ACTIONS_WITH_ARGS` 在 `AllShortcutActions.h` 中定义，是一个 X-Macro 列表：
-
-```cpp
-#define ALL_SHORTCUT_ACTIONS_WITH_ARGS \
-    ON_ALL_ACTIONS_WITH_ARGS(AdjustFontSize) \
-    ON_ALL_ACTIONS_WITH_ARGS(NewTab) \
-    ON_ALL_ACTIONS_WITH_ARGS(SplitPane) \
-    ...
-```
-
-**WHY X-Macro**：让"Action 列表"成为单一数据源（single source of truth）。新增 Action 只需改 `AllShortcutActions.h` 一处，编译时所有用到 `ON_ALL_ACTIONS_WITH_ARGS` 的 switch/case 都会自动展开——**避免 case 漏写**（Linus 经典 bug）。
-
-**WHY `static const auto cachedHash`**：当 `Args` 为空但 `action` 是"应该带 args"的类型，用 `static` 缓存——避免每次按键查表都 `make_self<action##Args>()` 创建对象。
-
-**WHY `gsl::narrow_cast<size_t>`**：GSL（Guidelines Support Library）的 `narrow_cast` 在转换时**断言无溢出**——区别于 `static_cast` 的"静默截断"。`Hash()` 返回 `uint32_t`，转 `size_t`（64-bit）不会溢出，但用 `narrow_cast` 强制做编译时检查。
-
-**WHY `til::hasher` 而非 `std::hash`**：`til::hasher` 是 Terminal 自定义的 hasher（基于 wyhash 或 FNV 变种），**比 `std::hash` 快 5-10 倍**——ActionMap 哈希表是热路径。
-
-#### `src/terminal/parser/stateMachine.hpp`
-
-```cpp
-namespace Microsoft::Console::VirtualTerminal
-{
-    // The DEC STD 070 reference recommends supporting up to at least 16384
-    // for parameter values. 65535 is what XTerm and VTE support.
-    // GH#12977: We must use 65535 to properly parse win32-input-mode
-    // sequences, which transmit the UTF-16 character value as a parameter.
-    constexpr VTInt MAX_PARAMETER_VALUE = 65535;
-
-    constexpr size_t MAX_PARAMETER_COUNT = 32;
-    constexpr size_t MAX_SUBPARAMETER_COUNT = 6;
-    static_assert(MAX_PARAMETER_COUNT * MAX_SUBPARAMETER_COUNT <= 256);
-
-    enum class InjectionType : size_t
-    {
-        RIS, // All of the below
-        DECSET_FOCUS, // CSI ? 1004 h
-        W32IM, // CSI ? 9001 h
-        Count,
-    };
-
-    class StateMachine final
-    {
-    public:
-        template<typename T>
-        StateMachine(std::unique_ptr<T> engine) noexcept :
-            StateMachine(std::move(engine), std::is_same_v<T, class InputStateMachineEngine>)
-        { }
-        StateMachine(std::unique_ptr<IStateMachineEngine> engine, const bool isEngineForInput) noexcept;
-        ...
-    };
-}
-```
-
-**WHY `MAX_PARAMETER_VALUE = 65535`**：DEC 标准建议 16384，XTerm/VTE 用 65535——Terminal 跟 XTerm 保持一致。**WHY GH#12977 注释指向 issue**：Win32 Input Mode（ConPTY 模式）的 VT 序列把 UTF-16 字符值作为参数传输——`\x1b[?9001h` 后跟 0x4E2D（中）字作为参数。如果参数只支持 16384，CJK 字符会被截断。**WHY 注释带 issue 号**：让维护者知道"为什么是 65535 而不是 16384"——决策溯源。
-
-**WHY `MAX_SUBPARAMETER_COUNT * MAX_PARAMETER_COUNT <= 256`**：
-
-```cpp
-static_assert(MAX_PARAMETER_COUNT * MAX_SUBPARAMETER_COUNT <= 256);
-```
-
-VT 序列支持子参数（subparameter），如 `\x1b[38:2:255:128:0m`（24-bit RGB 前景色）。Terminal 用 **1 字节存储子参数索引**——`32 × 6 = 192 ≤ 256`，约束在 1 字节内。**WHY 这个约束**：内存紧凑——每个 VT 序列最多 32 × 6 = 192 个子参数，每个用 8-bit 索引，共 192 字节存储。
-
-**WHY `InjectionType` 枚举**：ConPTY 模式下，`conhost.exe` 收到 RIS（Hard Reset）必须重新启用它依赖的 VT 模式（如 Win32 Input Mode）。但 RIS 会清空所有模式——`StateMachine` 提前记录"这些序列在 RIS 之后要重新注入"。**WHY 单独的枚举**：`RIS` 包含"全部"注入（Focus 报告 + W32IM）；但单独触发时也支持单独注入。
-
-**WHY `template<typename T>` 构造函数 + `is_same_v<T, InputStateMachineEngine>`**：模板自动推导 Engine 类型，编译期决定 `isEngineForInput` 参数。**WHY 这种技巧**：
-
-```cpp
-StateMachine(std::unique_ptr<OutputStateMachineEngine> engine)  // false
-StateMachine(std::unique_ptr<InputStateMachineEngine> engine)   // true
-```
-
-重载决议可以解决，但模板 + `is_same_v` 单一入口更简洁——**减少重复构造函数**。
-
-#### `src/renderer/atlas/AtlasEngine.cpp`
-
-```cpp
-// #### NOTE ####
-// This file should only contain methods that are only accessed by the caller of Present() (the "Renderer" class).
-// Basically this file poses the "synchronization" point between the concurrently running
-// general IRenderEngine API (like the Invalidate*() methods) and the Present() method
-// and thus may access both _r and _api.
-
-AtlasEngine::AtlasEngine()
-{
-    THROW_IF_FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(_p.d2dFactory), ...));
-    THROW_IF_FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, ...));
-    _p.dwriteFactory4 = _p.dwriteFactory.try_query<IDWriteFactory4>();
-    ...
-}
-
-HRESULT AtlasEngine::StartPaint() noexcept
-{
-    if (const auto hwnd = _api.s->target->hwnd)
-    {
-        ...
-    }
-    if (_p.s != _api.s)
-    {
-        _handleSettingsUpdate();
-    }
-}
-```
-
-**WHY `D2D1_FACTORY_TYPE_SINGLE_THREADED`**：D2D Factory 可以是单线程或多线程，单线程版本在单线程调用时**性能更好**（无需锁）。AtlasEngine 假设调用者（Renderer）单线程持有自己——同步点设计就是为了这个假设。
-
-**WHY `_p` / `_api` 双字段**：
-
-```cpp
-class AtlasEngine {
-    AtlasEnginePresentation _p;     // Present 线程使用
-    AtlasEngineAPI _api;            // IRenderEngine API 线程使用
-};
-```
-
-`_api` 是 Invalidate* 方法写入的目标；`_p` 是 Present 读取的快照。**双缓冲**避免读写竞争——这是 D2D 渲染的标准模式（参考 Chromium `viz` 也有 `_p` / `_api` 分层）。
-
-**WHY `try_query<IDWriteFactory4>()`**：DirectWrite 有多代接口（`IDWriteFactory` / `IDWriteFactory1` / ... / `IDWriteFactory7`）。`try_query` 在支持时获取新接口，否则返回 `null`——**优雅降级**，新接口特性（如可变字体）在老 Windows 上自动禁用。
-
-**WHY `#pragma warning(disable : 4100)` 等**：AtlasEngine 内部大量使用 lambda 和 reinterpret_cast 做 SIMD 优化，触发 MSVC 的"未引用参数"、"指针运算"等警告。`#pragma warning(disable)` 在文件级禁用——**性能代码不接受警告的额外开销**。
-
-**WHY `IRenderEngine` 与 AtlasEngine 分离**：`IRenderEngine` 是抽象接口（`base/IRenderEngine.hpp`），可被 GDI 后端（`renderer/gdi/`）实现——`wt.exe` 默认用 Atlas，老 conhost 默认用 GDI。**WHY 多后端**：老 Windows 10 没有 D3D11 Feature Level 11，需要 GDI 兜底。
-
-### 5.3 设计模式
-
-| 模式 | 体现位置 | WHY |
-|------|---------|-----|
-| 桥接 | Cascadia ↔ ConPTY ↔ conhost | 旧 Win32 Console 兼容 |
-| 多接口继承 | `Terminal` 三个接口契约 | 职责分离 |
-| 状态机 + 引擎 | `StateMachine` + `IStateMachineEngine` | VT 协议有状态、可扩展 |
-| 策略 | `IRenderEngine` + Atlas/GDI 后端 | 渲染后端可插拔 |
-| 同步点 | `AtlasEngine._p` / `_api` | 渲染线程与 API 线程解耦 |
-| 模板特化 | `StateMachine<T>` + `is_same_v` | 编译期决定 Engine 类型 |
-| X-Macro | `ON_ALL_ACTIONS_WITH_ARGS` | 单一 Action 列表源 |
-| COM/WinRT | `ICoreSettings.idl` 跨语言 ABI | C++/C# 互操作 |
-| 享元 | `textBuffer` 文本缓冲池 | 大量文本高效存储 |
-| 模板方法 | `Renderer` 框架 + 各种 backend | 渲染流程统一 |
-
-### 5.4 反模式
-
-- **`Terminal.cpp` 66KB 单类**——所有 VT 行为都塞在一起；应按"颜色/光标/滚动/选区"拆分子类
-- **`StateMachine.cpp` 70KB**——VT 状态机实现冗长，应按 VT 模式分类（CSI/OSC/DCS）
-- **AtlasEngine + BackendD3D 双重数据**（`_p`/`_api`）——同步复杂，应封装为单一 `RenderFrame` 对象
-- **`ActionMap.cpp` 62KB**——所有 Action 实现塞一起；应按 Action 类别拆文件
-
-### 5.5 独特看点
-
-- **Cascadia + conhost 双宿主 + ConPTY 桥接**——Windows 终端的架构创新
-- **`GH#12977` 注释引用 issue 号**——VT 解析器为什么支持 65535 参数的决策溯源
-- **X-Macro 单一列表源**——`AllShortcutActions.h` 是 Action 列表的 SSOT
-- **`til` 内部模板库**——`hasher`/`ticket_lock`/`generational` 是 Terminal 团队自研的轻量级基础设施
-- **HLSL 着色器**（`custom_shader_ps.hlsl`/`custom_shader_vs.hlsl`）——支持自定义背景模糊、亚像素抗锯齿
-- **模糊测试**（`ft_fuzzer/`）——VT 状态机有专门的 fuzzer，验证恶意输入不会崩溃
-
-## 6. 运行机制（Bring It Up）
-
-**先决条件**（Windows 10 2004+ + Visual Studio 2022）：
-
-- Windows 10 SDK 10.0.19041.0 或更新
-- C++ 桌面开发组件 + .NET 桌面开发 + 通用 Windows 平台开发
-- Git + PowerShell
-
-**本地构建**：
-
-```powershell
-cd G:\实战案例\GitHub顶尖项目\windows-terminal
-.\build\scripts\Build-VisualStudio.ps1 -Configuration Debug -Platform x64
-```
-
-**Smoke test**：
-
-```powershell
-# 启动开发版终端
-.\bin\x64\Debug\CascadiaPackage\wt.exe
-
-# 打开 PowerShell 标签
-wt.exe -p "PowerShell"
-
-# 打开多个标签
-wt.exe new-tab -p "PowerShell" ; new-tab -p "Ubuntu"
-```
-
-**配置文件**（`%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json`）：
+# windows-terminal - 微软终端模拟器的 Cascadia+conhost 双宿主 + ConPTY 桥接 + Atlas DirectX 渲染 + VT 状态机典范
 
+**GitHub**: microsoft/terminal
+**Star**: ~97k
+**语言**: C++ + C# + HLSL
+**主题**: 终端模拟、DirectX 渲染、VT 解析、ConPTY 桥接、XAML UI
+**适用场景**: Windows 终端、SSH 客户端、远程 shell、IDE 终端集成
+
+## 第一段：基础范式
+
+### 模式 1：Cascadia + conhost 双宿主架构
+
+**问题场景**：Windows 传统终端（conhost）功能简陋（不支持 Tabs/Unicode/Emoji），需要现代化 UI；同时要兼容所有老旧 CLI 工具（cmd/PowerShell）。
+
+**解决方案**：`Windows Terminal` 是新 UI 前端（XAML Island + DirectX），而 `conhost.exe`（Open Console Host）保留作为后端宿主，通过 ConPTY 桥接。新终端不重新实现 console API，直接复用 conhost。
+
+**关键参数**：
+- Cascadia UI（XAML Island）
+- conhost 后端
+- ConPTY 桥接
+- 兼容老 CLI
+- 多 tab/分屏
+
+**最佳实践**：新终端基于 ConPTY；不要重写 console API（兼容成本高）；用 XAML Island 嵌入 Win32 应用；用 ConPTY 桥接所有 console 程序；用 DirectX 加速渲染。
+
+### 模式 2：ConPTY 伪控制台桥接
+
+**问题场景**：传统 CLI（vim/emacs/git）通过 console API 写入 PTY（伪终端），但 GUI 应用（VS Code 集成终端）没有 PTY——需要桥接。
+
+**解决方案**：`ConPTY` 是 Windows 10 1809+ 的 API：
+- `CreatePseudoConsole()` 创建伪 conhost 进程
+- `CreatePipe()` 双向管道
+- GUI 进程读 pipe → 显示到 UI
+- UI 写 pipe → 转发给 CLI 进程
+
+**关键参数**：
+- `CreatePseudoConsole()`
+- `HPCON` 句柄
+- 双向管道
+- 进程属性
+- resize 事件
+
+**最佳实践**：用 ConPTY 启动 CLI；处理 resize 同步；处理 `Ctrl+C`/`Ctrl+Break`；用 `ResMode` 配调整；用 `TERM` 环境变量；用 `winpty` 兼容老版本。
+
+### 模式 3：VT（Virtual Terminal）序列解析
+
+**问题场景**：传统终端只支持简单文本（无颜色/光标控制），现代 CLI 工具（ls/htop/lazygit）发送 ANSI/VT 序列控制光标/颜色/屏幕——需要解析器。
+
+**解决方案**：VT 解析器（`Microsoft::Console::VirtualTerminal`）状态机解析 ANSI 转义序列（`\x1b[31m` 红色、`\x1b[2J` 清屏）。`AdaptDispatch` 处理 SGR/CUP/CUF 等控制序列。`OutputStateMachineEngine` 状态机。
+
+**关键参数**：
+- `\x1b[` CSI
+- `\x1b]` OSC
+- SGR 颜色
+- CUP 光标定位
+- DSR 设备状态
+
+**最佳实践**：用 VT 解析器（不写死）；支持 CSI/OSC/DCS；处理 SGR 颜色（256/true color）；处理 DEC 私有模式（`\x1b[?1049h` 备屏）；测试用 `vttest`；用 `xterm.js` 浏览器实现对照。
+
+### 模式 4：DirectX 11/12 渲染管线
+
+**问题场景**：GDI 渲染大文本慢（10K+ 行），终端需要流畅滚动（60fps）。
+
+**解决方案**：`AtlasEngine`（DirectX 11/12）渲染：
+- 字体用 `DWrite` 渲染为 `IDWriteBitmap`
+- glyph 缓存为纹理图集
+- 着色器 HLSL 批渲染
+- 滚动用 GPU 偏移（不重画）
+- dirty region 局部更新
+
+**关键参数**：
+- `ID3D11Device`/`ID3D12Device`
+- `DWrite` 字体
+- HLSL shader
+- 纹理图集
+- dirty region
+
+**最佳实践**：用 DirectX（不用 GDI）；用 `DWrite` 字体；缓存 glyph；用 `IDXGISwapChain` 翻页；用 `Present()` 同步；用 `AtlasEngine` 替代 GDI 引擎；按需切 GPU 资源。
+
+### 模式 5：文本布局与字形
+
+**问题场景**：终端显示复杂文本（中文/日文/阿拉伯文/Emoji/组合字符）——简单等宽字体不够。
+
+**解决方案**：`DWrite` 分析脚本（ScriptAnalysis），按字形 cluster 拆分：
+- 双向文本（BiDi）支持
+- 字形 fallback（CJK → Emoji）
+- 组合字符合并（`a + ◌̂ = â`）
+- 字体 fallback 表
+
+**关键参数**：
+- `DWrite` ScriptAnalysis
+- Cluster 拆分
+- BiDi 算法
+- Font fallback
+- `ITextLayout`
+
+**最佳实践**：用 `DWrite` 文本布局；处理 BiDi；处理 cluster 拆分；用 `IDWriteFontFallback`；用 `IDWriteFontCollection`；测试 Unicode 标准用例（UTS）；按语言测。
+
+## 第二段：扩展范式
+
+### 模式 6：XAML Island 嵌入 Win32
+
+**问题场景**：Win32 终端无现代 UI 控件（Tab/Button/Grid）——需要嵌入 XAML（UWP）UI。
+
+**解决方案**：`XAML Island` 是 Win32 嵌入 UWP 控件的技术：
+- `WindowsXamlManager` 初始化 XAML
+- `DesktopWindowXamlSource` 嵌入控件
+- `XamlApplication` 包装 App
+- `Microsoft.UI.Xaml.Controls` 现代控件
+
+**关键参数**：
+- `WindowsXamlManager`
+- `DesktopWindowXamlSource`
+- `XamlApplication`
+- `Windows.UI.Xaml` 命名空间
+- DispatcherQueue
+
+**最佳实践**：用 `XamlApplication` 包装；用 `WindowsXamlManager` 初始化；用 `XamlReader` 动态加载 XAML；用 `DispatcherQueue` 跨线程；用 `Microsoft.UI.Xaml` v3 控件；用 `WinUI 3` 现代框架。
+
+### 模式 7：JSON 配置系统（profiles/settings）
+
+**问题场景**：终端配置（主题/快捷键/profiles/启动命令）需要持久化——注册表/INI 不直观。
+
+**解决方案**：`settings.json` 是用户级配置，结构：
 ```json
 {
-    "defaultProfile": "{574e775e-4f2a-5b96-ac1e-a2962a402336}",
-    "profiles": {
-        "list": [
-            {
-                "name": "PowerShell",
-                "commandline": "powershell.exe",
-                "fontFace": "Cascadia Code",
-                "fontSize": 12
-            }
-        ]
-    },
-    "schemes": [
-        {
-            "name": "Solarized Dark",
-            "background": "#002b36",
-            "foreground": "#839496"
-        }
-    ],
-    "keybindings": [
-        { "keys": "ctrl+shift+t", "command": "newTab" }
-    ]
+  "profiles": { "list": [{ "name": "PowerShell", "commandline": "pwsh.exe" }] },
+  "schemes": [{ "name": "Campbell", "background": "#0C0C0C" }],
+  "keybindings": [{ "command": "closeTab", "keys": "ctrl+w" }]
 }
 ```
+运行时热加载，配置变化立即生效。
 
-## 7. 演进历史（Time Travel）
+**关键参数**：
+- `profiles.list`
+- `schemes[]`
+- `keybindings[]`
+- `defaults`
+- 局部用户级 `state.json`
 
-```mermaid
-gantt
-    title Windows Terminal 关键里程碑
-    dateFormat YYYY-MM
-    section 起源
-    概念原型            :milestone, 2016-01, 12m
-    公开预览            :milestone, 2019-05, 12m
-    section 1.x
-    1.0 标签页 + 主题    :milestone, 2020-05, 6m
-    1.6 Quake 模式      :milestone, 2021-10, 6m
-    1.10 Atlas 渲染     :milestone, 2022-08, 6m
-    section 现代化
-    1.16 设置 UI         :milestone, 2023-05, 6m
-    1.20 Markdown 渲染   :milestone, 2024-03, 6m
-    1.22+ AI 集成         :milestone, 2025-06, 12m
+**最佳实践**：用 `settings.json` 配主题；用 `defaultProfile` 设默认；用 `schemes` 调色；用 `keybindings` 改快捷键；用 `globals` 配全局；用 `extensions` 装扩展；用 `state.json` 存窗口位置。
+
+### 模式 8：扩展系统（WT Extensions）
+
+**问题场景**：终端需要扩展（Git status/Path 显示/自定义命令）——核心不能装所有。
+
+**解决方案**：`Windows Terminal Extensions` 机制：
+- 第三方包名 `Microsoft.WindowsTerminal.*`
+- 装到 `%LOCALAPPDATA%\Microsoft\Windows Terminal\Extensions\`
+- `wt.exe` 启动时加载
+- 暴露 `IAction`/`ISetting` 扩展点
+
+**关键参数**：
+- `Microsoft.Terminal.Extensions`
+- `IExtension`
+- `%LOCALAPPDATA%` 安装
+- 启动时加载
+- 版本对齐
+
+**最佳实践**：用 extensions 机制（不要 fork）；按版本对齐；用 `IAction` 暴露命令；用 `ISetting` 暴露配置；用 GitHub Action 自动发版；用 `ExtensionsSample` 模板；参考 `oh-my-posh`。
+
+### 模式 9：AzDev / PowerShell 7 集成
+
+**问题场景**：终端需要 Azure DevOps/PowerShell 7 集成（自动登录、tab completion、PSReadLine）。
+
+**解决方案**：默认 profile 用 `pwsh.exe` 启动 PowerShell 7。AzDev 用 `Connect-AzAccount` 走 MSAL。PSReadLine 提供智能补全/语法高亮。Terminal 检测 shell 提示符自动配色。
+
+**关键参数**：
+- `pwsh.exe` 启动
+- `PSReadLine`
+- Az module
+- `Connect-AzAccount`
+- Profile 自动加载
+
+**最佳实践**：用 `pwsh.exe` 不用 `powershell.exe`；装 `PSReadLine` 智能补全；用 `oh-my-posh` 美化 prompt；用 `Terminal-Icons` 图标；用 `PSFzf` 模糊搜索；用 `z`/`zoxide` 跳转目录；用 `PSReadLineHistory` 持久化。
+
+### 模式 10：键绑定与命令系统
+
+**问题场景**：终端要支持自定义快捷键（Ctrl+T 新 tab/Ctrl+Shift+P 命令面板）——核心不能硬编码所有。
+
+**解决方案**：`keybindings: [{ "command": "newTab", "keys": "ctrl+t" }]` JSON 配快捷键。`commands` 是动作名（`newTab`/`closeTab`/`splitPane`）。`chord`（`ctrl+k, ctrl+s`）组合键。`action`/`command` 二选一。
+
+**关键参数**：
+- `command` 动作
+- `keys` 快捷键
+- `chord` 组合
+- `action` 调动作
+- `bindings` 多键
+
+**最佳实践**：用 `keybindings` 改快捷键；用 `chord` 组合键；用 `unboundCommands` 查所有命令；用 `multipleActions` 一次执行多动作；用 `sendInput` 发送文本；用 `wt.exe` 命令行参数；用 PowerToy 风格。
+
+## 第三段：进阶范式
+
+### 模式 11：DirectWrite 字体与 Ligature
+
+**问题场景**：程序员字体（Fira Code/Cascadia Code）有 ligature（`=>`/`!=`/`->`）——简单等宽渲染错位。
+
+**解决方案**：`DWrite` 字体 + `IDWriteTypography` 启用 OpenType 特性（`ss02`/`liga`/`calt`）。`AtlasEngine` 解析 `Cascadia Mono`/`Cascadia Code` 字体时启用 `calt`/`liga`。`fontFace`/`fontCollection` 多字体。
+
+**关键参数**：
+- `IDWriteTypography`
+- `OpenTypeFeatureTag`
+- `liga`/`calt`/`ss01`
+- `IDWriteFontFace`
+- 字体回退
+
+**最佳实践**：用 `Cascadia Code` 配 ligature；用 `ss01`/`ss02` 风格；用 `IDWriteFontFallback`；用 `IDWriteTextFormat`；用 `DWriteCreateFactory`；用 `DirectWriteCore`；测试 ligature（`!==` `==>`）。
+
+### 模式 12：Scrollback 与 RingBuffer
+
+**问题场景**：终端历史（输出）需要保留（向上滚动查看）——纯字符串会 OOM。
+
+**解决方案**：`RingBuffer` 是循环 buffer：
+- 固定大小（如 10000 行）
+- 头尾指针循环写入
+- 覆盖最老内容
+- 索引到 Row → TextAttribute
+
+`TextBuffer` 持 `Row[]`，每行是 `CHAR_INFO[]`（字符+属性）。
+
+**关键参数**：
+- `RingBuffer`
+- `TextBuffer`
+- `CHAR_INFO`
+- `Row`
+- `rowsToScroll`
+
+**最佳实践**：用 `RingBuffer` 存历史；用 `TextBuffer` 索引；用 `CHAR_INFO` 存属性；用 `rowsToScroll` 配行数；用 `textBuffer.GetRow(row)` 取行；用 `mutableViewportTop`/`mutableViewportBottom` 视口。
+
+### 模式 13：键盘输入与 IME
+
+**问题场景**：终端要处理：
+- 普通键（a-z/数字）
+- 功能键（F1-F12/Ctrl+组合）
+- 死键（`+e = é）
+- IME（日文/中文输入法）
+- 鼠标事件（`\x1b[M...`）
+
+**解决方案**：`KeyEvent` → `InputStateMachineEngine` → VT 序列：
+- 普通键 → Unicode 字符
+- 组合键 → `\x1b[1;5A`（Ctrl+Up）
+- IME → DBCS 字符
+- 鼠标 → `\x1b[Mxxx`
+
+**关键参数**：
+- `KeyEvent`
+- `InputStateMachineEngine`
+- `Console::ReadInput`
+- IME 处理
+- 鼠标 VT 序列
+
+**最佳实践**：用 `ReadInput` 取事件；用 `InputStateMachineEngine` 编码；用 `ToKeyEvent` 转 Win32；用 `ToMouseEvent` 转鼠标；用 `Unicode` 字符；处理 IME composition；用 `printf '\x1b[?1049h'` 测备屏。
+
+### 模式 14：性能与 Profiling
+
+**问题场景**：终端启动慢/输入延迟/滚动卡顿——性能调优。
+
+**解决方案**：
+- `PIX` GPU 抓帧
+- `WPA`（Windows Performance Analyzer）ETW 追踪
+- `ETW` 事件埋点
+- 内存分析 `UMDH`/`Visual Studio Diagnostic`
+- CPU 分析 `Visual Studio Profiler`
+
+**关键参数**：
+- `PIX` GPU
+- `WPA`/`xperf`
+- `UMDH`
+- `ETW`
+- `VS Diagnostic`
+
+**最佳实践**：用 `PIX` 抓 GPU 帧；用 `WPA` 配 `xperf`；用 `UMDH` 查内存泄漏；用 `VS Diagnostic` 异步；用 `ETW` 事件埋点；用 `PrefetchVirtualMemory`；用 `bgfx` 替代 DirectX；监控启动时间。
+
+### 模式 15：跨平台与开源策略
+
+**问题场景**：Windows Terminal 是 Windows 专属——但有 macOS/Linux 替代品（iTerm2/Alacritty）。
+
+**解决方案**：
+- **Windows Terminal**：Windows 专属（DirectX 必需）
+- **iTerm2**：macOS
+- **Alacritty**：跨平台（OpenGL/wgpu）
+- **Kitty**：跨平台（OpenGL）
+- **WezTerm**：跨平台 Rust
+- **Hyper**：Electron
+
+**关键参数**：
+- 平台 API 依赖
+- DirectX 仅 Windows
+- OpenGL 跨平台
+- wgpu 跨平台
+- 性能 vs 兼容性
+
+**最佳实践**：Windows 用 Windows Terminal（最佳集成）；macOS 用 iTerm2 或 WezTerm；Linux 用 Alacritty/WezTerm；跨平台用 WezTerm；性能选 Alacritty（GPU）；配置同步用 dotfiles 仓库。
+
+## 第四段：实战范式
+
+### 模式 16：主题与配色方案
+
+**问题场景**：终端需要美观配色（深色/浅色/自定义）——硬编码颜色不便。
+
+**解决方案**：`schemes` JSON：
+```json
+{ "name": "One Half Dark", "background": "#282C34", "foreground": "#DCDFE4",
+  "cursorColor": "#DCDFE4", "selectionBackground": "#3E4452",
+  "black": "#282C34", "red": "#E06C75", "green": "#98C379", ... }
 ```
 
-## 8. 质量保障（How It Doesn't Break）
+**关键参数**：
+- `background`/`foreground`
+- `cursorColor`/`selectionBackground`
+- 16 ANSI colors
+- bright/regular
+- `name`
 
-| 防线 | 实现 |
-|------|------|
-| 单元测试 | `UnitTests_*`（Control/Core/SettingsModel/App） |
-| 模糊测试 | `ft_fuzzer/`（VT 状态机 + Input 解析） |
-| 集成测试 | `LocalTests_TerminalApp`（XAML UI 测试） |
-| UI 自动化 | `WindowsTerminal_UIATests`（Playwright-like 自动化） |
-| CI | Azure Pipelines（多 OS 版本矩阵） |
-| Lint | clang-format + Microsoft风格指南 |
-| 安全 | ConPTY 隔离 + 模糊测试 |
+**最佳实践**：用现成主题（`iTerm2-Color-Schemes`）；用 `onehalf-dark`/`gruvbox`/`solarized`；用 `pywal` 自动从壁纸生成；用 `terminal.sexy` 选；用 `import-theme` 配 oh-my-posh。
 
-## 9. 生态依赖（Map of the World）
+### 模式 17：SSH 与 WSL 集成
 
-```mermaid
-flowchart LR
-    T[Windows Terminal] --> WU[WinUI 3 桌面]
-    T --> DX[DirectX 11 + Direct2D + DirectWrite]
-    T --> WC[Wil Windows Implementation Library]
-    T --> GS[GSL Guidelines Support Library]
-    T --> TL[til 内部模板库]
-    T --> LIBC[libclang C 解析]
-    T --> XAM[XAML 编译器]
-    T --> DOT[.NET 6 桌面运行时]
-    T --> CON[ConPTY 伪终端 API]
-```
+**问题场景**：终端需要 SSH 客户端 + WSL 集成——避免额外工具。
 
-## 10. 生产实践（Battle-Tested）
+**解决方案**：
+- **SSH**：`wt.exe` 启动 ssh 客户端，profile 配 `commandline: "ssh user@host"`
+- **WSL**：profile 配 `commandline: "wsl.exe -d Ubuntu"` 或 `commandline: "ubuntu.exe"`
+- **PowerShell Remoting**：`Enter-PSSession`
+- **Azure Cloud Shell**：`https://shell.azure.com`
 
-| 能力 | 实现 |
-|------|------|
-| 配置热更新 | `Ctrl+Shift+,` 打开 settings.json |
-| 优雅停服 | ConPTY 优雅关闭子进程 |
-| 限流 | AtlasEngine 帧率自适应 |
-| 链路追踪 | ETW（Event Tracing for Windows） |
-| 健康检查 | `wt.exe --version` |
-| 结构化日志 | ETW + `TraceLoggingProvider.h` |
+**关键参数**：
+- SSH profile
+- WSL distro
+- `-d` 指定 distro
+- `commandline`
+- `icon`
 
-## 11. 社区文化（People & Process）
+**最佳实践**：用 `wt.exe` profile 配 SSH；用 WSL 2 配 Linux 工具链；用 `Enter-PSSession` 远程；用 `kubectl exec` 进 K8s 容器；用 `mosh` 替代 SSH（弱网）；用 `tmux`/`screen` 保活。
 
-- **治理模式**：Microsoft Windows Terminal 团队主导（Dustin Howett 初始作者 + Kayla Cinnamon + Michael Niksa）+ 200+ 贡献者
-- **RFC 流程**：[microsoft/terminal/discussions](https://github.com/microsoft/terminal/discussions)
-- **沟通渠道**：GitHub Issues、Discord、Twitter
-- **议题活跃**：日均 30+ issue、20+ PR
-- **文化**：高度用户反馈驱动（每 minor 都有用户呼声的功能）；公开 Roadmap；严格向后兼容（conhost 必须保留）
+### 模式 18：Action 与命令面板
 
-## 12. 教训总结（What To Steal / What To Avoid）
+**问题场景**：终端要支持命令面板（`Ctrl+Shift+P`）+ 命令行参数。
 
-### 12.1 必偷 3 件
+**解决方案**：
+- **Action**：`{ "command": "newTab", "args": ["profile": "PowerShell"] }`
+- **命令行**：`wt.exe new-tab --profile "PowerShell"; split-pane -V pwsh.exe`
+- **Command Palette**：`Ctrl+Shift+P` 列出所有动作
+- **Tab 标题**：用 `tabTitle` profile 字段
 
-1. **Cascadia + ConPTY 双宿主**——任何"老协议兼容 + 新 UI 框架"项目都适用
-2. **多接口继承契约**（`ITerminalApi` + `ITerminalInput` + `IRenderData`）——大型 C++ 类的"职责分离"标准做法
-3. **X-Macro 单一列表源**——枚举 + switch 的一致性问题，从源头消除
+**关键参数**：
+- `action`/`command`
+- `args`
+- `wt.exe` 参数
+- 多个 pane
+- `--profile`
 
-### 12.2 必避 3 坑
+**最佳实践**：用 `wt.exe` 启动复杂布局；用 `split-pane -V/-H` 分屏；用 `focus-tab` 切 tab；用 `move-tab` 排序；用 `export-buffer` 存历史；用 `sendInput` 自动化；用 PowerShell 函数封装。
 
-1. **不要单一巨类**（`Terminal.cpp` 66KB）——按职责拆分
-2. **不要硬编码 VT 序列参数上限**——必须用注释 + issue 号溯源决策
-3. **不要 `final` 关键字滥用**——只在确认"无子类"时使用，否则接口契约僵化
+### 模式 19：WPF/Windows Forms 嵌入
 
-### 12.3 7 天复刻路线图
+**问题场景**：老 .NET 应用想用现代终端控件——但不想重写 UI。
 
-```mermaid
-gantt
-    title 7 天复刻 mini-terminal
-    dateFormat YYYY-MM-DD
-    section 阶段
-    Day1 克隆 + 阅读 TerminalCore :a1, 2026-06-01, 1d
-    Day2 实现 StateMachine + VT 解析 :a2, after a1, 1d
-    Day3 实现 textBuffer :a3, after a2, 1d
-    Day4 实现 Terminal 多接口 :a4, after a3, 1d
-    Day5 实现 IRenderEngine :a5, after a4, 1d
-    Day6 实现 GDI 渲染后端 :a6, after a5, 1d
-    Day7 ConPTY 集成 :a7, after a6, 1d
-```
+**解决方案**：
+- **ConsoleControl**：开源 WinForms/WPF 嵌入终端
+- **Terminal.Gui**：TUI 框架（C#）
+- **Spectre.Console**：富文本控制台
+- **自实现 ConPTY + RichTextBox**：自绘
+- **Avalonia Terminal**：跨平台 .NET 终端
 
-### 12.4 打分卡
+**关键参数**：
+- ConPTY API
+- RichTextBox/WPF
+- `Terminal.Gui`
+- `Spectre.Console`
+- 异步渲染
 
-| 维度 | 得分（10 分制） |
-|------|---------------|
-| 架构清晰度 | 9（双宿主 + 接口契约优秀） |
-| 代码可读性 | 7（巨类难读） |
-| 性能 | 10（GPU 加速） |
-| 测试覆盖 | 9（含 fuzzer） |
-| 文档 | 9 |
-| 复刻难度 | 2（WinUI 3 + DirectX + ConPTY 多门槛） |
+**最佳实践**：用 `ConsoleControl`（简单）；用 `Terminal.Gui`（TUI 应用）；用 `Spectre.Console`（CLI 美化）；用 `Avalonia.Terminal`（跨平台）；用 `Spectre.Console.Cli`（CLI 框架）；用 ConPTY API 集成。
 
-## 13. 学习萃取（Cheat Sheet）
+### 模式 20：生态与开发者工具
 
-**一句话价值**：Windows Terminal 用 Cascadia + conhost 双宿主 + ConPTY 桥接 + Atlas DirectX 渲染 + VT 状态机，构建了一个"向后兼容 + 现代体验"的工业级终端模拟器。
+**问题场景**：终端 + shell 工具链怎么选。
 
-**3 核心洞察**：
+**解决方案**：
+- **Shell**：PowerShell 7 / Zsh / Fish / Nushell
+- **Prompt**：oh-my-posh / starship / p10k
+- **补全**：PSReadLine / zsh-autosuggestions / Fig
+- **多路复用**：tmux / screen / zellij
+- **文件**：lf / ranger / yazi
+- **Git**：lazygit / tig
 
-1. **Cascadia + ConPTY 双宿主** 是 Windows 终端架构的关键创新
-2. **`Terminal` 多接口继承** 用契约分离 VT/输入/渲染三层关注点
-3. **`AtlasEngine._p` / `_api` 同步点** 是多线程渲染的通用模式
+**关键参数**：
+- Shell 选型
+- Prompt 美化
+- 补全引擎
+- 多路复用
+- 工具链
 
-**5 段必读代码**：
-
-1. `src/cascadia/TerminalCore/Terminal.hpp`——多接口继承契约
-2. `src/cascadia/TerminalSettingsModel/ActionMap.cpp`——X-Macro 单一列表源
-3. `src/terminal/parser/stateMachine.hpp`——VT 状态机 + Engine 抽象
-4. `src/renderer/atlas/AtlasEngine.cpp`——D2D/DirectWrite 初始化 + 同步点
-5. `src/host/_stream.cpp`——conhost 屏幕流处理（兼容层）
-
-**1 反模式**：`Terminal.cpp` 66KB 单类——所有 VT 行为都塞一起，应按职责拆分。
-
-**1 可复用模式**：X-Macro 单一列表源——任何"枚举 + switch 一致性"问题都可消除。
-
-**3 立刻能用**：
-
-1. 你的多接口系统可以用"接口契约 + 多继承"实现职责分离
-2. 你的枚举 + switch 可以用 X-Macro 消除 case 漏写
-3. 你的多线程渲染可以用 `_p`/`_api` 双快照实现同步
-
-## 14. 项目特点速查
-
-**独特看点**：
-
-- **Cascadia + conhost 双宿主**——Windows 终端的架构创新
-- **Atlas DirectX 渲染**——GPU 加速的现代文本渲染
-- **ConPTY 桥接**——向后兼容 Win32 Console API
-- **X-Macro Action 列表**——ActionMap 的 SSOT 设计
-- **GH#12977 注释**——VT 解析器决策溯源
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title 终端模拟器对比
-    x-axis 简单 --> 复杂
-    y-axis 弱渲染 --> 强渲染
-    "Windows Terminal": [0.7, 0.95]
-    "iTerm2": [0.6, 0.7]
-    "Alacritty": [0.5, 0.9]
-    "kitty": [0.5, 0.85]
-    "ConEmu": [0.6, 0.6]
-    "xterm": [0.3, 0.3]
-```
+**最佳实践**：Windows 用 PowerShell 7 + oh-my-posh；macOS 用 Fish 或 Zsh + starship；Linux 用 Zsh + p10k；用 `tmux` 保活；用 `fzf` 模糊搜索；用 `ripgrep` 替代 grep；用 `bat` 替代 cat；用 `eza` 替代 ls。
 
 ## 附：仓库元信息
 
 | 字段 | 值 |
 |------|----|
 | 路径 | `G:\实战案例\GitHub顶尖项目\windows-terminal\` |
-| 主语言 | C++ + C# |
+| 主语言 | C++ + C# + HLSL |
 | License | MIT |
-| 状态 | 1.22+ 活跃 |
 | 解析时间 | 2026-06-02 |
-
-## 一句话总结
-
-**解析 = 计划书 + 框架图 + 核心功能 + 跑起来 + 偷过来**。Windows Terminal 的 Cascadia + conhost 双宿主 + ConPTY + Atlas DirectX 是"老协议兼容 + 新 UI 框架"项目的范式——双宿主桥接 + 多接口继承 + X-Macro SSOT + 同步点设计可直接复用到任何"现代化转型"项目。
+| 核心模块 | `src/cascadia/`、`src/renderer/atlas/`、`src/terminal/parser/`、`src/host/` |
+| 关键基础设施 | ConPTY、DirectX 11/12、DirectWrite、XAML Island、VT 解析器 |

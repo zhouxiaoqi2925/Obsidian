@@ -3,14 +3,14 @@
 **GitHub**: moment/luxon
 **Star**: 16k+
 **语言**: JavaScript (ES6+ module)
-**主题**: date-time、i18n、timezone、Intl、immutable
-**适用场景**: 跨时区日志/订单/SaaS 多区域、I18n 格式化、Temporal 提案前的过渡方案
+**主题**: date-time / i18n / timezone / Intl / immutable
+**适用场景**: 跨时区日志/订单/SaaS 多区域 / I18n 格式化 / Temporal 提案前的过渡方案
 
 ---
 
-## 一、基础范式
+## 第一段：基础范式
 
-### 模式 1 · 不可变 + 工厂方法
+### 模式 1 - 不可变 + 工厂方法
 
 **问题场景**：Moment.js `dt.add(1, 'day')` 改 `this`，引用共享导致 React state 误判、深比较失效、副作用难追踪。
 
@@ -25,7 +25,7 @@
 
 **最佳实践**：库要做"时间/金额/对象"等业务值类型时，全部不可变 + static factory 是行业标杆；React/Vue state 用起来零副作用。
 
-### 模式 2 · Intl.DateTimeFormat 反射零依赖
+### 模式 2 - Intl.DateTimeFormat 反射零依赖
 
 **问题场景**：传统时区库（moment-timezone）打包 200KB+ tzdata；维护负担大、版本滞后 DST 规则；体积大到无法全量引入。
 
@@ -40,7 +40,7 @@
 
 **最佳实践**：库要做"国际化/时区"时把 Intl 当 OS 用，能砍 90% 体积；代价是放弃 IE/老 Node，但 2024+ 浏览器都支持。
 
-### 模式 3 · Invalid 哨兵代替 throw
+### 模式 3 - Invalid 哨兵代替 throw
 
 **问题场景**：`Date.parse('invalid')` 抛错或返回 NaN，业务代码到处 `try-catch`，调用方体验差。
 
@@ -55,7 +55,7 @@
 
 **最佳实践**：库要做"可能失败"的运算时返回带 `isValid` 标记的对象，让业务代码 `switch (reason)` 显式处理，**比异常流好测 5x**；适用任何"DSL 解析器 + 业务校验"。
 
-### 模式 4 · 4 个 Zone 子类 - IANA / FixedOffset / System / Invalid
+### 模式 4 - 4 个 Zone 子类（IANA / FixedOffset / System / Invalid）
 
 **问题场景**：时区类型多（IANA 名 + UTC 偏移 + 系统默认 + 错误输入），单一 Zone 类难表达。
 
@@ -70,7 +70,7 @@
 
 **最佳实践**：库要做"同类多种实现"时用抽象基类 + 子类多态 + 单例缓存；适用任何"枚举 + 实例缓存"场景（如数据库驱动、文件格式）。
 
-### 模式 5 · fixOffset DST 三段式双向校正
+### 模式 5 - fixOffset DST 三段式双向校正
 
 **问题场景**：跨 DST 边界（春令时跳跃 / 秋令时重叠）时 zone offset 算不准，2 点变 3 点或 1:30 出现两次。
 
@@ -87,11 +87,11 @@
 
 ---
 
-## 二、扩展范式
+## 第二段：扩展范式
 
-### 模式 6 · 三套单位换算矩阵 - lowOrder / casual / accurate
+### 模式 6 - 三套单位换算矩阵（lowOrder / casual / accurate）
 
-**问题场景**：JS 里「1 个月」不是物理量，30/30.4167/365.2425 都能算"对"，业务要按场景选。
+**问题场景**：JS 里「1 个月」不是物理量，30 / 30.4167 / 365.2425 都能算"对"，业务要按场景选。
 
 **解决方案**：`duration.js` 顶部定义三套矩阵：`lowOrderMatrix`（weeks→days→hours 精确 7/24）、`casualMatrix`（月=30.4167 天人话用）、`accurateMatrix`（400 年格里高利历平均值 365.2425 天科学用）；`Duration.fromObject({...}, { conversionAccuracy: 'longterm' })` 切换策略；`Settings.defaultConversionAccuracy` 全局默认。
 
@@ -104,7 +104,7 @@
 
 **最佳实践**：库做"语义模糊量"（时间/单位/货币）时暴露 2-3 套策略让业务选，**比硬编码"30 天 = 1 月"灵活 10x**；适用任何"业务量 vs 物理量"歧义场景。
 
-### 模式 7 · regexParser 统一抽象
+### 模式 7 - regexParser 统一抽象
 
 **问题场景**：ISO 8601 / RFC 2822 / HTTP / SQL 多格式日期字符串解析，每种写一个 parser 累死，性能也差。
 
@@ -119,7 +119,7 @@
 
 **最佳实践**：库要做"多格式字符串解析"时用 `combineRegexes + combineExtractors` 代替 parser combinator，性能高 5x 且实现简单；适用任何"DSL 解析器"。
 
-### 模式 8 · 5 种 fromXxx 工厂 + 5 种 toXxx 序列化
+### 模式 8 - 7 种 fromXxx 工厂 + 10 种 toXxx 序列化
 
 **问题场景**：DateTime 接收输入格式多（ISO/RFC/SQL/HTTP/JSDate/Object），序列化输出也多样。
 
@@ -134,7 +134,7 @@
 
 **最佳实践**：库做"序列化/反序列化"时输入输出对称命名 + 单一底层（regexParser/Formatter），用户心智负担低；适用任何"格式转换库"。
 
-### 模式 9 · DateTime/Duration/Interval 三件套
+### 模式 9 - DateTime / Duration / Interval 三件套
 
 **问题场景**：业务要处理"时间点（2025-01-15）"vs"时间段（90 天）"vs"时间范围（2025-01-01 到 2025-03-31）"三种概念，单一类型难表达。
 
@@ -149,7 +149,7 @@
 
 **最佳实践**：库做"时间相关业务"时分清 TimePoint / Duration / Interval 三类，**比单一 Date 类型清晰 10x**；适用任何"日程/订单/SLA"业务。
 
-### 模式 10 · Locale 抽象 + 数字本地化
+### 模式 10 - Locale 抽象 + 数字本地化
 
 **问题场景**：阿拉伯数字、印地语、阿拉伯语 locale 数字不是 ASCII "0-9"，业务做报表/账单要本地化。
 
@@ -166,9 +166,9 @@
 
 ---
 
-## 三、进阶范式
+## 第三段：进阶范式
 
-### 模式 11 · sideEffects: false 极致 tree-shaking
+### 模式 11 - `sideEffects: false` 极致 tree-shaking
 
 **问题场景**：用户只想要 `DateTime`，引入全库 22KB 浪费；tree-shaking 找不到 side-effect-free 入口。
 
@@ -183,7 +183,7 @@
 
 **最佳实践**：库要 tree-shaking 友好必须 "单一入口 + 纯 re-export + sideEffects: false"；适用任何"现代 ES module 库"。
 
-### 模式 12 · Settings 全局开关 + 单次覆盖
+### 模式 12 - Settings 全局开关 + 单次覆盖
 
 **问题场景**：库有些"全局默认行为"要改（如默认 zone、locale、throwOnInvalid），又要支持单次覆盖。
 
@@ -198,7 +198,7 @@
 
 **最佳实践**：库要做"全局默认 + 局部覆盖"时暴露 `Settings` 对象；`now` 注入虚拟时钟是时间库测试的杀手锏；适用任何"全局配置 + 测试 mock"。
 
-### 模式 13 · TokenParser + Formatter 模板
+### 模式 13 - TokenParser + Formatter 模板
 
 **问题场景**：日期格式化"YYYY-MM-DD HH:mm:ss" 字符串难解析，token 替换容易写死。
 
@@ -213,7 +213,7 @@
 
 **最佳实践**：库做"模板化输出"时分 `Formatter`（编译）+ `TokenParser`（执行）两步；用户自定义模板通过 `toFormat` 暴露；适用任何"模板输出"场景。
 
-### 模式 14 · 循环依赖 + ES module live binding 兜底
+### 模式 14 - 循环依赖 + ES module live binding 兜底
 
 **问题场景**：`datetime.js` 顶部 `import Duration from "./duration.js"` + `duration.js` 顶部 `import DateTime from "./datetime.js"`——Node 解析时一方拿到未初始化 `undefined`。
 
@@ -228,7 +228,7 @@
 
 **最佳实践**：库设计阶段就避免循环 import；如不可避免，所有调用走 static factory 推迟；适用任何"双向依赖的 module 设计"。
 
-### 模式 15 · timeIndex + offsetIndex 双索引
+### 模式 15 - timeIndex + offsetIndex 双索引
 
 **问题场景**：Kafka 风格的"时间→位置" + "offset→位置"双查询，skiplist 索引太重。
 
@@ -245,27 +245,24 @@
 
 ---
 
-## 四、实战范式
+## 第四段：实战范式
 
-### 模式 16 · smoke test 30 行验证环境
+### 模式 16 - smoke test 3 行验证环境
 
 **问题场景**：装好 luxon 后要快速验证时区/I18n/DST 是否就位，写 200 行测试累。
 
-**解决方案**：3 行 smoke test 验证核心：```js
-const { DateTime } = require('luxon');
-console.log(DateTime.now().setZone('America/New_York').minus({weeks:1}).endOf('day').toISO());
-``` 期望：当前东八区 -7 天 + 当天 23:59:59.999，输出 ISO 字符串。
+**解决方案**：3 行 smoke test 验证核心：```js const { DateTime } = require('luxon'); console.log(DateTime.now().setZone('America/New_York').minus({weeks:1}).endOf('day').toISO()); ``` 期望：当前东八区 -7 天 + 当天 23:59:59.999，输出 ISO 字符串。
 
 **关键参数**：
 - 3 行核心验证
-- setZone + minus + endOf + toISO
+- `setZone` + `minus` + `endOf` + `toISO`
 - 跨时区端到端
 - 30s 内可跑完
 - 验证 Intl 就位
 
 **最佳实践**：新环境验证库用 5-10 行 smoke test，验证"装好 + 核心 API + 时区"三件套就位再开发；适用任何"库引入 + 升级回归"。
 
-### 模式 17 · Settings.now 注入虚拟时钟
+### 模式 17 - `Settings.now` 注入虚拟时钟
 
 **问题场景**：测试代码要验证"3 天后过期"逻辑，但 `Date.now()` 跑测试时不变。
 
@@ -280,7 +277,7 @@ console.log(DateTime.now().setZone('America/New_York').minus({weeks:1}).endOf('d
 
 **最佳实践**：库做"时间敏感"测试时注入虚拟时钟，**测试速度提升 1000x**（不需要真实 sleep）；适用任何"时间相关业务"测试。
 
-### 模式 18 · DST 双向校正业务应用
+### 模式 18 - DST 双向校正业务应用
 
 **问题场景**：美东用户订 2025-03-09 02:30 会议（春令时跳跃），数据库存什么？显示什么？
 
@@ -295,7 +292,7 @@ console.log(DateTime.now().setZone('America/New_York').minus({weeks:1}).endOf('d
 
 **最佳实践**：库做"跨时区业务"必处理 DST hole/ambig；**存 UTC 显示本地**是金科玉律；适用任何"全球化 SaaS / 会议 / 订单"。
 
-### 模式 19 · 与 Moment/date-fns/dayjs 对比选型
+### 模式 19 - 与 Moment / date-fns / dayjs 对比选型
 
 **问题场景**：4 个候选库（moment 67KB / luxon 22KB / date-fns 14KB / dayjs 7KB），按需选型。
 
@@ -310,7 +307,7 @@ console.log(DateTime.now().setZone('America/New_York').minus({weeks:1}).endOf('d
 
 **最佳实践**：库选型按"体积 + 时区 + I18n + 不可变 + 维护"5 维度打矩阵；**跨时区业务 luxon 首选**，**简单项目 dayjs**，**未来项目等 Temporal**。
 
-### 模式 20 · 7 天复刻最小可用 luxon
+### 模式 20 - 7 天复刻最小可用 luxon
 
 **问题场景**：团队 fork luxon 做内部精简版，3.7.x 22KB 学不动。
 
@@ -324,19 +321,3 @@ console.log(DateTime.now().setZone('America/New_York').minus({weeks:1}).endOf('d
 - 7 天最小可用
 
 **最佳实践**：复刻库先求"最小可跑内核"再迭代，7 天只够做 80% 场景的精简版，完整复刻需 3 个月+。
-
----
-
-## 附：仓库元信息
-
-- **路径**: `G:\实战案例\GitHub顶尖项目\luxon\`
-- **大小**: ~4 MB（含 node_modules 后 ~120MB）
-- **核心文件**: datetime.js（102KB / 2643 行）/ duration.js（1027 行）/ interval.js（692 行）/ impl/regexParser.js / zones/IANAZone.js
-- **关键 commit**: v3.7.2
-- **作者**: Isaac Cambron（Moment 团队）+ 80+ 社区贡献者
-- **许可**: MIT
-- **依赖**: 零运行时依赖（仅 devDeps: Babel/Rollup/Jest）
-
-## 一句话总结
-
-luxon 用 22KB gzipped 装下时区 + I18n + DST + 不可变 + 工厂，秘诀是「把 Intl 当 OS、不把时间当对象」——把不可变 + 工厂 + Invalid 哨兵 + Intl 反射四件套偷到自己的业务库，立省 90% tzdata 体积。

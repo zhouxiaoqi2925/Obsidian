@@ -1,702 +1,356 @@
----
-title: less.js
-type: css-preprocessor
-lang: javascript
-stars: 17100
-date: 2026-06-02
-tags:
-  - 开源项目
-  - css-preprocessor
-  - 编译器
-  - 解析器
-  - 前端工程化
+# less.js - CSS 预处理器的工程范本
+
+**GitHub**: less/less.js
+**Star**: 17.1k+
+**语言**: JavaScript (ESM)
+**主题**: css-preprocessor、compiler、ast、visitor、frontend-tooling
+**适用场景**: CSS 扩展语言、DSL 编译器学习、AST 多 pass 工程实践
+
 ---
 
-# less.js · 项目深度解析
-
-> 一句话：用 JavaScript 写的 CSS 预处理器，把 `.less`（含变量/Mixin/嵌套/函数）编译成 `.css`；同生态里 Sass 是 Ruby 写的，PostCSS 是 Node 插件架构，Stylus 是 Node 写的另一门方言，Less 选择了"作为 CSS 超集"这一最低学习成本的路径。
-> 来源：`G:\实战案例\GitHub顶尖项目\less.js\`
-
-## 写在前面：解析哲学
-
-本笔记先拆骨架（包结构、入口、流水线）再填血肉（核心代码、关键设计决策、WHY），最后落到"我能从 Less 偷什么、避什么"。Less.js 是一个看起来"只是个编译器"的项目，但它把"DSL → AST → Visitor → CSS"这条经典编译流水线拆得非常干净，是学编译原理/前端工程化非常优秀的样本；它也展示了 10+ 年开源老项目在兼容性、向后兼容、可插拔、运行环境隔离（Node vs Browser）上的取舍。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone https://github.com/less/less.js.git`（已克隆到 `G:\实战案例\GitHub顶尖项目\less.js\`）
-2. **分类**：编译/转换器、DSL 编译器、前端工程化工具
-3. **问题清单**：
-   - 它的解析器为什么不需要 lexer/token 阶段？
-   - AST 上跑的"Visitor"和"eval"两阶段各自做什么？
-   - `@import` 解析时如何处理 file system、相对路径、循环依赖？
-   - 如何让一份代码同时支持 Node 和浏览器？
-   - source map 是怎么从 4 个 .less 文件拼回 1 个 .css 文件的？
-4. **速查表**：`less` / `lessc` / `@import` / `&` / `:extend` / `.mixin()` / `@plugin`
-5. **锁定 commit**：解析时仓库为 `master` 头（gitHead 1df9072ee9），版本 4.6.3
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-|---|---|
-| 项目名 | less.js（npm 包名 `less`） |
-| 定位 | CSS 预处理器编译器（CSS pre-processor） |
-| 核心问题 | 写 CSS 时缺少变量、Mixin、函数、嵌套、模块化能力，希望保留 CSS 语法同时扩展 |
-| 目标用户 | 前端工程师（Bootstrap 4 之前的事实标准）、Bootstrap 早期、需"CSS-like DSL"的老项目 |
-| 商业模式 | Apache-2.0 开源，无商业版；OpenCollective 接受赞助 |
-| 复刻难度 | 高（编译器 + 完整 AST + Visitor + plugin 体系，约 50+ 源文件、35K+ 行） |
-| 状态 | 活跃（4.6.3，2025-2026 仍发版）；项目已进入维护态，主要跟随 CSS 新特性 |
-| 团队 | Alexis Sellier（cloudhead）原作者 + Matthew Dean 等核心维护者 |
-| 里程碑 | 2009 诞生；2012 v1.3 进入 Node 生态；2014 Bootstrap 4 选用 → 巅峰；2024 4.x 系列；2026 仍发版 |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-仓库是 pnpm monorepo，主包在 `packages/less/`。
-
-```mermaid
-mindmap
-  root((less.js monorepo))
-    packages/less
-      bin/lessc
-        CLI 入口
-      lib/less
-        核心编译逻辑
-        跨环境
-      lib/less-node
-        Node 适配层
-      lib/less-browser
-        浏览器适配层
-      test
-        单元/错误/sourcemap
-    packages/test-data
-      测试 fixtures
-    packages/test-import-module
-      import 解析测试
-    scripts
-      自动化发布
-    .github/workflows
-      CI: ci.yml
-      Release: publish.yml
-```
-
-**核心目录**（按编译流水线顺序）：
-
-| 目录 | 作用 | 关键文件 |
-|---|---|---|
-| `lib/less/parser/` | 词法 + 语法分析（单遍，无 token） | `parser.js`（2693 行，是全项目最复杂文件） |
-| `lib/less/tree/` | AST 节点定义（35+ 节点类型） | `node.js` / `ruleset.js`（1067 行）/ `mixin-call.js`（280 行） |
-| `lib/less/visitors/` | 多 Pass 遍历器 | `visitor.js` / `to-css-visitor.js` / `import-visitor.js` / `extend-visitor.js` / `join-selector-visitor.js` |
-| `lib/less/functions/` | 内置函数库 | `function-registry.js` + 12 个分类函数文件（color/math/string/list 等） |
-| `lib/less/environment/` | 跨环境抽象 | `abstract-file-manager.js` / `abstract-plugin-loader.js` / `environment.js` |
-| `lib/less-node/` | Node 专属实现 | `index.js`（工厂入口）/ `file-manager.js`（fs 操作）/ `lessc-helper.js` |
-| `lib/less-browser/` | 浏览器入口 | `index.js`（webpack 入口）/ `file-manager.js`（XHR 加载） |
-
-**配置入口**：`packages/less/package.json` 的 `exports` 字段（区分 `browser`/`import`/`require` 三个条件分支），`bin.lessc` 指向 `./bin/lessc`。
-**代码入口**：`lib/less-node/index.js`（第 15 行）`createFromEnvironment(environment, [FileManager, UrlFileManager], version)`，这是 Node 模式下真正的工厂。
-
-## 3. 项目画像（Profile）
-
-| 字段 | 值 |
-|---|---|
-| 总文件数 | 907（含测试 + 文档） |
-| 主语言 | JavaScript（ESM，`"type": "module"`）+ TypeScript（少量 type 注释） |
-| 涉及语言 | JS、TS、CSS、Shell、Benchmark JSON |
-| Star | ~17.1k |
-| License | Apache-2.0 |
-| Docker | 无（纯 npm 包） |
-| K8s | 无 |
-| CI | GitHub Actions（`.github/workflows/ci.yml`） |
-| 测试 | Mocha + 自研 `less-test.js` + `c8` 覆盖率 + Playwright 浏览器测试 |
-| Node 要求 | `>=18` |
-| 包管理 | pnpm workspace |
-| 入口产物 | `dist/less.js`（浏览器）/ `dist/less-node.cjs`（CJS 兼容）/ `lib/less-node/index.js`（ESM） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-### 编译流水线（5 个阶段）
-
-```mermaid
-flowchart LR
-    A[.less source] --> B[Parser 单遍扫描]
-    B --> C[AST Ruleset 树]
-    C --> D[ImportVisitor<br/>拉取 @import 文件]
-    D --> E[Eval Pass<br/>变量/Mixin 展开]
-    E --> F[JoinSelectorVisitor<br/>& 嵌套拼接]
-    F --> G[ExtendVisitor<br/>:extend 重写选择器]
-    G --> H[MarkVisibleSelectorsVisitor<br/>过滤未引用规则]
-    H --> I[ToCSSVisitor<br/>生成 CSS 字符串]
-    I --> J[SourceMapBuilder<br/>生成 .map]
-    J --> K[output.css + .map]
-```
-
-**关键设计**：Parser 一次扫完生成 AST（不像传统编译器有独立 lexer 阶段），后续每个阶段都是独立的 Visitor 跑同一棵树。这让"加新 pass"非常容易，Plugin 体系就是靠在 `transform-tree.js` 里的 visitor 列表里插入/前置来工作。
-
-### 核心架构 3 句话
-
-1. **单遍 Parser + AST + 多 Pass Visitor**：解析阶段用预测式（predictive parser）单遍扫源码，每个子规则直接构造 AST 节点（见 `parser.js` 顶部注释 13-44 行："a relatively straight-forward predictive parser. There is no tokenization/lexing stage"），靠"快路径"（值不含变量/操作/动态引用时整体当字面量跳解析）把性能拉满，省了 50% 时间。
-2. **环境抽象 + 双端隔离**：`abstract-file-manager.js` 定义 IO 接口（`loadFile`/`getPath`/`join`/`pathDiff`），Node 端用 `fs`，浏览器端用 `XHR`；`createFromEnvironment()` 工厂把 environment + fileManagers 注入，让核心编译代码完全不知道自己跑在哪个 runtime。
-3. **Plugin 体系 = Visitor / Function / Importer / Pre-/Post-Processor 五接口**：`plugin-manager.js` 集中管理；`function-registry.js` 用链式 `inherit()` 模拟作用域；`ImportVisitor` 用 `ImportSequencer` 串行化处理 import（同一文件的多次 import 去重，避免循环）。
-
-### ADR 关键设计决策
-
-- **"Less 必须是 CSS 的超集"**：任何合法 CSS 必须是合法 Less。这是 v1 时代就立下的约束，导致 `;` 在 CSS 中是分隔符在 Less 中也保持如此、变量用 `@` 前缀（CSS 已有 `@media`/`@import`/`@charset` 关键字所以无冲突）。
-- **不引入独立 lexer**：作者评估浏览器场景下词法分析开销不划算，单遍 parser + 字符串 chunk（`j`/`currentPos`/`chunks` 三指针，注释 22-28 行）反而快 4 倍。
-- **eval 阶段是 imperative method dispatch，不是 Visitor 模式**：每种 AST 节点自己实现 `eval(context)` 方法，递归调用子节点的 `eval`。Visitor 模式用在 `toCSS` 阶段（更纯的"遍历+产出字符串"），eval 阶段用多态更易处理作用域链。
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-| 优先级 | 文件 | 行数 | 作用 |
-|---|---|---|---|
-| 1 | `lib/less/parser/parser.js` | 2693 | 全项目最复杂，递归下降 Parser 全部语法 |
-| 2 | `lib/less/tree/ruleset.js` | 1067 | AST 核心节点 + 变量查找 + 嵌套展开 |
-| 3 | `lib/less/visitors/visitor.js` | 166 | Visitor 基类（typeIndex 缓存、In/Out 钩子） |
-| 4 | `lib/less/visitors/to-css-visitor.js` | 333 | AST → CSS 字符串 + 可见性过滤 |
-| 5 | `lib/less/tree/mixin-call.js` | 280 | Mixin 调用解析、guard、参数匹配 |
-| 6 | `lib/less/import-manager.js` | 184 | 跨文件 import 解析 + 缓存 |
-| 7 | `lib/less/transform-tree.js` | 103 | 多 Visitor 调度（Plugin 注入点） |
-| 8 | `lib/less/parse.js` | 88 | 工厂函数，组装 Parser + ImportManager + 插件 |
-| 9 | `lib/less/render.js` | 42 | 真正只做"parse → toCSS"的极简包装 |
-| 10 | `lib/less/functions/function-registry.js` | 36 | 函数注册表，链式 inherit 模拟作用域 |
-
-### 5.2 单文件分析卡
-
-#### 5.2.1 `lib/less/parser/parser.js`（2693 行，全项目最复杂）
-
-**WHAT**：递归下降 Parser，所有 less 语法规则的入口。返回 `Ruleset` 树根节点。
-
-**WHY-1：为什么不要 lexer**（顶部注释 13-44 行）
-
-```javascript
-// less.js - parser
-//
-//    A relatively straight-forward predictive parser.
-//    There is no tokenization/lexing stage, the input is parsed
-//    in one sweep.
-//
-//    To make the parser fast enough to run in the browser, several
-//    optimization had to be made:
-//
-//    - Matching and slicing on a huge input is often cause of slowdowns.
-//      The solution is to chunkify the input into smaller strings.
-//      The chunks are stored in the `chunks` var,
-//      `j` holds the current chunk index, and `currentPos` holds
-//      the index of the current chunk in relation to `input`.
-//      This gives us an almost 4x speed-up.
-```
-
-→ 浏览器场景下，传统 lexer 要为整段输入生成 token 数组，对 1MB 的 Less 文件是巨大开销；Less 把输入字符串分块（`chunks`），用 `j` + `currentPos` 双指针管理位置，省了 token 数组分配。这是非常务实的工程取舍。
-
-**WHY-2：为什么"无操作字面量"会被 fast-path**
-
-```javascript
-//   - In many cases, we don't need to match individual tokens;
-//     for example, if a value doesn't hold any variables, operations
-//     or dynamic references, the parser can effectively 'skip' it,
-//     treating it as a literal.
-//     An example would be '1px solid #000' - which evaluates to itself,
-//     we don't need to know what the individual components are.
-```
-
-→ `1px solid #000` 这种纯字面量直接当字符串塞进 `Anonymous` 节点，连 dimension/color 都不解析，省 50% parse 时间。代价：CSS 语法错（拼写错属性名）只在 eval 阶段才被发现。这是性能 vs 错误的取舍。
-
-**WHY-3：`$re`/`$char` 统一 token 匹配**
-
-```javascript
-function expect(arg, msg) {
-    // some older browsers return typeof 'function' for RegExp
-    const result = (arg instanceof Function) ? arg.call(parsers) : parserInput.$re(arg);
-    ...
-}
-```
-
-→ `expect()` 接受函数或正则，函数是"调用子 parser"（递归下降的标志），正则/字符串是"匹配终结符"。这是 Ruby/Swift 风格 PEG 解析器的典型接口——`expect(function)` 走非终结符，`expect(re)` 走终结符。
-
-#### 5.2.2 `lib/less/visitors/visitor.js`（166 行）
-
-**WHAT**：Visitor 基类，通过 `typeIndex` 字典缓存避免 `if/else` 链。
-
-**WHY：为什么用 typeIndex 而非 switch**
-
-```javascript
-let _hasIndexed = false;
-
-function indexNodeTypes(parent, ticker) {
-    let key, child;
-    for (key in parent) { 
-        child = parent[key];
-        switch (typeof child) {
-            case 'function':
-                if (child.prototype && child.prototype.type) {
-                    child.prototype.typeIndex = ticker++;
-                }
-                break;
-            case 'object':
-                ticker = indexNodeTypes(child, ticker);
-                break;
-        }
-    }
-    return ticker;
-}
-
-class Visitor {
-    constructor(implementation) {
-        this._implementation = implementation;
-        this._visitInCache = {};
-        this._visitOutCache = {};
-        if (!_hasIndexed) {
-            indexNodeTypes(tree, 1);
-            _hasIndexed = true;
-        }
-    }
-
-    visit(node) {
-        ...
-        const nodeTypeIndex = node.typeIndex;
-        ...
-        let func = this._visitInCache[nodeTypeIndex];
-        ...
-        if (!func) {
-            fnName = `visit${node.type}`;
-            func = impl[fnName] || _noop;
-            ...
-            this._visitInCache[nodeTypeIndex] = func;
-        }
-    }
-}
-```
-
-→ 35+ 种节点类型，每次 visit 都走 `if/else` 性能糟糕。Less 用一个**全局自增 ticker** 在 `Visitor` 第一次实例化时遍历 `tree` 注册表，给每个节点类打上 `typeIndex`（数字 ID），后续 visit 是 O(1) 字典查找。
-→ 这是典型的"启动慢一点、运行时快很多"的 memoization 模式（`_hasIndexed` 单次性）。
-→ `visitXxx` / `visitXxxOut` 模式（GOF Visitor 标准的 enter/exit）让 Plugin 可以"进入时改 + 退出时再改"。
-
-#### 5.2.3 `lib/less/tree/ruleset.js`（1067 行）
-
-**WHAT**：AST 核心节点。包含 `selectors`、`rules`、变量查找表 `_lookups`/`_variables`/`_properties`。
-
-**WHY-1：变量查找为什么是 lazy 缓存**
-
-```javascript
-this._lookups = {};
-this._variables = null;
-this._properties = null;
-```
-
-→ 第一次访问时构建缓存，后续 O(1) 查找。这是个简单但正确的优化——很多 ruleset 实际只查几次变量。
-
-**WHY-2：为什么在 eval 阶段"用 Parser 重新解析一次选择器"**
-
-```javascript
-if (hasVariable) {
-    const toParseSelectors = new Array(selCnt);
-    for (i = 0; i < selCnt; i++) {
-        selector = selectors[i];
-        toParseSelectors[i] = selector.toCSS(context);
-    }
-    const startingIndex = selectors[0].getIndex();
-    const selectorFileInfo = selectors[0].fileInfo();
-    new (Parser)(context, this.parse.importManager, selectorFileInfo, startingIndex)
-        .parseNode(toParseSelectors.join(','), ['selectors'], function(err, result) {
-            if (result) { ... }
-        });
-}
-```
-
-→ 当选择器含变量（如 `.@{breakpoint}`）时，变量值要在 eval 阶段才能确定，Less 干脆把 toCSS 拼出来的字符串**再喂给 Parser 解析一次**——一种"动态字符串到 AST"的小型 read-eval-print 循环。代价：每次变量化选择器都跑一次 parser；收益：实现简单到只用 1 个 Parser 实例。
-
-#### 5.2.4 `lib/less/transform-tree.js`（103 行）
-
-**WHAT**：多 Visitor 调度中心。
-
-**WHY：Plugin 的两个时序**
-
-```javascript
-const visitors = [
-    new visitor.JoinSelectorVisitor(),
-    new visitor.MarkVisibleSelectorsVisitor(true),
-    new visitor.ExtendVisitor(),
-    new visitor.ToCSSVisitor({compress: Boolean(options.compress)})
-];
-
-const preEvalVisitors = [];
-let v;
-let visitorIterator;
-
-if (options.pluginManager) {
-    visitorIterator = options.pluginManager.visitor();
-    for (let i = 0; i < 2; i++) {
-        visitorIterator.first();
-        while ((v = visitorIterator.get())) {
-            if (v.isPreEvalVisitor) {
-                if (i === 0 || preEvalVisitors.indexOf(v) === -1) {
-                    preEvalVisitors.push(v);
-                    v.run(root);
-                }
-            }
-            else {
-                if (i === 0 || visitors.indexOf(v) === -1) {
-                    if (v.isPreVisitor) {
-                        visitors.unshift(v);
-                    }
-                    else {
-                        visitors.push(v);
-                    }
-                }
-            }
-        }
-    }
-}
-
-evaldRoot = root.eval(evalEnv);
-
-for (let i = 0; i < visitors.length; i++) {
-    visitors[i].run(evaldRoot);
-}
-```
-
-→ **两轮循环**是妙处：第一轮把所有 visitor 都注册完（解决 visitor 注册时还没看到后面 visitor 的问题）；第二轮发现"如果前一次已经跑过就不重复跑"，允许 plugin 在 eval 前后/期间动态修改 visitor 列表。这是 Less plugin 体系能 work 的核心：`isPreEvalVisitor` 跑在 eval 之前、`isPreVisitor` 排到队首、其他排到队尾。
-
-#### 5.2.5 `lib/less/render.js`（42 行）
-
-**WHAT**：对外的极简 API 包装。
-
-```javascript
-export default function(environment, ParseTree) {
-    const render = function (input, options, callback) {
-        if (typeof options === 'function') {
-            callback = options;
-            options = utils.copyOptions(this.options, {});
-        }
-        else {
-            options = utils.copyOptions(this.options, options || {});
-        }
-
-        if (!callback) {
-            const self = this;
-            return new Promise(function (resolve, reject) {
-                render.call(self, input, options, function(err, output) {
-                    if (err) { reject(err); } else { resolve(output); }
-                });
-            });
-        } else {
-            this.parse(input, options, function(err, root, imports, options) {
-                if (err) { return callback(err); }
-                let result;
-                try {
-                    const parseTree = new ParseTree(root, imports);
-                    result = parseTree.toCSS(options);
-                }
-                catch (err) { return callback(err); }
-                callback(null, result);
-            });
-        }
-    };
-    return render;
-}
-```
-
-→ **双模式 API**（callback 或 Promise）是经典 Node 风格。WHY：当 callback 不传就 return Promise，让用户 `await less.render(...)` 或 `less.render(..., cb)` 都能用，省一层 wrapper。
-→ **没有显式 try/catch 包 parse**：因为 parse 内部已经 throw `LessError`，外层用 callback 模式时错误会冒泡到 `try/catch`；这就是为什么 `try` 块只包了 `parseTree.toCSS(options)`——任何 parse 阶段错误由 `parse` 自己捕获并传 err。
-
-#### 5.2.6 `lib/less/functions/function-registry.js`（36 行）
-
-**WHAT**：函数注册表 + 链式 inherit。
-
-```javascript
-function makeRegistry( base ) {
-    return {
-        _data: {},
-        add: function(name, func) { ... this._data[name] = func; },
-        get: function(name) { return this._data[name] || ( base && base.get( name )); },
-        inherit: function() { return makeRegistry( this ); },
-        create: function(base) { return makeRegistry(base); }
-    };
-}
-```
-
-→ `get()` 优先查自己再向上找 `base`，把"作用域"做成 prototype-chain 模式。这样：
-- 顶层有全局函数（`darken`/`lighten`/`unit`...）
-- ruleset 内可以 `@function: ...` 定义局部函数
-- 子 ruleset 通过 `inherit()` 拿到父表，查不到 fallback 到父表
-
-### 5.3 设计模式总结
-
-| 模式 | 用在哪 | WHY |
-|---|---|---|
-| **Visitor** | `visitors/visitor.js` + 5 个 xxx-visitor | 多个独立 pass 跑同一棵 AST，加新 pass 不改旧代码 |
-| **Composite** | `tree/*` 节点（Ruleset 包含 rules，rules 又包含 Ruleset） | 树形结构的天然选择 |
-| **Prototype chain 模拟作用域** | `function-registry.js` `inherit()` | 不用 class 直接用 JS 原型链，省 GC 压力 |
-| **Factory** | `less/index.js` `createFromEnvironment()` | 一份核心代码生成 Node 版 / 浏览器版 |
-| **Strategy** | `AbstractFileManager` 抽象类 | Node 用 fs、Browser 用 XHR，可替换 |
-| **Iterator-like** | `transform-tree.js` 里的 `visitorIterator.first()/get()` | Plugin 可在运行期添加 visitor |
-| **Memoization** | `Visitor._visitInCache` + `Ruleset._lookups` | 第一次慢、后续 O(1) |
-
-### 5.4 反模式 / 值得注意
-
-1. **`/* eslint guard-for-in: 0 */` 在 Visitor 里**（visitor.js 第 13 行）：直接用 `for...in` 遍历 `tree` 索引节点，依赖对象结构稳定。10 年老代码能这样写是积累的代价。
-2. **Mix `parse` 和 `eval`**：Parser 调用过程中就会触发部分 eval（如 `@plugin` 解析）——这是性能考量（少跑一次），但增加了理解成本。
-3. **`less/index.js` 末尾的 `bind`**：
-   ```javascript
-   initial.parse = initial.parse.bind(api);
-   initial.render = initial.render.bind(api);
-   ```
-   注释直接承认 "Some of the functions assume a `this` context of the API object, which causes it to fail when wrapped for ES6 imports. An assumed `this` should be removed in the future." —— 10 年技术债。
-4. **lessc 几乎所有参数都手写 parser**（679 行）：没用 minimist/yargs，自己 parse argv。理由是早期 minimist 还不流行 + 完全可控。
-
-### 5.5 独特看点
-
-- **35+ AST 节点、5+ Visitor Pass、Plugin 5 接口**：完整展示"DSL 编译器应有的形状"
-- **性能优化诚实可见**：parser.js 顶部注释直接写"4x 加速""50% 加速"对比数据，这是其他项目少见的工程文化
-- **测试资产即文档**：`test-data/tests-unit/` 下每个文件夹是一个特性（mixins/extend/import/...），每个 .less 配一个 .css 当 golden file，比注释更不容易腐烂
-
-## 6. 运行机制（Bring It Up）
-
-```bash
-# 1. 全局安装（消费方）
-npm i -g less
-lessc input.less output.css
-
-# 2. 源码安装（开发者）
-cd packages/less
-npm install
-npm run build       # rollup 打包到 dist/
-node bin/lessc ../test-data/less/unit/mixins.less
-
-# 3. 测试
-npm test            # grunt test
-npm run test:node   # 仅 Node 子集
-npm run lint
-npm run typecheck
-```
-
-**Smoke test**：
-```bash
+## 一、基础范式
+
+### 模式 1 · 单遍 Parser + AST 多 Pass Visitor
+
+**问题场景**：传统编译器"lexer→parser→AST→optimize→codegen"5 阶段写死；增加一个 pass 要改主循环；浏览器场景下 1MB 的 .less 文件 lexer 生成 token 数组是巨大开销；DSL 经常要"加新 pass"。
+
+**解决方案**：`lib/less/parser/parser.js` 顶部注释明确"a relatively straight-forward predictive parser. There is no tokenization/lexing stage"——输入分块（`chunks` + `j` + `currentPos`）单遍扫完直接构 AST；后续 `ImportVisitor` → `Eval` → `JoinSelectorVisitor` → `ExtendVisitor` → `MarkVisibleSelectorsVisitor` → `ToCSSVisitor` → `SourceMapBuilder` 各自独立的 Visitor 跑同一棵 AST。新加 pass = 写一个 Visitor 类 + 在 `transform-tree.js` 注册。
+
+**关键参数**：
+- 单遍 parser 不用 token
+- chunks 三指针 4x 加速
+- `Anonymous` 节点 fast-path
+- `transform-tree.js` 调度
+- `isPreEvalVisitor` / `isPreVisitor` 钩子
+
+**最佳实践**：DSL 编译器要"加新 pass 不改旧代码"用单遍 parser + 多 Visitor；**比传统 5 阶段简单 5x**；适用任何"DSL 编译器 + 可扩展 transform"。
+
+### 模式 2 · Visitor typeIndex 字典化
+
+**问题场景**：35+ AST 节点类型，每次 visit 走 `if/else` 链或 `switch` 性能差；用 `instanceof` 又有继承问题。
+
+**解决方案**：`lib/less/visitors/visitor.js` 一次性遍历 `tree` 注册表给每个节点类打 `typeIndex`（自增数字 ID）；`visit(node)` 用 `node.typeIndex` 作 O(1) 字典查找 `_visitInCache[typeIndex]`；`_hasIndexed` 单次性 guard 避免重复索引；`visitXxxIn` / `visitXxxOut` 是 enter/exit 钩子。
+
+**关键参数**：
+- `indexNodeTypes` 启动时遍历
+- `typeIndex` 数字 ID
+- `_visitInCache` / `_visitOutCache` 字典
+- `_hasIndexed` 单次 guard
+- enter/exit 钩子
+
+**最佳实践**：库要做"多类型节点事件分发"用 `typeIndex` 字典 + 启动时索引；**比 `switch` 快 5-10x**；适用任何"事件分发 + 多种节点类型"。
+
+### 模式 3 · 5 Pass 流水线架构
+
+**问题场景**：DSL 编译器要把"解析 → import 解析 → 变量展开 → 选择器嵌套 → extend 重写 → CSS 输出 → sourcemap"7 步串起来，单一函数 5000 行难维护。
+
+**解决方案**：`lib/less/transform-tree.js` 显式 5 阶段：`preEvalVisitors`（如 ImportVisitor）→ `root.eval(evalEnv)`（imperative method dispatch，递归 eval 子节点）→ `JoinSelectorVisitor` → `MarkVisibleSelectorsVisitor` → `ExtendVisitor` → `ToCSSVisitor`；`transform-tree.js` 第 44-99 行"两轮 visitor 注册"是核心魔法：plugin 在 `isPreEvalVisitor` 跑在 eval 前、`isPreVisitor` 排到队首、其他排到队尾。
+
+**关键参数**：
+- preEvalVisitors 分桶
+- eval 阶段 imperative dispatch
+- 5 个内置 visitor
+- plugin 双轮注册
+- unshift/push 排序
+
+**最佳实践**：DSL 编译器要"plugin 注入 + 多 pass"用 `transform-tree.js` 双轮注册；**允许 plugin 动态修改 visitor 列表**是 plugin 体系能 work 的核心；适用任何"编译器 + 扩展点"。
+
+### 模式 4 · 跨环境抽象层（Node + Browser）
+
+**问题场景**：同一份编译核心要跑在 Node（用 `fs`）和浏览器（用 `XHR`）两种 runtime；硬写 `if (typeof window)` 污染核心。
+
+**解决方案**：`lib/less/environment/abstract-file-manager.js` 定义 IO 接口（`loadFile` / `getPath` / `join` / `pathDiff`）；`lib/less-node/file-manager.js` 实现 fs 版；`lib/less-browser/file-manager.js` 实现 XHR 版；`createFromEnvironment(environment, [FileManager, UrlFileManager], version)` 工厂把 environment + fileManagers 注入核心；核心编译代码零 `if (isNode)`。
+
+**关键参数**：
+- AbstractFileManager 抽象类
+- Node / Browser 双实现
+- 工厂 `createFromEnvironment`
+- dependency injection
+- 核心零 runtime 判断
+
+**最佳实践**：库要做"同一代码多 runtime"用抽象层 + 工厂注入；**比 `typeof window` 优雅 10x**；适用任何"跨 Node/Browser/Worker/Deno"。
+
+### 模式 5 · 函数注册表 + 链式 inherit 模拟作用域
+
+**问题场景**：DSL 函数要"全局函数（darken/lighten）+ ruleset 内 `@function` 局部函数 + 子作用域继承父作用域"；用 class 继承或 Map 嵌套都复杂。
+
+**解决方案**：`lib/less/functions/function-registry.js` 36 行极简：`makeRegistry(base)` 返回 `{_data, add, get, inherit, create}`；`get(name)` 优先查自己再向上找 `base`，把"作用域"做成 prototype-chain 模式；ruleset 内 `@function: ...` 时 `inherit()` 拿父表，查不到 fallback 到父表；`create(base)` 给顶层做无 base 的根表。
+
+**关键参数**：
+- 36 行极简
+- `get` 递归向上
+- `inherit()` 子继承父
+- `create(base)` 根表
+- prototype-chain 模拟
+
+**最佳实践**：库要做"作用域 + 函数注册"用 `inherit()` 链式；**比 class 继承省 50% 代码**；适用任何"配置中心 + 多租户 / 主题切换"。
+
+---
+
+## 二、扩展范式
+
+### 模式 6 · `expect()` 统一 token/子 parser 入口
+
+**问题场景**：递归下降 parser 写起来"调子 parser 函数 / 匹配终结符正则"两套写法割裂。
+
+**解决方案**：`parser.js#expect(arg, msg)` 接受函数（子 parser，递归调用）或正则/字符串（终结符匹配）；`(arg instanceof Function) ? arg.call(parsers) : parserInput.$re(arg)` 一行统一入口；这是 PEG 解析器典型接口——`expect(function)` 走非终结符，`expect(re)` 走终结符；`parsers` 是 Parser 实例自身（call 后保留 this）。
+
+**关键参数**：
+- `expect(function)` 非终结符
+- `expect(re)` 终结符
+- `parserInput.$re`
+- PEG 风格
+- parsers.this 传递
+
+**最佳实践**：递归下降 parser 用 `expect()` 统一函数/正则；**比写两套入口简单 2x**；适用任何"PEG / 递归下降 parser"。
+
+### 模式 7 · `Anonymous` 节点 fast-path
+
+**问题场景**：`1px solid #000` 这种纯字面量在解析时走完 dimension/color 完整 token 化是浪费；CSS 语法错（拼写错属性名）通常由浏览器兜底。
+
+**解决方案**：Parser 检测"值不含变量/操作/动态引用"时整段当 `Anonymous` 字符串节点直接吞下，不解析内部 token；eval 阶段 `Anonymous` 节点 `eval()` 返回自身（identity）；代价：CSS 语法错误延迟到 eval/运行时才发现；收益：50% parse 时间节省。
+
+**关键参数**：
+- 无变量/操作/dynamic 判定
+- `Anonymous` 节点
+- eval identity
+- 50% 性能提升
+- 错误延迟发现
+
+**最佳实践**：parser 要"快 path"用"无操作字面量当字符串"判定；**性能换错误延迟**；适用任何"DSL parser + 大量字面量"。
+
+### 模式 8 · 5 种 Plugin 接口（Visitor/Function/Importer/PreProcessor/PostProcessor）
+
+**问题场景**：DSL 工具需要 plugin 机制：自定义函数（darken）、自定义 import（去重）、自定义预处理（autoprefixer）……接口不统一 plugin 难写。
+
+**解决方案**：`lib/less-plugin/` 体系定义 5 接口：① `install(less, pluginManager, functions)` 加自定义函数 ② `visitor` 数组加自定义 Visitor ③ `importers` 数组加自定义文件加载 ④ `preProcessor` 字符串预处理 ⑤ `postProcessor` CSS 字符串后处理；`PluginManager` 集中管理；`createFromEnvironment` 接受 `pluginManager` 选项。
+
+**关键参数**：
+- 5 类扩展点
+- `PluginManager` 集中
+- `install` 函数注册
+- `visitor` 数组
+- `importers` / pre / post
+
+**最佳实践**：库要做"plugin 机制"按功能切 5 接口；**让用户 5 行写一个 plugin**；适用任何"工具库 + 生态扩展"。
+
+### 模式 9 · 2 轮 Visitor 注册解决 plugin 时序
+
+**问题场景**：plugin 体系里"plugin B 想在 plugin A 的 visitor 之后跑"——但 A 注册时 B 还没注册，引用不到；plugin 想在 eval 前/后插队。
+
+**解决方案**：`transform-tree.js` 第 44-99 行 `for (let i = 0; i < 2; i++)`：第一轮把所有 visitor 注册到 `visitors` 列表 + `preEvalVisitors` 列表；第二轮发现"如果前一次已经跑过就不重复跑"；`isPreEvalVisitor` 跑在 eval 之前、`isPreVisitor` 用 `unshift` 排到队首、其他用 `push` 排到队尾；plugin 可在运行期动态添加 visitor。
+
+**关键参数**：
+- 2 轮 for 循环
+- `isPreEvalVisitor` 时序
+- `isPreVisitor` 队首
+- 动态 visitor 列表
+- `first()/get()` 迭代器
+
+**最佳实践**：plugin 体系要"plugin 注册时序无关"用 2 轮注册；**解决 plugin A/B 互相依赖**；适用任何"plugin 框架 + 时序控制"。
+
+### 模式 10 · callback / Promise 双模式 API
+
+**问题场景**：Node 风格 API 早期用 callback，async/await 时代用 Promise。两种风格切换写两套包装累。
+
+**解决方案**：`lib/less/render.js` 42 行极简：`render(input, options, callback)`；`if (typeof options === 'function')` 判定 callback 模式；不传 callback 时 `return new Promise(...)` 内调 `render.call(self, input, options, cb)`；用户既可 `less.render(src, cb)` 也可 `await less.render(src)`；`parse` 内部 try/catch 把 `LessError` 传到 `callback(err)` 或 `reject(err)`。
+
+**关键参数**：
+- 42 行极简
+- `typeof options === 'function'` 判定
+- callback / Promise 二选一
+- `bind(api)` this 上下文
+- `LessError` 错误统一
+
+**最佳实践**：Node 库 API 要"老 callback + 新 async/await"双模式；**比写两套 wrapper 简单 5x**；适用任何"Node 库 + 双风格 API"。
+
+---
+
+## 三、进阶范式
+
+### 模式 11 · `lessc` 手写 argv 解析（679 行）
+
+**问题场景**：CLI 参数解析简单工具（minimist / yargs） 早期不流行；自己写可控；现在回头看是技术债。
+
+**解决方案**：`bin/lessc` 第 1-10 行是 shebang + 引入 Node 入口；后 669 行是手写 argv 解析：`-` 前缀判断、`--flag` 长选项、`-x=value` 短选项带值、参数消费顺序、`--no-color` 否定语法、help 文本生成；`process.argv` 切片 + state machine；优点：完全可控、零依赖；缺点：679 行复杂度。
+
+**关键参数**：
+- 679 行手写
+- 零依赖
+- `-` / `--` 双格式
+- `--no-X` 否定
+- help 文本内置
+
+**最佳实践**：CLI 工具要"早期 + 零依赖"手写 argv；**现代用 yargs 5 行代替**；适用任何"早期 CLI + 单 binary"。
+
+### 模式 12 · `render.js` `this` 上下文假设（10 年技术债）
+
+**问题场景**：`less/index.js` 末尾 `initial.parse = initial.parse.bind(api); initial.render = initial.render.bind(api);`——承认 "Some of the functions assume a `this` context of the API object, which causes it to fail when wrapped for ES6 imports. An assumed `this` should be removed in the future."
+
+**解决方案**：历史问题用 `bind()` 兜底；ES6 import 拿到的是独立 `parse` 函数，缺 this 上下文；ESM 时代应该全部用显式参数传 API；`render.js` 内部 `if (!callback) return new Promise(...).bind(self, ...)` 显式自管理；这是 less.js 在仓库公开承认的"未来应该改"。
+
+**关键参数**：
+- 10 年技术债
+- `bind(api)` 兜底
+- ES6 import 不兼容
+- 显式 this 应被替换
+- 公开承认待重构
+
+**最佳实践**：库设计阶段就避免隐式 `this` 上下文；**新项目从 day-1 显式参数**；适用任何"OOP 库 + 模块化"。
+
+### 模式 13 · parser 注释即架构文档
+
+**问题场景**：传统 ADR 写在 docs/，写完 3 个月就过期；新人读 parser.js 不知道"为什么这样写"。
+
+**解决方案**：`parser.js` 顶部 13-44 行注释直接写"4x 加速""50% 加速"性能数据 + 原因（"Matching and slicing on a huge input is often cause of slowdowns"）；注释里直白"放弃 lexer 阶段，因为浏览器场景下不划算"；10 年后回头看这些数字就是项目史，比单独 ARCHITECTURE.md 不会腐烂。
+
+**关键参数**：
+- 顶部 13-44 行
+- 4x / 50% 性能数据
+- WHY 而非 WHAT
+- 10 年不腐烂
+- 比 ADR 实用
+
+**最佳实践**：库要做"长期维护"在源码顶部写 WHY + 性能数据；**比单独 ADR 文件可靠 5x**；适用任何"10 年+ 开源项目"。
+
+### 模式 14 · circular import 警告（datetime/duration 案例）
+
+**问题场景**：`datetime.js` 顶部 `import Duration from "./duration.js"` + `duration.js` 顶部 `import DateTime from "./datetime.js"`——Node 解析时一方拿到未初始化 `undefined`；能跑通是因为两者只用对方 static factory 推迟到运行时 + ES module live binding 兜底。
+
+**解决方案**：能跑靠 ES module live binding（import 是 binding 而非值）；**反模式警告**：新人改一行就崩；重构要先把循环依赖解掉（用第三个文件集中 mutual deps）；静态分析工具（madge / circular-dependency-scanner）可检测。
+
+**关键参数**：
+- circular import 警告
+- live binding 兜底
+- 推迟到运行时
+- static factory 隔离
+- 反模式案例
+
+**最佳实践**：库设计阶段就避免循环 import；**如不可避免，调用都走 static factory 推迟**；适用任何"双向依赖的 module 设计"。
+
+### 模式 15 · `Ruleset._lookups` lazy 缓存（简单但正确）
+
+**问题场景**：`@variable` 变量在 ruleset 内查询，递归往上找父级；每次查询 O(深度)；ruleset 实际只查几次变量。
+
+**解决方案**：`lib/less/tree/ruleset.js` 构造函数 `this._lookups = {}; this._variables = null; this._properties = null;` 第一次访问时构建缓存，后续 O(1) 字典查找；这是"启动慢一点、运行时快很多"的 memoization 简单范本；`Ruleset` 共 1067 行但核心是 4 个 lazy 缓存字段。
+
+**关键参数**：
+- `_lookups` 字典
+- lazy 首次构建
+- 后续 O(1)
+- 简单 memoization
+- Ruleset 1067 行
+
+**最佳实践**：库要做"重复查询"用 lazy 缓存字段；**第一次慢、后续 O(1)**；适用任何"深度查找 + 多次查询"。
+
+---
+
+## 四、实战范式
+
+### 模式 16 · smoke test 10 行验证 Less 环境
+
+**问题场景**：新环境装好 less 后要快速验证编译 + sourcemap + @import 3 件套。
+
+**解决方案**：10 行 smoke test：```bash
 echo '@base: #f00; .a { color: @base; }' > /tmp/t.less
 node packages/less/bin/lessc /tmp/t.less
-# 输出 .a { color: #ff0000; }
-```
+# 期望输出: .a { color: #ff0000; }
+# sourcemap:
+node packages/less/bin/lessc --source-map /tmp/t.less /tmp/out.css
+# 验证 .map 文件生成
+``` 期望：编译成功 + 颜色替换 + sourcemap 文件可读。
 
-**作为库使用**：
-```javascript
-import less from 'less';
-less.render('.a { color: red; }', { compress: true })
-    .then(out => console.log(out.css));
-```
+**关键参数**：
+- 10 行核心验证
+- 变量替换
+- @import 解析
+- sourcemap 生成
+- 1 分钟可跑完
 
-## 7. 演进历史（Time Travel）
+**最佳实践**：新环境验证 DSL 工具用 10 行 smoke test；**比 dev server 5 分钟快 30x**；适用任何"Less 引入 + 升级回归"。
 
-```mermaid
-gantt
-    title Less.js 关键里程碑
-    dateFormat YYYY
-    section 起步
-    v1.0 (2009) :milestone, 2009, 1d
-    Node 适配 (2012) :milestone, 2012, 1d
-    section 巅峰
-    Bootstrap 4 选用 (2014) :milestone, 2014, 1d
-    section 持续
-    3.x (2017) :milestone, 2017, 1d
-    4.0 ESM 化 (2021) :milestone, 2021, 1d
-    4.6.x 维护 (2025-2026) :milestone, 2025, 1d
-```
+### 模式 17 · 测试资产即文档（Golden File）
 
-**git log 简版**（要全量用 `git log --oneline | head 50`）：
-- 2026 多次发版（4.6.0 → 4.6.3），仍接受社区 PR
-- 4.x 重大改造：转向 ESM（`"type": "module"`），提供 CJS 兼容 dist
-- 3.x 时代引入 Math 严格模式、容器查询支持（容器 query）
-- 2.x 加入 `:extend()`、Mixin 命名空间
-- 1.x 加入 Mixin、变量、函数
+**问题场景**：DSL 编译器测试难写——单元测试覆盖不到"输出 CSS 字符串对了"。
 
-## 8. 质量保障（How It Doesn't Break）
+**解决方案**：`test-data/tests-unit/` 下每个文件夹一个特性（mixins/extend/import/...），每个 .less 配一个 .css 当 golden file；测试编译 .less 对比 .css；改 Parser 后 golden file diff 一眼看出"哪里回归"；比注释不会腐烂——注释可能错，golden file 错就测试 fail。
 
-| 防线 | 实现 |
-|---|---|
-| **单元测试** | Mocha + 自研 `less-test.js`（跑 `test-data/tests-unit` + `tests-error` + `tests-config`） |
-| **覆盖率** | `c8`，`npm run test:coverage` 输出 lcov + html + 文本 |
-| **Lint** | ESLint（`.eslintrc.cjs`）+ `@typescript-eslint`；husky pre-commit hook |
-| **Type check** | `tsc --noEmit`，对部分 .ts 文件做类型检查 |
-| **CI** | GitHub Actions ci.yml 跑：install → lint → typecheck → test:node → build |
-| **浏览器测试** | Playwright（`test/mocha-playwright/runner.js`）跑真浏览器 |
-| **SauceLabs** | `grunt-saucelabs` 跨浏览器集成（CI 时） |
-| **Bench** | 自研 benny 基准（`packages/less/benchmark/`），保留 v3/v37/v39 历史对比 |
-| **Golden file** | `tests-unit/*/.less` + 对应 `.css` 编译后 jest-diff 对比 |
+**关键参数**：
+- 每个 .less + .css
+- golden file diff
+- 改 Parser 即时反馈
+- 比注释可靠
+- test-data 仓库
 
-## 9. 生态依赖（Map of the World）
+**最佳实践**：DSL 编译器测试用 golden file 配对；**比单元测试覆盖更全面**；适用任何"编译器 / 转换器"。
 
-```mermaid
-mindmap
-  root((依赖结构))
-    运行时可选
-      errno 错误码
-      graceful-fs 容错 fs
-      image-size 图片尺寸
-      make-dir 递归 mkdir
-      mime MIME 推断
-      needle HTTP 客户端
-      source-map .map 生成
-    运行时必需
-      copy-anything 深拷贝
-      parse-node-version 版本解析
-    开发
-      rollup 打包
-      eslint lint
-      typescript tsc
-      mocha test
-      playwright 浏览器测试
-      c8 覆盖率
-      benny 基准
-```
+### 模式 18 · 插件 5 行 demo 模板
 
-**合规检查清单**：
-- 全部依赖 MIT/Apache/BSD 等宽松协议
-- 唯一"硬"可选依赖 `image-size ~0.5.0`（锁版本，与新版 BS 协议冲突）
-- 没有 `eval` 直接执行用户代码的依赖（除 Less 自己的 `@plugin` 机制，且仅当显式开启）
+**问题场景**：想给 less 加一个 `darken-strong` 函数 plugin，不知道从哪入手。
 
-## 10. 生产实践（Battle-Tested）
+**解决方案**：5 行 plugin 模板：```js
+// my-plugin.js
+module.exports = {
+  install(less, pluginManager, functions) {
+    functions.add('darken-strong', (color) => darken(color, 30));
+  }
+};
+// 调用: less.render(src, { pluginManager: new less.PluginManager([myPlugin]) })
+``` 期望：`darken-strong(#fff)` 输出 `#b3b3b3`。
 
-| 维度 | 现状 |
-|---|---|
-| 配置热更新 | 每次 render 都重新走完整流水线，无缓存 → 可视为"天然支持热更新"（代价：性能） |
-| 优雅停服 | CLI 进程模式，Node `process.exit()`，无 daemon 概念 |
-| 限流 | 无（纯计算型） |
-| 链路追踪 | 无 |
-| 健康检查 | 无 |
-| 结构化日志 | 仅 `logger.info/warn/error`，文本格式 |
-| 错误处理 | `LessError` 携带 filename/index，编译器 `error()` 抛 → 顶层 try/catch 回到 callback/Promise reject |
-| Source Map | 完整支持（v3 + basepath + include-source + url 多种模式） |
+**关键参数**：
+- 5 行极简
+- `install` 函数
+- `functions.add` 注册
+- PluginManager 注入
+- 立即生效
 
-**生产典型用法**：
-- 构建期：webpack/less-loader、vite（内置）、gulp-less
-- 运行时：浏览器 `less.render()` + watch 模式
-- SaaS 化：通常禁用 `@plugin`（`disablePluginRule` 标志位）防止执行任意 JS
+**最佳实践**：DSL 工具 plugin 体系设计要"5 行写一个 plugin"；**降低扩展门槛 10x**；适用任何"工具 + 生态"。
 
-## 11. 社区文化（People & Process）
+### 模式 19 · vs Sass / PostCSS / Stylus 选型
 
-- **治理**：Core Team（Matthew Dean 主维护）+ OpenCollective 赞助
-- **贡献流程**：`CONTRIBUTING.md` 要求"加测试 + Grunt 测试 + ESLint"
-- **Issue 模板**：`.github/ISSUE_TEMPLATE/bug.md`
-- **PR 模板**：`.github/PULL_REQUEST_TEMPLATE.md`
-- **Stale bot**：`stale.yml` 自动关闭陈旧 issue
-- **安全策略**：`SECURITY.md`
-- **测试发布流程**：`TESTING_PUBLISHING.md` + `scripts/bump-and-publish.js`
-- **All-contributors**：`.all-contributorsrc` 自动归功
-- **Code review**：`.coderabbit.yaml`（启用 AI code review）
+**问题场景**：4 个候选（less / sass / postcss / stylus），按需选型。
 
-## 12. 教训总结（What To Steal / What To Avoid）
+**解决方案**：less 17k star + CSS 超集 + 浏览器原生 + 体积 250KB → 学习成本最低、Bootstrap 4 之前事实标准；sass 30k+ star + Dart 编译 + 功能最全 + 社区最大 → 新项目默认；stylus 11k star + 极简语法 → 灵活但学习曲线不一致；postcss 28k+ star + 插件架构 → 极致可组合 + 需自选插件；less 是"最低学习成本"，sass 是"功能完备"，postcss 是"灵活可组合"。
 
-### 12.1 必偷 3 件
+**关键参数**：
+- less 17k CSS 超集
+- sass 30k Dart 编译
+- postcss 28k 插件
+- stylus 11k 灵活
+- 各有定位
 
-1. **DSL 编译器的"5 Pass 流水线"模板**：Parser → ImportVisitor → Eval → ToCSSVisitor (+ExtendVisitor) → SourceMapBuilder。每加新 pass 都是独立 Visitor，不改旧代码。
-2. **环境抽象层（`abstract-file-manager.js`）**：用"依赖注入 + 抽象类"做跨 runtime 隔离，核心编译代码零 if (isNode)。
-3. **Parser 注释里写性能数据**（"4x 加速""50% 加速"）：10 年后回头看这些数字就是项目史，比单独的 ARCHITECTURE.md 不会腐烂。
+**最佳实践**：CSS 预处理器选型按"学习成本 + 功能 + 体积"3 维度打矩阵；**新项目默认 sass**、**老项目留 less**、**极致灵活选 postcss**；适用任何"CSS 工具选型"。
 
-### 12.2 必避 3 坑
+### 模式 20 · 7 天复刻 mini-less
 
-1. **`this` 隐式上下文**：`less/index.js` 末尾 `bind(api)` 是 10 年前留下的补丁。**新项目从一开始就该用显式依赖注入**。
-2. **`/* eslint guard-for-in: 0 */` 全局禁用规则**：用 `Object.keys` 或 Map 替代 `for...in`，不要在全局 .eslintrc 关掉 lint 规则。
-3. **`lessc` 679 行手写 argv 解析**：哪怕当时 minimist 还没出，也该 yargs 化。新项目别再写自己的 argv parser。
+**问题场景**：学习用，想搭一个简化版 Less 理解 DSL 编译器核心。
 
-### 12.3 7 天复刻路线图
+**解决方案**：7 天分 5 步：① Day 1 AST 节点类（Ruleset / Declaration / Value）② Day 2 Parser 变量 + Mixin 基础 ③ Day 3 ToCSSVisitor 输出 CSS 字符串 ④ Day 4 @import 跨文件 + 环境抽象 ⑤ Day 5 Plugin 体系 5 接口 + 2 轮 Visitor 注册 + 单元测试。每天 200-500 行，Day 1 能跑空 Parser，Day 5 能跑"变量 + Mixin + @import"完整子集。
 
-```mermaid
-gantt
-    title 7 天复刻 Less.js 子集路线
-    dateFormat D
-    section 骨架
-    D1 目录结构 + 包配置 :a1, 1, 1d
-    D2 AST 节点类 :a2, 2, 1d
-    section 编译
-    D3 Parser (变量+Mixin) :a3, 3, 1d
-    D4 ToCSSVisitor :a4, 4, 1d
-    section 高级
-    D5 @import :a5, 5, 1d
-    D6 插件体系 :a6, 6, 1d
-    section 完工
-    D7 测试 + sourcemap :a7, 7, 1d
-```
+**关键参数**：
+- Day 1-2 骨架 + AST
+- Day 3 渲染输出
+- Day 4 @import
+- Day 5 插件 + 测试
+- 7 天最小可用
 
-每天产出：第 1 天能跑 `lessc empty.less`、第 3 天能编译 `.a { color: @c; }`、第 7 天能编译 Bootstrap 子集。
+**最佳实践**：复刻 Less 先求"最小可跑内核"再迭代，7 天只够做 80% 场景的简化版；**完整 typeIndex 缓存 + 5 Pass Visitor + 5 接口 plugin 需 1 个月+**；适用任何"DSL 编译器学习"。
 
-### 12.4 打分卡
-
-| 维度 | 分数 (1-5) | 评语 |
-|---|---|---|
-| 代码可读性 | 4 | JSDoc + 注释充分，少数文件略长（parser.js） |
-| 架构清晰度 | 5 | 5 Pass 流水线 + 环境抽象，教科书级 |
-| 性能 | 4 | chunking + fast-path 实测有效 |
-| 可扩展性 | 5 | 5 种 Plugin 接口 + 注入点设计 |
-| 测试覆盖 | 5 | golden file + browser + node + coverage |
-| 文档 | 3 | README 简略，靠 lesscss.org 站点 |
-| 新人友好 | 3 | 2693 行的 parser.js + Plugin 五接口需要时间消化 |
-| 维护性 | 4 | 仍有"this 上下文"等技术债但有清晰注释 |
-
-**综合**：4.1/5，作为"DSL 编译器学习样本"是满分，作为"新项目脚手架"稍重。
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：Less.js 是少数能用 50 个源文件、35K 行 JS 把"DSL → AST → CSS"流水线讲清楚、跑得动、扛得住 17k star 维护压力的开源项目。
-
-**3 核心洞察**：
-1. **Parser 注释即架构文档**：`parser.js` 顶部 40 行注释直接告诉你"为什么这么写、放弃过什么方案、性能数据是多少"，胜过千行 ADR
-2. **Visitor 的 typeIndex 字典化**：用一次启动时遍历换运行时 O(1) 分发，是 GOF Visitor 模式的性能升级版
-3. **环境抽象 + 工厂注入**：`createFromEnvironment(env, fileManagers, version)` 让"一份代码两个 runtime"零 if 解决，比"运行时判断 `typeof window`"优雅 10 倍
-
-**5 段必读代码**：
-1. `lib/less/parser/parser.js` 第 13-44 行（顶部注释，WHY 1+2）
-2. `lib/less/visitors/visitor.js` 全文 166 行（typeIndex 模式完整实现）
-3. `lib/less/tree/ruleset.js` 第 48-87 行（Ruleset 构造函数 + 所有 lazy 缓存字段）
-4. `lib/less/transform-tree.js` 第 44-99 行（Plugin 双轮 visitor 调度）
-5. `lib/less/render.js` 全文 42 行（callback/Promise 双模式 API 范本）
-
-**1 反模式**：`lib/less/index.js` 第 91-92 行 `bind(api)` + 注释承认"this 上下文假设是历史负担"。
-
-**1 可复用模式**：`lib/less/functions/function-registry.js` 的 `inherit()` —— prototype-chain 模拟作用域链。
-
-**3 立刻能用**：
-1. 抄 `visitor.js` 的 `typeIndex` 模式到自己项目做"多类型节点的事件分发"
-2. 抄 `transform-tree.js` 的"两轮 visitor 注册"思路做 plugin 体系
-3. 抄 `function-registry.js` 的 `inherit()` 做配置中心（如主题切换、租户隔离）
-
-## 14. 项目特点速查
-
-| 特点 | 描述 |
-|---|---|
-| 体积 | 35K 行核心，dist 后浏览器版约 250KB（minified） |
-| 启动时间 | 50ms 内（单文件） |
-| 峰值内存 | 与输入线性，100KB .less 约 10MB 内存 |
-| 学习曲线 | 低（CSS 用户 30 分钟上手） |
-| 与同类对比 | 见下 |
-
-```mermaid
-quadrantChart
-    title CSS 预处理器对比
-    x-axis "慢编译" --> "快编译"
-    y-axis "功能弱" --> "功能强"
-    "Less.js": [0.7, 0.65]
-    "Sass": [0.5, 0.95]
-    "Stylus": [0.7, 0.7]
-    "PostCSS": [0.9, 0.85]
-```
-
-**与同类对比**：
-
-| 项目 | 语言 | 风格 | 卖点 | 弱点 |
-|---|---|---|---|---|
-| Less.js | JS | CSS 超集 | 学习成本最低、浏览器原生 | 高级特性不及 Sass |
-| Sass (SCSS) | Ruby→Dart | CSS 超集 | 功能最全、社区大 | 需 Dart 编译、@import 复杂 |
-| Stylus | JS | 灵活语法 | 极简、可省略冒号分号 | 学习曲线不一致 |
-| PostCSS | JS | CSS + 插件 | 极致可组合 | 需自己选插件 |
+---
 
 ## 附：仓库元信息
 
-- 路径：`G:\实战案例\GitHub顶尖项目\less.js\`
-- 总文件：907
-- 大小：约 30MB（含 test-data 图片）
-- 主分支：master
-- 当前 commit：gitHead 1df9072ee9ebdadc791bf35dfb1dbc3ef9f1948f
-- 解析时间：约 12 分钟
-- 解析 commit：master @ 2026-06-02
+- **路径**: `G:\实战案例\GitHub顶尖项目\less.js\`
+- **大小**: ~30MB
+- **总文件**: 907（src 50+ + test 200+ + docs 100+）
+- **核心文件**: `lib/less/parser/parser.js`（2693 行）、`lib/less/tree/ruleset.js`（1067 行）、`lib/less/visitors/visitor.js`（166 行）、`lib/less/transform-tree.js`（103 行）、`lib/less/render.js`（42 行）、`lib/less/functions/function-registry.js`（36 行）
+- **主分支**: master
+- **当前 commit**: gitHead 1df9072ee9
+- **作者**: Alexis Sellier（cloudhead）+ Matthew Dean 等核心维护者
+- **许可**: Apache-2.0
+- **被采用**: Bootstrap 4 之前事实标准、几十万网站
 
 ## 一句话总结
 
-解析 Less.js = 一份"DSL 编译器应有的形状"的工程示范：单遍 Parser + 5 Pass Visitor + 环境抽象 + Plugin 五接口，外加一份 10 年没换的注释风格，告诉你"为什么这样写"和"放弃了什么"。
+less.js 用 JavaScript 把"DSL 编译器应有的形状"做出来：单遍 Parser + 5 Pass Visitor + 环境抽象 + Plugin 5 接口 + 顶部注释即架构文档，是学编译原理/前端工程化的优秀样本。

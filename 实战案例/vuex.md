@@ -1,16 +1,18 @@
 # vuex - Vue 官方集中式状态管理的单一状态树与 _withCommit 事务守卫典范
 
 **GitHub**: vuejs/vuex
-**Star**: ~28k
+**Star**: 28k+
 **语言**: TypeScript
-**主题**: 状态管理、Flux 模式、单一状态树、模块化
-**适用场景**: Vue 2/3 SPA 中大型应用、跨组件状态共享、严格模式
+**主题**: 状态管理 / Flux 模式 / 单一状态树 / 模块化
+**适用场景**: Vue 2 / 3 SPA 中大型应用 + 跨组件状态共享 + 严格模式调试
 
-## 第一段：基础范式
+> vuex 是 Vue 官方状态管理——单一状态树 + mutation 同步事务 + action 异步编排 + 模块化命名空间 + 严格模式 debug 工具。`_withCommit` 内部守卫让直接修改 state 报警告是它的"安全网"工程典范。Vue 3 新项目官方推荐 Pinia，但 Vuex 4 仍维护——大型 Vue 2 应用的事实标准。
 
-### 模式 1：单一状态树（Single Source of Truth）
+## 第一段：基础范式（模式 1-5）
 
-**问题场景**：组件间状态共享（user/cart/theme）散落在多个组件——传 props 穿透层级深，event bus 不可控。
+### 模式 1 · 单一状态树（Single Source of Truth）
+
+**问题场景**：组件间状态共享（user / cart / theme）散落在多个组件——传 props 穿透层级深，event bus 不可控。
 
 **解决方案**：Vuex 把所有应用状态存到一个 `state` 对象（单一状态树），所有组件从 `store.state` 读。任何修改必须通过 `mutation`（同步）/`action`（异步）。`store` 是响应式的，状态变化触发视图更新。
 
@@ -23,11 +25,11 @@
 
 **最佳实践**：所有跨组件状态走 Vuex；`state` 扁平（不深嵌套）；`mutations` 同步只改 state；`actions` 异步调 mutation；用 `modules` 拆分大型 store。
 
-### 模式 2：Mutation 同步事务
+### 模式 2 · Mutation 同步事务与 _withCommit
 
 **问题场景**：直接修改 `state.count++` 绕过 mutation 监听——调试工具无法追踪状态变更。
 
-**解决方案**：所有 state 变更必须经 `mutation`（同步函数）。`store.commit('increment', payload)` 触发；`store.replaceState(newState)` 替换（仅用于 SSR/hydration）。`_withCommit(fn)` 是内部守卫，把 `committing` 标志置 true，允许直接改 state（不报警告）。
+**解决方案**：所有 state 变更必须经 `mutation`（同步函数）。`store.commit('increment', payload)` 触发；`store.replaceState(newState)` 替换（仅用于 SSR / hydration）。`_withCommit(fn)` 是内部守卫，把 `committing` 标志置 true，允许直接改 state（不报警告）。
 
 **关键参数**：
 - `store.commit(type, payload)`
@@ -38,9 +40,9 @@
 
 **最佳实践**：用 mutation 名常量；payload 是对象（多字段）；`strict: true` 开发态；`replaceState` 仅用于 SSR；不要在 mutation 内调异步。
 
-### 模式 3：Action 异步与业务编排
+### 模式 3 · Action 异步与业务编排
 
-**问题场景**：mutation 同步限制——API 请求/定时器等异步逻辑放哪？
+**问题场景**：mutation 同步限制——API 请求 / 定时器等异步逻辑放哪？
 
 **解决方案**：`actions` 是异步函数，接收 `context`（`{ commit, dispatch, state, getters, rootGetters }`）。`store.dispatch('fetchUser', id)` 触发。action 内 `commit` 多次 mutation 编排业务。
 
@@ -51,13 +53,13 @@
 - `root: true` 访问根
 - payload 可任意
 
-**最佳实践**：用 ES6 解构 `{ commit, state }`；返回 Promise 让调用方 await；用 async/await 不用回调；action 不直接改 state（走 mutation）；用 `root: true` 跨模块 dispatch。
+**最佳实践**：用 ES6 解构 `{ commit, state }`；返回 Promise 让调用方 await；用 async / await 不用回调；action 不直接改 state（走 mutation）；用 `root: true` 跨模块 dispatch。
 
-### 模式 4：Getter 计算派生
+### 模式 4 · Getter 计算派生
 
-**问题场景**：多个组件要同一派生值（`doubleCount`/`activeUsers`）——重复写 computed。
+**问题场景**：多个组件要同一派生值（`doubleCount` / `activeUsers`）——重复写 computed。
 
-**解决方案**：`getters: { doubleCount: state => state.count * 2 }` 派生属性。`store.getters.doubleCount` 取值。`getters` 第二个参数可访问其他 getter。`rootGetters`/`rootState` 访问根。
+**解决方案**：`getters: { doubleCount: state => state.count * 2 }` 派生属性。`store.getters.doubleCount` 取值。`getters` 第二个参数可访问其他 getter。`rootGetters` / `rootState` 访问根。
 
 **关键参数**：
 - `getters` 派生
@@ -68,9 +70,9 @@
 
 **最佳实践**：用 getter 复用派生；参数化 getter 返回函数；缓存基于依赖（性能好）；用 `rootGetters` 跨模块；不要在 getter 内改 state。
 
-### 模式 5：模块化（Modules）
+### 模式 5 · 模块化（Modules）
 
-**问题场景**：大型应用 store 巨大（数百 state/mutation）——单文件管理痛苦。
+**问题场景**：大型应用 store 巨大（数百 state / mutation）——单文件管理痛苦。
 
 **解决方案**：`modules: { cart: { state, mutations, actions, getters, modules } }` 拆分。模块内 state 是局部的（`state.count` 而非 `state.cart.count`）。`namespaced: true` 启用命名空间。
 
@@ -81,11 +83,11 @@
 - `root: true` 跨模块
 - 嵌套模块
 
-**最佳实践**：用 `namespaced: true` 避免冲突；按业务域分模块（user/cart/order）；用 `rootGetters`/`rootState` 跨模块；模块内可再嵌套；用 `mapState`/`mapGetters` 组件映射。
+**最佳实践**：用 `namespaced: true` 避免冲突；按业务域分模块（user / cart / order）；用 `rootGetters` / `rootState` 跨模块；模块内可再嵌套；用 `mapState` / `mapGetters` 组件映射。
 
-## 第二段：扩展范式
+## 第二段：扩展范式（模式 6-10）
 
-### 模式 6：严格模式（Strict Mode）
+### 模式 6 · 严格模式（Strict Mode）
 
 **问题场景**：开发者意外直接改 state（`store.state.count = 100`）——绕过 mutation，调试工具追踪不到。
 
@@ -100,7 +102,7 @@
 
 **最佳实践**：dev 开 `strict: true`；生产关 strict；不直接改 state；用 mutation 改；strict 抛错时检查是否绕过 mutation；CI 测试用 strict。
 
-### 模式 7：插件系统（Logger / Persist）
+### 模式 7 · 插件系统（Logger / Persist）
 
 **问题场景**：需要日志记录所有 mutation（开发调试）——核心不自带。
 
@@ -115,9 +117,9 @@
 
 **最佳实践**：dev 用 `createLogger`；用 `vuex-persistedstate` 持久化（localStorage）；用 `subscribe` 做埋点；用 `watch` 监听特定 state；插件按域分文件。
 
-### 模式 8：订阅与监听（subscribe / watch）
+### 模式 8 · 订阅与监听（subscribe / watch）
 
-**问题场景**：组件外需要响应 state 变化（埋点/同步外部状态）——watch 写在组件内不够。
+**问题场景**：组件外需要响应 state 变化（埋点 / 同步外部状态）——watch 写在组件内不够。
 
 **解决方案**：`store.subscribe(mutation => ...)` 每次 commit 后触发；`store.watch((state) => state.a.b, (newVal, oldVal) => ...)` 监听特定 state 路径。`watch` 返回 `unsubscribe` 函数。
 
@@ -130,11 +132,11 @@
 
 **最佳实践**：用 `subscribe` 做全局埋点；用 `watch` 监听关键 state；用 `unsubscribe` 在组件 unmount 清理；`subscribe` 比 `watch` 性能高；用 `subscribeAction`（Vuex 4）订阅 action。
 
-### 模式 9：组件辅助函数（mapState / mapGetters / mapActions / mapMutations）
+### 模式 9 · 组件辅助函数（mapState / mapGetters / mapActions / mapMutations）
 
-**问题场景**：组件需要从 store 取多个 state/getter/action ——重复 `this.$store.state.x` 繁琐。
+**问题场景**：组件需要从 store 取多个 state / getter / action——重复 `this.$store.state.x` 繁琐。
 
-**解决方案**：`mapState(['count', 'name'])` 返回 `{ count() { return this.$store.state.count }, name() { ... } }`，混入 computed。`mapState({ localCount: state => state.count })` 自定义映射。`mapGetters`/`mapActions`/`mapMutations` 同理。
+**解决方案**：`mapState(['count', 'name'])` 返回 `{ count() { return this.$store.state.count }, name() { ... } }`，混入 computed。`mapState({ localCount: state => state.count })` 自定义映射。`mapGetters` / `mapActions` / `mapMutations` 同理。
 
 **关键参数**：
 - `mapState(array | object)`
@@ -145,7 +147,7 @@
 
 **最佳实践**：用 `mapXxx` 简化；数组形式适合简单映射；对象形式自定义；用 `createNamespacedHelpers('cart')` 配命名空间；Vue 3 改用 `useStore`。
 
-### 模式 10：动态模块注册（registerModule）
+### 模式 10 · 动态模块注册（registerModule）
 
 **问题场景**：模块按需加载（用户登录后才加载 user 模块）——静态 modules 不支持。
 
@@ -160,11 +162,11 @@
 
 **最佳实践**：路由懒加载对应 store 模块；用 `preserveState` 防止覆盖；用 `hasModule` 检查；HMR 时 `unregisterModule` 再 `registerModule`；用 `registerModule(['cart', 'items'], module)` 嵌套。
 
-## 第三段：进阶范式
+## 第三段：进阶范式（模式 11-15）
 
-### 模式 11：Vuex 4 与 Vue 3 Composition API
+### 模式 11 · Vuex 4 与 Vue 3 Composition API
 
-**问题场景**：Vue 3 推 Composition API，Vuex 4 需支持 `useStore()`/`useState()`/`useGetters()`。
+**问题场景**：Vue 3 推 Composition API，Vuex 4 需支持 `useStore()` / `useState()` / `useGetters()`。
 
 **解决方案**：`useStore()` 返回 store 实例（替代 `this.$store`）。`useState(map)` 替代 `mapState`，`useGetters(map)` 替代 `mapGetters`。这些是社区补充（如 `vuex-composition-helpers`），不是 Vuex 4 内置。
 
@@ -172,12 +174,12 @@
 - `useStore()` 取 store
 - `useState(['count'])` 映射
 - `useGetters(['double'])` 映射
-- `useActions`/`useMutations`
+- `useActions` / `useMutations`
 - Composition 风格
 
-**最佳实践**：Vue 3 用 Pinia（官方推荐）；Vue 2 + Vuex 4 兼容；用 `useStore()` 替代 `this.$store`；用 `useState`/`useGetters` 替代 `mapXxx`；用 `storeToRefs` 解构。
+**最佳实践**：Vue 3 用 Pinia（官方推荐）；Vue 2 + Vuex 4 兼容；用 `useStore()` 替代 `this.$store`；用 `useState` / `useGetters` 替代 `mapXxx`；用 `storeToRefs` 解构。
 
-### 模式 12：SSR 与 Nuxt
+### 模式 12 · SSR 与 Nuxt
 
 **问题场景**：SSR 模式每个请求要新 store——全局 store 状态会污染请求。
 
@@ -192,11 +194,11 @@
 
 **最佳实践**：SSR 每次请求 `createStore()`；用 `nuxtServerInit` 预加载；用 `payload` 传客户端；用 `replaceState` 注入；用 `v-once` 防止水合错误。
 
-### 模式 13：TypeScript 与类型安全
+### 模式 13 · TypeScript 与类型安全
 
 **问题场景**：JS 写 Vuex，`store.commit('xxx')` 字符串易拼错——没有类型检查。
 
-**解决方案**：`InjectionKey<Store<State>>` 强类型 store。`createStore` 配泛型 `<State>`。`mutations`/`actions` 类型推断靠工厂函数：
+**解决方案**：`InjectionKey<Store<State>>` 强类型 store。`createStore` 配泛型 `<State>`。`mutations` / `actions` 类型推断靠工厂函数：
 ```ts
 const store = createStore({
   state: { count: 0 },
@@ -211,26 +213,26 @@ const key: InjectionKey<Store> = Symbol()
 - `createStore<State>`
 - 类型推断
 - 工厂返回类型
-- `commit`/`dispatch` 类型
+- `commit` / `dispatch` 类型
 
-**最佳实践**：用 `InjectionKey` 强类型；用 `createStore` 工厂返回类型；用 `useStore` 接受 key；用 `mapState`/`mapGetters` 类型映射；Vue 3 改用 Pinia（更好 TS）。
+**最佳实践**：用 `InjectionKey` 强类型；用 `createStore` 工厂返回类型；用 `useStore` 接受 key；用 `mapState` / `mapGetters` 类型映射；Vue 3 改用 Pinia（更好 TS）。
 
-### 模式 14：热更新（Hot Module Replacement）
+### 模式 14 · 热更新（Hot Module Replacement）
 
 **问题场景**：开发时改 store 文件希望保留 state——HMR 默认会重置。
 
-**解决方案**：`module.hot.accept(['./store'], () => { const newStore = createStore(); store.hotUpdate(newStore) })` 接受 HMR。`store.hotUpdate(newModule)` 内部用 `registerModule`/`unregisterModule` 替换。
+**解决方案**：`module.hot.accept(['./store'], () => { const newStore = createStore(); store.hotUpdate(newStore) })` 接受 HMR。`store.hotUpdate(newModule)` 内部用 `registerModule` / `unregisterModule` 替换。
 
 **关键参数**：
 - `module.hot.accept`
 - `store.hotUpdate(newModule)`
-- 注册/卸载模块
+- 注册 / 卸载模块
 - 保留 state
 - Vite HMR 不同
 
 **最佳实践**：用 Vite + Vuex 4 配 HMR API；用 `import.meta.hot.accept`；用 `store.hotUpdate` 替换；保留关键 state（user）；用 `replaceState` 注入；Vite 自动处理 modules。
 
-### 模式 15：单元测试与 Mock
+### 模式 15 · 单元测试与 Mock
 
 **问题场景**：组件依赖 store，单测要 mock store——`this.$store` 难注入。
 
@@ -245,11 +247,11 @@ const key: InjectionKey<Store> = Symbol()
 
 **最佳实践**：用 `createStore` 工厂配测试数据；用 `localVue` 隔离污染；用 `mocks` 注入 `$store`；用 `jest.fn()` mock action；用 `await wrapper.vm.$nextTick()` 等异步；Vue Test Utils 2.x 不同 API。
 
-## 第四段：实战范式
+## 第四段：实战范式（模式 16-20）
 
-### 模式 16：购物车业务实战
+### 模式 16 · 购物车业务实战
 
-**问题场景**：电商购物车（add/remove/calc total）涉及多组件（商品列表/购物车/结算）。
+**问题场景**：电商购物车（add / remove / calc total）涉及多组件（商品列表 / 购物车 / 结算）。
 
 **解决方案**：
 ```js
@@ -283,7 +285,7 @@ const cart = {
 
 **最佳实践**：用 `namespaced` 隔离；用 getter 算总价；用 action 编排业务；用 dispatch 跨模块（`cart/checkout` 调 `user/addPoints`）；用 `rootGetters` 算用户折扣；写测试覆盖。
 
-### 模式 17：用户认证 + Token 持久化
+### 模式 17 · 用户认证 + Token 持久化
 
 **问题场景**：登录后 token 存哪——localStorage 同步简单但不可控；sessionStorage 关闭就丢。
 
@@ -298,9 +300,9 @@ const cart = {
 
 **最佳实践**：用 `vuex-persistedstate` 持久化；用 `paths` 白名单（不存临时数据）；token 存 localStorage；用 cookie + `httpOnly` 防 XSS；用 `localStorage.removeItem` 主动登出；用 `actions/logout` 清 store。
 
-### 模式 18：模块按需加载与 Code Splitting
+### 模式 18 · 模块按需加载与 Code Splitting
 
-**问题场景**：单 store 包含所有模块（user/cart/admin）——首屏加载全量。
+**问题场景**：单 store 包含所有模块（user / cart / admin）——首屏加载全量。
 
 **解决方案**：动态 `registerModule`：
 ```js
@@ -322,12 +324,12 @@ router.beforeEach((to, from, next) => {
 
 **最佳实践**：用路由 meta 标 `requiresAdmin`；用 `beforeEach` 动态注册；用 `unregisterModule` 离开时卸载；用 `webpackChunkName` 配魔法注释；首屏不加载 admin 模块。
 
-### 模式 19：跨 Store 通信（Pinia vs Vuex 4）
+### 模式 19 · 跨 Store 通信（Pinia vs Vuex 4）
 
 **问题场景**：Vuex 4 + Pinia 混用？或者 Vuex 4 跨 store 调？
 
 **解决方案**：
-- **Vuex 4**：`rootGetters`/`rootState` 跨模块；`dispatch('cart/checkout')` 跨命名空间
+- **Vuex 4**：`rootGetters` / `rootState` 跨模块；`dispatch('cart/checkout')` 跨命名空间
 - **Pinia**：用 import 直接 `useCartStore` 跨 store（无命名空间）
 - **混用**：Vuex 4 仍维护；Pinia 简化；Vue 3 新项目用 Pinia
 - **迁移**：`createPinia().use(piniaPluginPersist)` 替代 `vuex-persistedstate`
@@ -341,9 +343,9 @@ router.beforeEach((to, from, next) => {
 
 **最佳实践**：新项目用 Pinia（Vue 官方推荐）；老项目用 Vuex 4 维护；`useStore` 替代 `this.$store`；用 setup store 写法；用 `storeToRefs` 解构响应。
 
-### 模式 20：生态与替代品对比
+### 模式 20 · 生态与替代品对比
 
-**问题场景**：Vue 状态管理方案（Vuex/Pinia/Provide-Inject/Event Bus）怎么选？
+**问题场景**：Vue 状态管理方案（Vuex / Pinia / Provide-Inject / Event Bus）怎么选？
 
 **解决方案**：对比矩阵：
 
@@ -362,15 +364,25 @@ router.beforeEach((to, from, next) => {
 - 性能差异小
 - 调试：Vue Devtools
 
-**最佳实践**：新项目用 Pinia（Vue 官方推荐）；大型 Vue 2 项目用 Vuex 4；小型项目用 Provide/Inject；事件总线仅临时用；用 Vue Devtools 调试；TypeScript 选 Pinia。
+**最佳实践**：新项目用 Pinia（Vue 官方推荐）；大型 Vue 2 项目用 Vuex 4；小型项目用 Provide / Inject；事件总线仅临时用；用 Vue Devtools 调试；TypeScript 选 Pinia。
 
-## 附：仓库元信息
+## 项目速查
 
-| 字段 | 值 |
-|------|----|
-| 路径 | `G:\实战案例\GitHub顶尖项目\vuex\` |
-| 主语言 | TypeScript |
-| License | MIT |
-| 解析时间 | 2026-06-02 |
-| 核心模块 | `src/store.ts`、`src/helpers.ts`、`src/plugins/` |
-| 关键基础设施 | Vue 3、严格模式、模块化、SSR、TypeScript InjectionKey |
+**仓库元信息**：
+- 路径：`G:\实战案例\GitHub顶尖项目\vuex\`
+- 主语言：TypeScript
+- License：MIT
+- 核心模块：`src/store.ts` + `src/helpers.ts` + `src/plugins/`
+- 关键基础设施：Vue 3 + 严格模式 + 模块化 + SSR + TypeScript InjectionKey
+
+**3 核心洞察**：
+1. `_withCommit` 事务守卫 = "绕过 mutation 直接改 state" 的安全网
+2. 单一状态树 + mutation 同步 + action 异步 = Flux 模式在 Vue 中的标准实现
+3. `strict: true` 开发态 = 类似 Rust borrow checker 在 dev 期发现问题
+
+**1 反模式**：在生产环境开 `strict: true`——`watch` 监听 state 性能开销大，应仅在 dev 开。
+
+**3 立刻能用**：
+1. `createStore({ state, mutations, actions })` 一行起 store
+2. `store.commit('increment')` / `store.dispatch('fetchUser', id)` 同步/异步触发
+3. `vuex-persistedstate` 自动持久化关键 state 到 localStorage

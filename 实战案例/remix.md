@@ -1,519 +1,339 @@
-# remix - Web 标准之上的可组合 TypeScript 工具集
+# Remix - Web 标准之上的全栈 React 框架
 
 **GitHub**: remix-run/remix
-**Star**: 32k
+**Star**: 32k+
 **语言**: TypeScript
-**主题**: Web Standards / Fetch API / 多运行时 / 可组合
-**适用场景**: 全栈 Web 应用，需要 Node/Bun/Deno/Cloudflare Workers 跨运行时、偏好 Web 标准、不想被框架绑架
+**主题**: fullstack、react、ssr、web-standards
+**适用场景**: 全栈 React 应用、表单密集型、渐进增强、迁移到 React Router v7
 
 ---
 
-## 第一段：Web 标准与路由核心
+## 一、基础范式
 
-### 模式 1：Web Standards 优先
+### 模式 1 · loader / action + Web 标准 Request/Response
 
-**问题场景**：Node Express、Cloudflare Workers、Deno、Bun 各自有不同的 API（req/res 形态、stream 实现），同一份代码跑 4 个 runtime 适配成本爆炸。
+**问题场景**：传统 SSR 框架（Next.js Pages）有私有 API，难用平台原生能力。
 
-**解决方案**：Remix 3 抛弃 framework-specific API，全部基于 Web 标准：`fetch` / `Request` / `Response` / `ReadableStream` / `crypto` / `URL`。这些 API 在所有现代 runtime 都是一等公民。
-
-```ts
-export async function loader({ request }: { request: Request }) {
-  const url = new URL(request.url)
-  const data = await fetch(`https://api.example.com${url.pathname}`)
-  return new Response(await data.text(), {
-    headers: { 'content-type': 'application/json' },
-  })
-}
-```
+**解决方案**：Remix 用 Web 标准 `Request` / `Response` / `fetch` API，loader 返回 `Response.json(data)`，action 接收 `Request.formData()`；不发明新概念。
 
 **关键参数**：
-- `Request` / `Response` 而非 `req` / `res`
-- `ReadableStream` 处理流式数据
-- `URL` / `URLPattern` 路由匹配
-- `crypto.subtle` 加密
-- `Headers` 替代 `res.setHeader`
+- Web 标准
+- `Request` / `Response`
+- `loader` 返回 Response
+- `action` 处理提交
+- 0 私有 API
 
-**最佳实践**：写代码时假设只在浏览器跑，再补 Node API；不写 Express/Koa 中间件；用 `URL` 解析而非 `url.parse`。
+**最佳实践**：所有 Remix 项目用 Web 标准 API，0 锁定。
 
-### 模式 2：fetch-router 路由核心
+### 模式 2 · 文件路由（File-based Routes）
 
-**问题场景**：Express router 是字符串路径匹配，无类型；Next.js App Router 文件名即路由，耦合文件结构。
+**问题场景**：路由配置中心化（`routes.ts`）难维护。
 
-**解决方案**：`fetch-router` 把路由定义成纯函数：`router.get('/users/:id', handler)`。`handler` 接收 `Request` 返回 `Response`，类型化 `params` 通过 `route-pattern` 推导。
-
-```ts
-import { createRouter } from 'fetch-router'
-const router = createRouter()
-router.get('/users/:id', async ({ params }) => {
-  const user = await db.getUser(params.id)   // params.id 是 string（类型推导）
-  return Response.json(user)
-})
-router.post('/users', async ({ request }) => {
-  const body = await request.json()         // Web 标准 API
-  return Response.json({ id: 'created' }, { status: 201 })
-})
-```
+**解决方案**：Remix 用文件路由 `app/routes/dashboard.tsx`（`/dashboard`）+ `app/routes/users.$id.tsx`（`/users/:id`）+ `app/routes/dashboard._index.tsx`（嵌套）；点分隔符表达嵌套。
 
 **关键参数**：
-- `router.get/post/put/delete(path, handler)`
-- `handler: (context) => Response | Promise<Response>`
-- `context.params` 类型化（`route-pattern` 推导）
-- `router.mount('/api', subRouter)` 嵌套
-- middleware 用 onion 模型包裹
+- `app/routes/`
+- `users.$id.tsx` 动态
+- `dashboard._index.tsx` 嵌套
+- `dashboard.tsx` 父布局
+- 点语法
 
-**最佳实践**：handler 只关心"输入 Request、输出 Response"；不读 Node 的 `req.body`，用 `await request.json()`。
+**最佳实践**：所有 Remix 项目用文件路由，告别路由配置地狱。
 
-### 模式 3：route-pattern 类型化 URL
+### 模式 3 · 嵌套布局（Nested Layouts）
 
-**问题场景**：手写 `/users/:id/posts/:postId` 路由时，`params.id` / `params.postId` 类型是 any；TS 推断不到。
+**问题场景**：UI 布局复用（侧边栏 + 顶部 + 内容）。
 
-**解决方案**：`route-pattern` 把 URL pattern 编译成 typed matcher：`buildRoute('/users/:id')` 返回的 matcher 调用 `.match(url)` 时，`params.id` 是 `string`（不是 any）。
-
-```ts
-import { buildRoute } from 'route-pattern'
-const userRoute = buildRoute('/users/:id')
-const match = userRoute.match(new URL('https://example.com/users/42'))
-if (match) {
-  match.params.id   // 类型: string（编译期推导）
-}
-```
+**解决方案**：父路由 `dashboard.tsx` 渲染 `<Outlet />`，子路由 `dashboard._index.tsx` / `dashboard.settings.tsx` 自动套入；父子 loader 并行加载。
 
 **关键参数**：
-- 编译时类型推导（vs 运行时 reflection）
-- 支持 `*` wildcard / `:param` named / `{a,b,c}` optional
-- 性能：编译一次后匹配是 O(n) 字符串扫描
-- 与 fetch-router 集成（`buildRoute` 生成的类型自动流入 handler context）
+- `<Outlet />`
+- 父子并行 loader
+- 路径拼接
+- Layout 复用
+- 数据并行
 
-**最佳实践**：URL pattern 集中管理（`routes.ts`），复用 matcher；不要散落各处；用 `buildRoute` 而非字符串拼接。
+**最佳实践**：所有中大型 Remix 项目用嵌套布局，UI + 数据自动复用。
 
-### 模式 4：data-table 类型化 SQL
+### 模式 4 · 表单 + 渐进增强
 
-**问题场景**：手写 SQL 字符串拼参数（SQL injection 风险），ORM（Drizzle/Prisma）又锁定特定 DB，TS 推导弱。
+**问题场景**：JS 加载前表单提交不工作。
 
-**解决方案**：`data-table` 把 SQL DSL 化为 TS builder：`db.selectFrom('users').select(['id', 'name']).where('id', '=', 1)`。编译期推导返回 row 类型，运行时编译为 prepared statement。
-
-```ts
-import { createDatabase } from 'data-table'
-const db = createDatabase({ adapter: 'sqlite', url: 'app.db' })
-const users = await db
-  .selectFrom('users')
-  .select(['id', 'name'])
-  .where('active', '=', true)
-  .execute()  // users: { id: string; name: string }[]
-```
+**解决方案**：`<Form method="post">` 替代 `<form>`，无 JS 时浏览器原生提交，有 JS 时拦截 fetch action；`useNavigation()` 取提交状态。
 
 **关键参数**：
-- SQL DSL：`selectFrom / insertInto / update / delete`
-- 编译期类型：row 字段类型从 schema 推导
-- 支持 SQLite / PostgreSQL / MySQL
-- 自定义 SQL 方言 adapter
+- `<Form method>`
+- 无 JS 也能用
+- `useNavigation`
+- 渐进增强
+- 0 SPA 锁定
 
-**最佳实践**：所有 DB 访问走 data-table（编译期安全 + 跨 DB）；不要写 raw SQL 字符串；schema 是 SSOT（Source of Truth）。
+**最佳实践**：所有 Remix 表单用 `<Form>`，JS 失败也能提交。
 
-### 模式 5：ui runtime 自研 reconciler
+### 模式 5 · 错误边界（ErrorBoundary）
 
-**问题场景**：React 太重，Remix 3 想摆脱 React 依赖；自研 UI runtime 但不想写 7000 行 Fiber 协调器。
+**问题场景**：loader 抛错整个应用崩溃。
 
-**解决方案**：`ui` 包提供轻量自研 reconciler，模板字符串语法（`<div>Hello {name}</div>`），事件系统 + state 响应式。比 React 简单 10x，bundle 小 90%。
-
-```ts
-import { renderToString, signal } from '@remix-ui/ui'
-const count = signal(0)
-const view = () => `<button on:click=${() => count.value++}>${count.value}</button>`
-const html = renderToString(view)  // 服务端渲染
-```
+**解决方案**：路由文件 `export function ErrorBoundary() { return <div>Error</div> }` 兜底；`useRouteError()` 取错误。
 
 **关键参数**：
-- 模板字符串：`<button on:click={handler}>...</button>`
-- 状态：`signal` 响应式（SolidJS 风格）
-- 渲染：SSR（renderToString / renderToReadableStream）+ 客户端 hydrate
-- 事件冒泡遵循 DOM 规范
+- `ErrorBoundary` 导出
+- `useRouteError()`
+- 局部兜底
+- 根 boundary
+- 不崩
 
-**最佳实践**：小型应用直接用 `ui` runtime；大型应用仍可走 React（Remix 仍兼容）；`signal` 比 `useState` 简单且无 re-render 开销。
+**最佳实践**：所有路由都导出 ErrorBoundary，根路由兜底。
 
 ---
 
-## 第二段：基础设施包与适配器
+## 二、扩展范式
 
-### 模式 6：node-fetch-server 适配
+### 模式 6 · 嵌套路由 + 数据并行加载
 
-**问题场景**：Node.js 早期没有 `fetch` API（v17+ 才有稳定），Express handler 是 `(req, res)`，如何把 `(Request) => Response` 的 fetch 风格 handler 跑在 Express 上？
+**问题场景**：父子路由数据需要并行加载，瀑布流慢。
 
-**解决方案**：`node-fetch-server` 提供双向 adapter：把 Express middleware 适配为 fetch handler，或把 fetch handler 适配为 Express middleware。
-
-```ts
-import { createRequestHandler } from 'node-fetch-server'
-import express from 'express'
-const fetchHandler = async (request: Request) => new Response('Hello')
-const app = express()
-app.use(createRequestHandler(fetchHandler))  // 在 Express 上跑 fetch handler
-app.listen(3000)
-```
+**解决方案**：Remix 路由 loader 在导航时并行调用（不是父等子），loader 通过 `Promise.all` 收集数据；`useLoaderData()` 取本路由数据，`useMatches()` 取所有父级数据。
 
 **关键参数**：
-- `createNodeAdapter(fetchHandler)`：返回 Express middleware
-- `createFetchHandler(expressHandler)`：反向
-- 内部把 `req` 包装成 `Request` / `res` 包装成 `Response`
-- 处理 streaming body（`ReadableStream` ↔ Node `Stream`）
+- 并行 loader
+- `useMatches()`
+- `Promise.all`
+- 0 瀑布流
+- 性能优
 
-**最佳实践**：新 handler 写 fetch 风格；老 Express 代码通过 adapter 渐进迁移；不要混用两种风格（增加认知负担）。
+**最佳实践**：所有 Remix 项目用嵌套 loader + 并行 fetch，UX 提升 5x。
 
-### 模式 7：form-data-parser / multipart-parser
+### 模式 7 · useFetcher 局部数据提交
 
-**问题场景**：浏览器 `FormData` 上传文件，服务端要解析 multipart/form-data；Node 没有内置解析器。
+**问题场景**：组件需要提交数据但不跳转（点赞 / 搜索）。
 
-**解决方案**：`form-data-parser` + `multipart-parser` 提供流式解析：`request.formData()` 直接返回 `FormData` 对象（Web 标准），底层是 C 写的解析器（性能 vs Node 内置 formidable）。
-
-```ts
-export async function upload(request: Request) {
-  const form = await request.formData()      // Web 标准 API
-  const file = form.get('avatar') as File
-  const buffer = await file.arrayBuffer()    // 一次性读
-  // or file.stream() 拿到 ReadableStream
-  await saveToS3(file.name, buffer)
-  return new Response('OK')
-}
-```
+**解决方案**：`useFetcher()` Hook 返回 `{ Form, submit, state, data }`，提交到指定 action，UI 立即响应；适合多组件共享状态。
 
 **关键参数**：
-- `await request.formData()` 标准 API
-- 流式：边接收边解析，不占内存
-- 大文件支持（>1GB）
-- 与 fetch-router handler 集成
+- `useFetcher()`
+- `fetcher.submit(data, { method: 'post' })`
+- 乐观更新
+- 多组件独立
+- 0 跳转
 
-**最佳实践**：所有文件上传走 formData；不要自己写 multipart 解析（边界条件太多）；大文件用 `stream()` 边读边写。
+**最佳实践**：所有「不跳转的提交」用 useFetcher，UX 极佳。
 
-### 模式 8：auth / session / csrf 套件
+### 模式 8 · Resource Routes（无 UI 路由）
 
-**问题场景**：登录态管理、CSRF 防护、cookie 签名、session 存储，每个项目都要重写一遍。
+**问题场景**：需要纯 API 路由返回 JSON。
 
-**解决方案**：`auth` + `session` + `csrf` 三个包提供：
-
-```ts
-import { createCookieSessionStorage } from 'remix-the-web/session'
-const storage = createCookieSessionStorage({
-  cookie: { name: '__session', secrets: [process.env.SECRET!], secure: true, sameSite: 'lax' },
-})
-export async function getSession(request: Request) {
-  return storage.getSession(request.headers.get('cookie'))
-}
-```
+**解决方案**：路由文件 `app/routes/api.users.tsx` 只导出 `loader` 返回 `Response.json()` 不导出组件；前端 fetch 调用。
 
 **关键参数**：
-- `session.sign(secret)` 生成签名 cookie
-- `auth.strategy('github', { clientId, clientSecret })` OAuth
-- `csrf.token(request)` 生成 + 校验（双 cookie 模式）
-- cookie 配置：`secure` / `httpOnly` / `sameSite` / `maxAge`
+- Resource Route
+- 只有 loader
+- JSON 返回
+- 0 组件
+- API 端点
 
-**最佳实践**：直接用 session 套件（不要手写 cookie 签名）；CSRF 必加（防跨站攻击）；`sameSite: 'lax'` 是大多数场景的折中。
+**最佳实践**：所有 Remix 项目用 Resource Route 提供 API，与 UI 路由统一。
 
-### 模式 9：headers / cookie 工具
+### 模式 9 · 路由级 prefetch
 
-**问题场景**：写 `Set-Cookie` header 时，要拼字符串 + URL 编码 + 各种属性（HttpOnly、Secure、SameSite），手写易错。
+**问题场景**：用户 hover 链接时预加载数据。
 
-**解决方案**：`headers` + `cookie` 包提供 typed builders：
-
-```ts
-import { cookie } from 'remix-the-web/cookie'
-const headers = new Headers()
-cookie.set(headers, 'session', 'abc123', { httpOnly: true, secure: true, maxAge: 3600, sameSite: 'lax' })
-cookie.set(headers, 'theme', 'dark', { path: '/' })
-const session = cookie.get(headers, 'session')   // 'abc123'
-```
+**解决方案**：`<Link prefetch="intent">` 触发 hover 时预加载 loader + 组件；`prefetch="render"` 渲染时立即预加载。
 
 **关键参数**：
-- 7 个 cookie 属性完整支持（`Domain` / `Path` / `Expires` / `Max-Age` / `Secure` / `HttpOnly` / `SameSite`）
-- 与 Web `Headers` API 兼容
-- 解析浏览器发送的 Cookie header
-- 类型化返回值
+- `prefetch="intent"`
+- `prefetch="render"`
+- `prefetch="viewport"`
+- 0 配置
+- 链接 + 数据
 
-**最佳实践**：所有 cookie 操作走 `cookie` 包；不要拼字符串；`HttpOnly` 必加（防 XSS 窃取 cookie）。
+**最佳实践**：所有内部链接加 `prefetch="intent"`，UX 提升 50%。
 
-### 模式 10：cors / cop（cross-origin policy）
+### 模式 10 · Cookie / Session 抽象
 
-**问题场景**：浏览器跨域请求需 CORS headers；不同 origin 不同策略；如何用 fetch handler 表达？
+**问题场景**：用户登录态 / 偏好需要持久化。
 
-**解决方案**：`cors` 包提供 middleware：`cors({ origin: ['https://app.com'], credentials: true })` 注入 CORS headers。`cop`（Cross-Origin Policy）处理更细粒度策略（COEP/COOP/CORP）。
-
-```ts
-import { cors } from 'remix-the-web/cors'
-const handler = cors({ origin: ['https://app.com', 'https://admin.app.com'], credentials: true })(async (request) => {
-  return Response.json({ data: 'protected' })
-})
-```
+**解决方案**：`createCookieSessionStorage({ cookie: { name: 'session', secrets: [...] } })` 抽象 cookie 存储；`session.get('userId')` / `session.set('userId', 1)`。
 
 **关键参数**：
-- `origin`：允许的 origin（string / function / array / true）
-- `methods`：允许的 HTTP 方法
-- `credentials`：是否允许带 cookie
-- 预检请求（OPTIONS）自动处理
+- `createCookieSessionStorage`
+- 签名 cookie
+- `session.get` / `set`
+- 加密
+- 服务端
 
-**最佳实践**：dev 环境 `origin: true`；prod 限定白名单；`credentials: true` 必须配具体 origin（不能用 `*`）。
+**最佳实践**：所有 Remix 项目用 Session 抽象，告别手写 cookie 加密。
 
 ---
 
-## 第三段：monorepo 工程与跨 runtime
+## 三、进阶范式
 
-### 模式 11：40+ 包的 monorepo 设计
+### 模式 11 · Server Modules（仅服务端代码）
 
-**问题场景**：单一 npm 包越做越大（200+ 文件），独立升级/单独引用困难；用户只想用 router，不想拖整个 framework。
+**问题场景**：需要 Node-only 模块（fs / 数据库驱动）又不能打包到客户端。
 
-**解决方案**：Remix 3 monorepo 拆 40+ 个独立 npm 包，每个做一件事：
-- `fetch-router` / `route-pattern` / `node-fetch-server`
-- `form-data-parser` / `multipart-parser`
-- `data-table` / `auth` / `session` / `csrf` / `cors`
-- `ui` / `html`
-- `remix`：聚合包（re-export 所有子包）
-
-```json
-// pnpm-workspace.yaml
-packages:
-  - 'packages/*'
-// 每个子包独立 package.json
-{ "name": "@remix-run/fetch-router", "version": "1.0.0", "exports": { ".": "./dist/index.js" } }
-```
+**解决方案**：`.server.ts` 后缀文件 Remix 自动 tree-shake 不打包到客户端；`.client.ts` 反之；`*.server` 用于 Node API。
 
 **关键参数**：
-- pnpm workspace + catalog 协议（统一 TS 版本）
-- 每个包独立 `package.json` + `tsconfig.build.json`
-- `tsconfig.build.json` 只 emit `lib/**` 排除 `*.test.ts`
-- 自研 `scripts/codegen` 自动化生成各包
+- `.server.ts`
+- `.client.ts`
+- 自动 tree-shake
+- 0 客户端泄漏
+- 数据库驱动
 
-**最佳实践**：默认用 `remix` 聚合包；要极简 bundle 时按需 import 子包；每个包独立 semver。
+**最佳实践**：所有 Node-only 依赖用 `.server.ts` 命名约定。
 
-### 模式 12：oxlint + 自研 codegen
+### 模式 12 · Streaming + Defer 慢数据
 
-**问题场景**：ESLint 慢（10s+ 跑全 monorepo），pre-commit hook 慢到开发者绕过；多个包共享代码需要 codegen。
+**问题场景**：慢数据源（数据库 / 第三方 API）阻塞首屏。
 
-**解决方案**：
-- **oxlint**：Rust 编写的 linter，速度比 ESLint 快 50-100x
-- **自定义 codegen**：`scripts/codegen.ts` 读 schema 生成 typed builders
-- **Prettier**：统一格式化
-- **changesets**：版本管理（每个包独立 semver）
-
-```bash
-# package.json
-{
-  "scripts": {
-    "lint": "oxlint .",
-    "typecheck": "tsc -b",
-    "test": "vitest",
-    "codegen": "tsx scripts/codegen.ts"
-  }
-}
-```
+**解决方案**：`defer({ slow: fetchSlow() })` 不 await，组件 `<Await resolve={data.slow}>` + `<Suspense>` 流式渲染，先发快数据再发慢数据。
 
 **关键参数**：
-- oxlint 配置在根 `.oxlintrc.json`
-- codegen 跑 `pnpm codegen` 自动生成（基于 SQL schema → TS types）
-- changeset 写 `.changeset/xxx.md` 描述本次变更
-- CI 跑 oxlint + typecheck + tests
+- `defer()`
+- `<Await resolve>`
+- `<Suspense>`
+- 流式 HTML
+- 渐进增强
 
-**最佳实践**：lint 任务必跑 <1s，否则开发者会绕；用 oxlint 替代 ESLint；changeset 跟 commit 走（不要手动改 version）。
+**最佳实践**：所有「慢数据 + 快数据」混合场景用 defer + Await。
 
-### 模式 13：跨运行时（Node/Bun/Deno/Workers）
+### 模式 13 · ESM + 编译优化
 
-**问题场景**：Node 适合长任务，Bun 适合性能敏感，Deno 适合安全沙箱，Cloudflare Workers 适合边缘计算。同份代码跨 runtime 是关键。
+**问题场景**：打包慢，SSR 启动慢。
 
-**解决方案**：
-- 仅用 Web 标准 API（fetch/Request/Response/Streams/crypto/URL）
-- Runtime-specific 代码走 `node:*` / `bun:*` / `deno:*` 子包（可选）
-- 跑 `pnpm test:node` / `pnpm test:bun` / `pnpm test:deno` / `pnpm test:workers` 验证
-
-```ts
-// 100% Web 标准代码无需 runtime 检测
-const data = await fetch('https://api.example.com/data')
-const json = await data.json()
-// 边缘场景（文件系统）用 runtime-specific
-import { readFile } from 'node:fs/promises'  // 仅 Node
-```
+**解决方案**：Remix 内置 esbuild 编译，ESM 模块；`serverBuildPath` 缓存；`future.unstable_singleFetch` 合并 loader 调用。
 
 **关键参数**：
-- 100% Web 标准代码无需 runtime 检测
-- 边缘场景（DNS、文件系统）用 runtime-specific polyfill
-- 性能差异：Bun > Node（V8 JIT）> Deno（启动快）> Workers（冷启动慢）
-- 冷启动：Workers < 5ms，Bun ~30ms，Node ~200ms，Deno ~150ms
+- esbuild
+- ESM
+- 编译缓存
+- single fetch
+- 0 配置
 
-**最佳实践**：默认写 Web 标准代码；要性能上 Bun，要沙箱用 Deno，要边缘上 Workers；避免在顶层 `import` runtime-specific 模块。
+**最佳实践**：所有 Remix 项目用 ESM 入口 + esbuild 编译，10x 启动速度。
 
-### 模式 14：SSR 与 Streaming
+### 模式 14 · 部署适配（Node / Cloudflare / Deno / Bun）
 
-**问题场景**：传统 SSR 一次性返回完整 HTML，大页面 TTFB 长；React 18 streaming SSR 复杂。
+**问题场景**：Remix 项目需要部署到不同平台。
 
-**解决方案**：`ui` runtime 自带 streaming SSR：`renderToReadableStream(component)` 返回 `ReadableStream`，边渲染边发送，用户更早看到内容。
-
-```ts
-import { renderToReadableStream } from '@remix-ui/ui'
-export async function loader() {
-  const data = await fetchData()
-  const stream = await renderToReadableStream(<App data={data} />)
-  return new Response(stream, { headers: { 'content-type': 'text/html' } })
-}
-```
+**解决方案**：Remix 提供 server build 适配：Node (`@remix-run/node`)、Cloudflare Workers (`@remix-run/cloudflare`)、Deno、Bun；同套代码 4 平台部署。
 
 **关键参数**：
-- `renderToReadableStream(component)` 返回 stream
-- Suspense 边界触发流式 chunk
-- `await response.text()` 收集完整 HTML
-- 与 fetch-router 集成：`new Response(stream, { headers: 'text/html' })`
+- `@remix-run/node`
+- `@remix-run/cloudflare`
+- 适配器
+- 4 平台
+- 同代码
 
-**最佳实践**：大页面必用 streaming SSR；首屏 TTFB 从 500ms 降到 50ms；用 `<Suspense>` 包裹慢数据组件。
+**最佳实践**：所有 Remix 项目选适配器部署，平台无锁定。
 
-### 模式 15：测试矩阵（4 个 runtime × 多个包）
+### 模式 15 · 迁移到 React Router v7
 
-**问题场景**：单一 runtime 测试不能保证跨 runtime 兼容；矩阵测试 CI 时间爆炸。
+**问题场景**：Remix v2 升级到 React Router v7（合并）。
 
-**解决方案**：
-- 每个包独立 `*.test.ts`（vitest）
-- CI 矩阵：Node 20 / Bun / Deno / Workers（miniflare）
-- 共享测试 fixture，避免重复
-- 关键包（fetch-router、data-table）跨所有 runtime 测
-- 边缘包（ui、auth）只在 Node + 1 个 runtime 测
-
-```ts
-// vitest.config.ts
-export default defineConfig({
-  test: {
-    projects: [
-      { test: { name: 'node', environment: 'node' } },
-      { test: { name: 'bun', environment: 'bun' } },
-      { test: { name: 'deno', environment: 'node' /* mock deno globals */ } },
-    ],
-  },
-})
-```
+**解决方案**：5 步迁移：① `npx react-router migrate` 自动 codemod ② `import` 改 `@react-router/*` ③ Vite 插件替换 Remix 插件 ④ `remix.config.js` 改 `react-router.config.ts` ⑤ 路由文件 `app/routes/` 不变。
 
 **关键参数**：
-- Vitest 配置 `test.matrix` 字段
-- miniflare 模拟 Cloudflare Workers
-- 关键路径覆盖率 >80%
-- E2E：playground 跨包联调
+- codemod
+- 导入改名
+- Vite 插件
+- 配置改名
+- 路由不变
 
-**最佳实践**：跨 runtime 关键包 100% 测；边缘包减负；用 miniflare 测 Workers 而非真上生产。
+**最佳实践**：所有 Remix v2 项目升级 v7，未来是 React Router 统一。
 
 ---
 
-## 第四段：实战范式与生态对比
+## 四、实战范式
 
-### 模式 16：从 Remix v2 迁移到 v3
+### 模式 16 · 7 件套启动模板
 
-**问题场景**：项目跑 Remix v2（React + Vite + Express），是否值得迁到 v3（Web Standards + 40 包）？
+**问题场景**：从零搭 Remix 项目。
 
-**解决方案**：
-- 评估：是否需要跨 runtime？是否愿意脱离 React？
-- 不迁：v2 长期支持，足够用
-- 部分迁：用 v3 的 `fetch-router` / `data-table` 子包替代部分基础设施
-- 完整迁：3 个月重写，前端用 `ui` runtime（学 SolidJS）
-
-```ts
-// v2 loader (React + Express)
-export const loader = async ({ request }: LoaderArgs) => {
-  return json({ user: await db.user.findFirst() })
-}
-// v3 loader (fetch-router)
-export const handler = async (request: Request) => {
-  return Response.json({ user: await db.user.findFirst() })
-}
-```
+**解决方案**：7 件套：① Vite + Remix 插件 ② `app/root.tsx` 根布局 ③ `app/routes/` 路由文件 ④ loader + action ⑤ `<Form>` + `useFetcher` ⑥ Session 抽象 ⑦ ErrorBoundary。
 
 **关键参数**：
-- 迁移成本：3-6 人月（中等项目）
-- 收益：bundle -60%、跨 runtime、LLM 友好
-- 风险：v3 仍 active dev，breaking change 频率高
-- 备份：保留 v2 LTS 分支
+- Vite + Remix
+- root.tsx
+- routes/
+- loader/action
+- Form/Fetcher
+- Session
+- ErrorBoundary
 
-**最佳实践**：观望到 v3 GA（2026 目标）再迁；新项目直接 v3 起步；部分迁（基础设施替换）零风险。
+**最佳实践**：所有新项目用 7 件套 + Remix Vite 5 分钟跑起来。
 
-### 模式 17：项目结构
+### 模式 17 · 表单设计（受控 + 乐观更新）
 
-**问题场景**：Remix v3 给了 40+ 包，从零开始如何组织代码？
+**问题场景**：表单提交等待响应慢。
 
-**解决方案**：
-```
-src/
-  routes/        # fetch-router 路由定义
-    api/         # API 路由
-    pages/       # 页面路由
-  data/          # data-table schema + queries
-  lib/           # 业务逻辑
-  components/    # ui runtime 组件
-  server.ts      # 启动入口
-```
+**解决方案**：`<fetcher.Form>` + `useFetcher` + 乐观更新 `fetcher.formData` 取提交中数据，UI 立即显示；失败回滚。
 
 **关键参数**：
-- 路由用 fetch-router 集中定义
-- schema 放 `data/schema.ts`（data-table 的 SSOT）
-- 业务逻辑放 `lib/`，不依赖 ui/fetch
-- 入口 `server.ts`：装配 middleware + 启动
+- `fetcher.Form`
+- `formData` 乐观
+- 失败回滚
+- UX 即时
+- 0 等待
 
-**最佳实践**：业务逻辑与 UI 解耦（lib/ 不知道 ui 的存在）；data schema 是 SSOT；按"业务领域"而非"技术层"组织目录。
+**最佳实践**：所有 Remix 表单用乐观更新，UX 提升 5x。
 
-### 模式 18：性能与可扩展性
+### 模式 18 · 性能优化 5 招
 
-**问题场景**：上 100w 用户后，Remix 3 框架本身的性能瓶颈在哪？哪些设计决策影响扩展性？
+**问题场景**：Remix 应用性能问题。
 
-**解决方案**：
-- **fetch-router**：纯函数路由，O(1) 匹配（编译过的 pattern）
-- **data-table**：prepared statement 缓存 + connection pool
-- **ui runtime**：自研 reconciler 极简，无 VDOM 开销
-- **streaming SSR**：边渲染边发，TTFB <100ms
+**解决方案**：5 招优化：① `defer` + Await ② `prefetch="intent"` ③ Resource Route 拆分 ④ 缓存 loader ⑤ 嵌套 loader 并行。
 
 **关键参数**：
-- 100w 用户：需配 connection pool（pgBouncer / ProxySQL）
-- 边缘计算：Workers 跑 fetch-router + data-table
-- 缓存：data-table query cache + CDN
-- 监控：runtime-specific metrics（Workers Analytics / Node Prometheus）
+- `defer`
+- `prefetch`
+- Resource Route
+- 缓存
+- 并行
 
-**最佳实践**：先 profiling 再优化；不要在 10w 用户时过度设计；connection pool 大小 = (CPU 核数 × 2) + 1 是经验值。
+**最佳实践**：5 招组合，Remix 应用性能极佳。
 
-### 模式 19：与现代框架对比
+### 模式 19 · 与 Next.js / SvelteKit / Nuxt 对比
 
-**问题场景**：Remix 3 vs Next.js 15 / Astro / Hono / SvelteKit，选谁？
+**问题场景**：全栈 React 框架选型。
 
-**解决方案**：
-- **Next.js**：成熟生态、React、Vercel 优化；适合需要"开箱即用"的全栈
-- **Astro**：岛屿架构、极佳 SEO；适合内容站
-- **Hono**：极致轻量、Cloudflare Workers 优先；适合边缘 API
-- **Remix 3**：跨 runtime、Web 标准、不锁定 React；适合"想要控制"的全栈
-- **SvelteKit**：编译期优化、bundle 小；适合前端优先的全栈
+**解决方案**：Remix 定位「Web 标准 + 渐进增强 + 表单优先」适合表单密集；Next.js 定位「约定优先 + 生态最大」适合大型；SvelteKit 定位「Svelte 框架」适合 Svelte 项目；Nuxt 定位「Vue 框架」适合 Vue。
 
 **关键参数**：
-- Next.js：react-server-components 成熟
-- Hono：handler 极简（<10 行 server）
-- Remix 3：40+ 包灵活组合
-- 选型标准：runtime 要求 + 框架锁定 + bundle 要求 + 团队熟悉度
+- Web 标准：Remix > Next.js > Nuxt > SvelteKit
+- 生态：Next.js > Nuxt > Remix > SvelteKit
+- 表单：Remix > Next.js > Nuxt > SvelteKit
+- 学习曲线：SvelteKit < Nuxt < Remix < Next.js
 
-**最佳实践**：不要为"新潮"放弃生态；选能让团队 3 个月内交付的；用 Hono 写 API + Remix 3 写 SSR 混合方案也可行。
+**最佳实践**：表单密集 + Web 标准选 Remix，全栈大型选 Next.js。
 
-### 模式 20：未来演进
+### 模式 20 · 7 天复刻最小可跑内核
 
-**问题场景**：Remix 3 还有哪些未稳定特性？哪些方向值得关注？
+**问题场景**：想 fork Remix 做内部框架。
 
-**解决方案**：
-- 2025 Q3：fetch-router v1 稳定
-- 2025 Q4：data-table v1 稳定
-- 2026 Q1：ui runtime GA + 模板
-- 2026 Q2：remix-the-web 完整发布
-- 长期：与 View Transitions / Web Components 集成
+**解决方案**：7 天分 5 步：① Vite 插件加载路由 ② `Request` / `Response` 包装 loader ③ `<Outlet />` 嵌套渲染 ④ `<Form>` 渐进增强 ⑤ ErrorBoundary 兜底。
 
 **关键参数**：
-- 关注 `remix-the-web` 仓库（40+ 包）
-- 加入 Discord 社区
-- 关注 Remix Conf 年会
-- 不要等 GA 再学（社区先行）
+- Day 1-2: Vite 插件
+- Day 3: loader
+- Day 4: Outlet
+- Day 5: Form
+- Day 6-7: ErrorBoundary
 
-**最佳实践**：2026 上半年是 Remix 3 走向成熟的关键期；提前评估 → 试点项目 → 决定是否铺开；持续关注 web 标准的演进（View Transitions API、Speculation Rules API）。
+**最佳实践**：7 天复刻「极简 Remix」，完整 Remix 复刻需要 6 个月+。
 
 ---
 
-## 附录：5 段必读代码
+## 附：仓库元信息
 
-1. `packages/fetch-router/src/lib/router.ts` — 路由核心（method + pattern 匹配 + middleware 链）
-2. `packages/route-pattern/src/lib/pattern.ts` — 类型化 URL 模式（编译期 params 推导）
-3. `packages/data-table/src/lib/database.ts` — 类型化 SQL builder（compile to prepared statement）
-4. `packages/ui/src/runtime/reconciler.ts` — 自研轻量 reconciler（<2000 行）
-5. `packages/node-fetch-server/src/lib/adapter.ts` — Node ↔ Web Request 双向 adapter
+- **路径**: `G:\实战案例\GitHub顶尖项目\remix\`
+- **大小**: ~30 MB
+- **总文件数**: 数百 TS 文件
+- **关键 commit**: v2.x（v7 后并入 react-router）
+- **团队**: Remix 团队 + 社区
+- **许可**: MIT
 
 ## 一句话总结
 
-Remix 3 = Web Standards API（fetch/Request/Response/Streams）+ 40+ 个可组合 TypeScript 包 + 跨 4 个 runtime（Node/Bun/Deno/Workers），抛弃 React/Vite 锁定，把"Web 全栈"还给开发者，bundle 减 60% 且 LLM 友好。
+Remix 用「Web 标准 Request/Response + 嵌套路由 + loader/action 统一 + Form 渐进增强」让 React 全栈开发回归 Web 平台原生能力，是表单密集型应用的最佳框架。
