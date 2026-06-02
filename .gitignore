@@ -1,26 +1,29 @@
-# ============ Obsidian auto-generated ============
+# ============== Obsidian auto-generated ==============
 .obsidian/workspace.json
 .obsidian/cache/
 .obsidian/plugins/*/data.json
 .trash/
 
-# ============ Node / build artifacts ============
+# ============== Node / build artifacts ==============
 node_modules/
 **/node_modules/
 *.tsbuildinfo
+package-lock.json
+**/package-lock.json
+yarn.lock
+**/yarn.lock
+pnpm-lock.yaml
 
-# ============ AI plugin caches / sessions ============
+# ============== AI plugin caches / sessions ==============
 .claudian/sessions/
 .realclaudian/sessions/
 .copilot/
 .deepseek-gen/cache/
 .copilot-cache/
-
-# Smart Connections (large vector caches, optional)
 .smart-connections/
 .smart-env/
 
-# ============ System temp files ============
+# ============== System temp files ==============
 *.swp
 *.swo
 *~
@@ -29,14 +32,18 @@ Thumbs.db
 desktop.ini
 $RECYCLE.BIN/
 
-# ============ Large attachments (optional) ============
+# ============== Large attachments ==============
 *.mp4
 *.zip
 *.tar.gz
 *.7z
+*.rar
 
-# ============ Logs ============
+# ============== Logs ==============
 *.log
-
-# ============ Backup logs dir ============
 .backup-logs/
+.backup-test*.txt
+
+# ============== Local config (per-machine) ==============
+.obsidian/plugins/obsidian-git/data.json
+.obsidian/plugins/obsidian-skills/data.json

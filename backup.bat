@@ -2,12 +2,12 @@
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 
-:: ==================== 配置 ====================
+:: ==================== Config ====================
 set "VAULT_DIR=G:\Obsidian Vault"
 set "BRANCH=main"
 set "LOG_DIR=%VAULT_DIR%\.backup-logs"
 set "MAX_LOG=30"
-:: ==============================================
+:: ===============================================
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
@@ -29,7 +29,7 @@ if %errorlevel% neq 0 (
     goto :end
 )
 
-:: --- 检查 Git ---
+:: --- Check Git ---
 git --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Git not found >>          "%LOG_FILE%"
@@ -37,7 +37,7 @@ if %errorlevel% neq 0 (
     goto :end
 )
 
-:: --- 检查是否已经是 git 仓库 ---
+:: --- Check if already a git repo ---
 if not exist ".git" (
     echo [WARN] Not a git repo, init... >> "%LOG_FILE%"
     git init -b %BRANCH%
@@ -52,14 +52,14 @@ if not exist ".git" (
     )
 )
 
-:: --- 添加变更 ---
+:: --- Add changes ---
 git add -A
 if %errorlevel% neq 0 (
     echo [ERROR] git add failed >>         "%LOG_FILE%"
     goto :end
 )
 
-:: --- 检查是否有变更 ---
+:: --- Check for changes ---
 git diff --cached --quiet
 if %errorlevel% equ 0 (
     echo [INFO] No changes to backup. >>   "%LOG_FILE%"
@@ -67,7 +67,7 @@ if %errorlevel% equ 0 (
     goto :end
 )
 
-:: --- 提交 ---
+:: --- Commit ---
 set "commit_msg=auto: backup %date:~0,4%-%date:~5,2%-%date:~8,2% %time:~0,2%%time:~3,2%%time:~6,2%"
 git commit -m "!commit_msg!" >> "%LOG_FILE%" 2>&1
 if %errorlevel% neq 0 (
@@ -77,7 +77,7 @@ if %errorlevel% neq 0 (
 echo [INFO] Commit created: !commit_msg! >> "%LOG_FILE%"
 echo [INFO] Commit created.
 
-:: --- 推送（重试 3 次）---
+:: --- Push with retries ---
 set "PUSH_OK=0"
 set "RETRY=0"
 :push_retry
@@ -107,7 +107,7 @@ echo [INFO] Done: %END_TIME% >>            "%LOG_FILE%"
 echo ==================================== >> "%LOG_FILE%"
 echo. >>                                  "%LOG_FILE%"
 
-:: --- 清理旧日志（保留最近 N 个）---
+:: --- Cleanup old logs ---
 for /f "skip=%MAX_LOG% delims=" %%F in ('dir /b /o-n "%LOG_DIR%\backup-*.log" 2^>nul') do (
     del /q "%LOG_DIR%\%%F" >nul 2>&1
 )
