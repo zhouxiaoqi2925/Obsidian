@@ -18,3 +18,23 @@ To github.com:zhouxiaoqi2925/Obsidian.git
  Obsidian Vault Auto Backup 
  周二 2026/06/02 21:26:15 
 ==================================== 
+fatal: could not write multi-pack-index: Permission denied
+error: failed to perform geometric repack
+error: task 'geometric-repack' failed
+[main 0413508] auto: backup 周二 2-26-06 212617
+ 12 files changed, 5176 insertions(+), 2481 deletions(-)
+ create mode 100644 .obsidian/community-plugins.json.bak
+ create mode 100644 .obsidian/plugins/obsidian-version-history-diff/main.js
+ create mode 100644 .obsidian/plugins/obsidian-version-history-diff/manifest.json
+ create mode 100644 .obsidian/plugins/obsidian-version-history-diff/styles.css
+[INFO] Commit created: auto: backup 周二 2-26-06 212617 
+To github.com:zhouxiaoqi2925/Obsidian.git
+   150f8154..04135088  main -> main
+[SUCCESS] Pushed to origin/main. 
+[INFO] Done: 21:29:41.59 
+==================================== 
+ 
+==================================== 
+ Obsidian Vault Auto Backup 
+ 周二 2026/06/02 21:32:22 
+==================================== 

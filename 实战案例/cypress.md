@@ -1,253 +1,193 @@
----
-title: cypress
-type: E2E Testing Framework
-lang: TypeScript / JavaScript
-stars: 48000
-date: 2026-06-02
-tags:
-  - 开源项目
-  - E2E测试
-  - 前端测试
-  - 测试框架
-  - TypeScript
-  - Electron
+# cypress - 浏览器内 E2E
+
+**来源**：G:\实战案例\GitHub顶尖项目\cypress\
+**创建时间**：2026-06-02
+
 ---
 
-# cypress · 项目深度解析
+## 一、核心机制
 
-> Cypress 是为现代 Web 而生的下一代前端 E2E 测试框架：跑在浏览器里、与应用共享同一个 DOM 运行时、可时间旅行调试、用本地代理拦截 + 改写网络请求。
-> 来源：`G:\实战案例\GitHub顶尖项目\cypress\`
+### 1. 同进程测试执行（In-Process Test Execution）
 
-## 写在前面：解析哲学
+**问题场景**：Selenium / WebDriver 走"远程控制"模式：测试代码在 Node 进程，通过 JSON Wire Protocol / W3C WebDriver 协议跨进程操控浏览器。每次 `click()` 都要序列化 1KB+ 的协议数据往返两端，加上浏览器启动时间，调试时单步跟踪往往要等 200ms+。Cypress 反其道而行 —— 让测试代码（driver）跟被测应用（AUT）跑在同一个浏览器进程，通过本地 HTTP 代理 + 脚本注入实现"同生共死"。
 
-先骨架后血肉，先 What 后 Why，最后 How to steal。本次解析聚焦 Cypress 的 **WHY 决策**——为什么必须把自动化测试代码注入到被测页面、为什么需要重写 Mocha、为什么要做本地代理、为什么 retry 只能和稳定性事件绑定。Cypress 的架构不是「写一个测试运行器」那么简单，它是一套**「在浏览器进程内和被测应用同生共死」**的测试操作系统。
+**解决方案**：
+```typescript
+// driver/src/cypress.ts:90 — 核心标识
+const isCypressInCypress = document.defaultView !== top
+// 这是 Cypress 自举测试 E2E 的关键判断（一行代码精准识别）
 
-## 0. 解析前的 5 个准备
-
-- **克隆**: `git clone https://github.com/cypress-io/cypress` (实际为 monorepo, 7000+ 文件)
-- **分类**: 34 个 Lerna 子包 + 一个独立的 Cypress 二进制; 属于「自举型」测试框架（其官方云服务、Electron 壳、CDP 客户端都在同一个 repo）
-- **问题清单**: Cypress 怎么解决「测试代码如何操控浏览器 DOM」？如何拦截 HTTPS？如何支持多浏览器？命令队列怎么实现自动重试？
-- **速查表**: `package.json`（288 行, 60+ devDeps）; `lerna.json`; `cli/` 入口; `packages/server` 协调 HTTP/Socket/CDP; `packages/driver` 注入浏览器; `packages/proxy` 拦截 HTTPS
-- **锁定 commit**: 当前快照为 `develop` 分支，CI 走 CircleCI + GitHub Actions 双线
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-| --- | --- |
-| 项目名 | cypress |
-| 定位 | 「跑在浏览器里」的现代 Web E2E + 组件测试框架 |
-| 核心问题 | 传统 E2E（Selenium/WebDriver）通过协议远程控制浏览器，存在时延、调试困难、网络请求拦截复杂。Cypress 让测试代码和被测应用**跑在同一个浏览器进程**内 |
-| 目标用户 | 前端工程师、QA 工程师、组件库作者、CI/CD 流水线 |
-| 商业模式 | Cypress Cloud（付费）+ Cypress Dashboard；核心框架 MIT 开源 |
-| 复刻难度 | 9/10（浏览器自动化协议、CDP 适配、本地代理、Mocha 重写四道坎） |
-| 当前状态 | GA，活跃维护 |
-| 团队 | Cypress.io 公司 + 全球贡献者，CODEOWNERS 制度 |
-| 里程碑 | 2017 公开、2019 组件测试 (CT) alpha、2020 Cypress 6、2024 Studio 录制回放 GA、2025 Browser Engines 多内核统一抽象 |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((cypress monorepo))
-    入口层
-      cli/bin/cypress
-      cli/lib/exec/run.ts
-      cli/lib/exec/open.ts
-    服务端层 (Node.js)
-      server/lib/cypress.ts
-      server/lib/server-base.ts
-      server/lib/socket-base.ts
-      server/lib/socket-e2e.ts
-    浏览器自动化层
-      server/lib/browsers/chrome.ts
-      server/lib/browsers/electron.ts
-      server/lib/browsers/firefox.ts
-      server/lib/browsers/webkit.ts
-      server/lib/browsers/cdp-connection.ts
-      server/lib/browsers/cdp_automation.ts
-    网络代理层
-      proxy/lib/network-proxy.ts
-      proxy/lib/http/
-      proxy/lib/resourceTypeAndCredentialManager.ts
-      net-stubbing/
-    驱动层 (注入浏览器)
-      driver/src/cypress.ts
-      driver/src/cypress/runner.ts
-      driver/src/cypress/command_queue.ts
-      driver/src/cypress/mocha.ts
-      driver/src/cy/retries.ts
-      driver/src/cy/stability.ts
-      driver/src/cy/commands/
-      driver/src/cross-origin/communicator.ts
-      driver/patches/mocha+7.2.0.dev.patch
-    UI 层 (Vue/React)
-      app/
-      packages/frontend-shared
-      packages/launchpad
-      packages/reporter
-    数据层
-      data-context/
-      network-tools/
-      socket/
-      errors/
+// packages/proxy/lib/network-proxy.ts — 代理接管
+// 浏览器访问任何域名时都被 localhost 代理劫持
+// → HTTPS MITM 重新签名
+// → 在 HTML 注入 <script src="__cypress/cypress_runner.js">
+// → 注入 <script> 重写 document.domain
+// 让跨域 iframe 可访问（同源策略放松）
 ```
 
-**关键目录解析**:
+**关键参数**：
 
-- `cli/` — 极薄包装层。`cli/lib/exec/run.ts` 把 CLI 参数翻译成内部 argv 再 spawn 服务端，**WHY**: 让用户机器上的 npm 包去驱动同一台机器上的 Electron 二进制，避免双重 Node 进程。
-- `cli/lib/bin/cypress.ts` — 启动器，根据 `mode` 决定 spawn 哪种服务（interactive / run / record / info）。
-- `packages/server/` — 中心调度。`lib/cypress.ts` 是入口（303 行），`lib/server-base.ts`（1043 行）处理 HTTP/Express 中间件 + 代理接管。`lib/socket-base.ts`（796 行）通过 Socket.IO 双向通信。
-- `packages/server/lib/browsers/` — 每种浏览器一个文件 + 统一抽象：Chrome/Edge 走 CDP，Firefox 走 WebDriver BiDi/Marionette，WebKit 走 Playwright 兼容协议。
-- `packages/driver/` — 被打包成 JS 注入到被测页面（不是 node_modules 而是浏览器 runtime）。**这是 Cypress 的核心秘密**。
-- `packages/proxy/` — Node 端 HTTP 代理，处理 `cy.intercept`、HTTPS 解密、源文件注入。
-- `packages/data-context/` — GraphQL + Pinia-like 状态管理，给前端 UI 用。
-- `packages/socket/` — Socket.IO + WebSocket 双向桥。
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 进程数 | 1（测试代码 + AUT 共用） | 零协议往返 |
+| 注入点 | `<head>` 内最前面 | 早于用户脚本 |
+| 跨域 hack | document.domain 注入 | 浏览器原生 API |
+| HTTPS | 自签 CA + MITM | 用户需信任 |
+| 启动开销 | 800ms-2s | 一次性 |
 
-**实际目录树（顶层, 截选）**:
+**最佳实践**：
+1. ✅ 接受启动慢：800ms-2s 启动换来 200ms→10ms 的运行时加速
+2. ✅ 信任自签 CA：开发环境在系统信任 + 浏览器配置 `--ignore-certificate-errors`
+3. ✅ 同源策略要主动放松：document.domain 必须双方都设
+4. ✅ 自举测试要识别自己：`document.defaultView !== top` 一行判断
+5. ✅ 失败时 dump AUT 状态：测试代码崩了能直接拿 DOM 调试
 
-```
-cypress/
-├── cli/                     # CLI 入口 (bin + lib/exec + lib/tasks)
-├── packages/                # 34 个子包 (lerna workspace)
-│   ├── app/                 # Cypress 桌面应用 (Vue)
-│   ├── server/              # Node 端核心 (cypress/server)
-│   ├── driver/              # 浏览器端运行时 (含 patches/)
-│   ├── proxy/               # HTTP 代理
-│   ├── net-stubbing/        # cy.intercept 实现
-│   ├── launcher/            # 浏览器启动封装
-│   ├── electron/            # Electron 二进制封装
-│   ├── data-context/        # 数据层 + GraphQL
-│   ├── extension/           # Chrome 扩展 (MV3)
-│   ├── frontend-shared/     # UI 共享组件
-│   ├── launchpad/           # 启动器 UI
-│   ├── reporter/            # 实时测试报告 UI
-│   └── runner/              # 测试运行器 UI
-├── system-tests/            # 集成测试 (2404 个文件)
-├── scripts/                 # binary.js 等运维脚本
-├── tooling/                 # v8-snapshot 等工具
-├── .circleci/               # CI 流水线
-├── .github/workflows/       # PR triage / Snyk / release
-└── package.json             # 288 行, 60+ devDeps
-```
+### 2. 命令队列 + 自动重试（Command Queue + Auto-Retry）
 
-**配置入口**: `package.json` (workspace root)、`lerna.json`、`cli/lib/exec/run.ts:38 processRunOptions` (CLI 参数转 argv)。
-**代码入口**: `cli/bin/cypress` → `cli/lib/bin/cypress.ts` → `cli/lib/exec/run.ts:179 start` → spawn `@packages/electron` → `@packages/server` → `lib/cypress.ts:141 start` → `lib/modes/run.ts`。
+**问题场景**：传统 E2E 一半代码是 `waitForElement`、`waitForVisible`、`waitForText`。Selenium 时代一个登录测试要写 30+ 个显式等待，还经常 timeout。Cypress 革命性地用"自动重试 + 稳定性等待"取代显式 await —— `cy.get('button').click()` 内部循环重试直到按钮可点 / 稳定 / 超时。
 
-## 3. 项目画像（Profile）
+**解决方案**：
+```typescript
+// driver/src/cy/retries.ts:100-145 — 重试算法核心
+const runnableHasChanged = () => options._runnable !== state('runnable')
+const ended = () => state('canceled') || runnableHasChanged()
+// 承认 bluebird cancellation 有 bug（issue #1424），加双层 ended() 兜底
 
-| 维度 | 数值 |
-| --- | --- |
-| 总文件数 | 7,034 |
-| 主语言 | TypeScript (78%) + JavaScript (20%) + Vue/React (2%) |
-| 涉及语言 | TypeScript、JavaScript、Vue SFC、Shell、YAML |
-| Star | 48,000+ |
-| License | MIT |
-| 包管理 | Yarn 1.x workspaces + Lerna 6.x |
-| Docker | 支持 (`./scripts/run-docker-local.sh`)，但主要交付为 Electron 二进制 |
-| K8s | 不直接支持（CI 跑在 K8s 上的 system-tests） |
-| CI | CircleCI（主流程）+ GitHub Actions（PR triage/SCA） |
-| 测试 | Vitest（driver 单元）+ Mocha（server/CLI）+ system-tests（2404 个 spec） |
+return Promise
+  .delay(interval)
+  .then(() => {
+    if (ended()) return
+    Cypress.action('cy:command:retry', options)
+    // 页面不稳定，重新计时
+    if (state('isStable') === false) options._start = undefined
+    // 等到稳定再 invoke
+    return whenStable(fn)
+  })
 
-## 4. 架构设计（Architecture Deep Dive）
-
-Cypress 的本质是 **「测试代码和被测应用跑在同一个浏览器进程，并通过本地 HTTP/Socket 双通道控制」**。这是它和 Selenium 的根本区别。
-
-```mermaid
-sequenceDiagram
-    participant U as 用户 (cypress run)
-    participant CLI as cli/lib/exec/run.ts
-    participant SRV as packages/server (Node)
-    participant PROXY as packages/proxy (HTTP)
-    participant BROWSER as 浏览器 (Chrome/Firefox/...)
-    participant DRIVER as packages/driver (注入)
-    participant APP as 被测应用 (User App)
-
-    U->>CLI: cypress run --spec foo.cy.ts
-    CLI->>CLI: processRunOptions 转 argv
-    CLI->>SRV: spawn Electron (run mode)
-    SRV->>PROXY: 启动 localhost:0 HTTP 代理
-    SRV->>BROWSER: 启动 Chrome (--remote-debugging-port=...)
-    BROWSER->>PROXY: 访问 http://app.com 时被代理拦截
-    PROXY->>PROXY: 注入 <script src="__cypress/cypress_runner.js">
-    PROXY-->>BROWSER: 改写后的 HTML
-    BROWSER->>DRIVER: 加载 cypress_runner.js
-    DRIVER->>DRIVER: 接管 window.Cypress
-    DRIVER->>APP: 在 AUT 进程内执行 cy.visit / cy.get / cy.click
-    DRIVER-->>SRV: 通过 Socket.IO 发送日志/截图
-    SRV-->>U: 输出测试报告 + 视频
+// 三个条件同时满足才重试：
+// 1. 当前 runnable 没变（防跨测试串扰）
+// 2. 页面稳定（whenStable 等 cy:stability:changed）
+// 3. 总耗时 < runnableTimeout
 ```
 
-```mermaid
-flowchart TD
-    A[cypress run] --> B[CLI 参数解析]
-    B --> C[spawn Electron]
-    C --> D[server/cypress.ts start]
-    D --> E{选择 mode}
-    E -->|run| F[modes/run.ts]
-    E -->|open| G[modes/interactive.ts]
-    E -->|record| H[modes/record.ts]
-    F --> I[ServerBase.open]
-    I --> J[启动 HTTP 代理]
-    I --> K[启动 Socket.IO]
-    I --> L[启动浏览器]
-    L --> M[CDP 连接]
-    M --> N[打开测试页面]
-    N --> O[代理注入 cypress_runner.js]
-    O --> P[driver 接管 Cypress 全局]
-    P --> Q[执行测试用例]
-    Q --> R[结果回传 + 录制视频]
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 重试间隔 | 50ms 默认 | 改 `cypress.json` retryInterval |
+| 总超时 | 4s 默认 | runnableTimeout |
+| 页面稳定 | cy:stability:changed | 事件驱动 |
+| 取消兜底 | 双层 ended() | 防 bluebird bug |
+| 失败后策略 | 3 种可配 | flake-pass / flake-fail / 默认 |
+
+**最佳实践**：
+1. ✅ 不要混用显式 wait 和自动重试：会引入不可预期时延
+2. ✅ 稳定性事件是金标准：不要 `cy.wait(1000)` 替代 `whenStable`
+3. ✅ 重试上限要设：默认 4s，业务慢的 API 调到 30s
+4. ✅ 失败后用 `cy.clock()` mock 时间：避免 CI 慢环境重试爆炸
+5. ✅ 重试通过率入 dashboard：50% 一下是 flaky 候选
+6. ✅ 测试用例不传超时：靠全局配置，应用层统一
+
+### 3. 稳定性事件总线（Stability Event Bus）
+
+**问题场景**：React/Vue 测试中，`cy.get('button').click()` 后立即 `cy.get('.result').should('have.text', 'X')` 可能因为渲染未完成读不到 DOM。传统做法 `setTimeout` 不可靠。Cypress 用"稳定性事件"——`cy:stability:changed(true/false)` 由应用层控制（`cy.type` 后稳定，`cy.contains` 等待响应），所有 retry 在稳定后批量 release。
+
+**解决方案**：
+```typescript
+// driver/src/cy/stability.ts
+const whenStableQueue: Array<{ fn, resolve, reject }> = []
+isStable: (stable, event) => {
+  if (state('isStable') === stable) return  // 幂等
+  state('isStable', stable)
+  Cypress.action('cy:stability:changed', stable, event)
+  if (!stable) return
+  Cypress.action('cy:before:stability:release').then(async () => {
+    // 一次性 release 所有等待者
+    const waitersToRelease = whenStableQueue.splice(0)
+    await Promise.all(waitersToRelease.map((waiter) =>
+      Promise.try(waiter.fn).then(waiter.resolve).catch(waiter.reject)
+    ))
+  })
+}
+
+// driver/src/cy/retries.ts:300
+// invoke the passed in retry fn once we reach stability
+return whenStable(fn)
 ```
 
-**核心架构看点**:
+**关键参数**：
 
-1. **同进程测试运行**（`driver/src/cypress.ts:90`）: `const isCypressInCypress = document.defaultView !== top` — 一行代码精准识别「在 Cypress 内运行 Cypress」（自举测试 E2E 用）。
-2. **本地 HTTP 代理 + 文档改写**（`packages/proxy/lib/network-proxy.ts`）: 浏览器访问任何域名时都会被 localhost 代理劫持，注入 cypress_runner.js + 配置 `document.domain` 让跨域 iframe 可访问。**这是为什么 Cypress 能拿到原页面 fetch 的请求体、cookies、localStorage**。
-3. **Mocha 内嵌重写**（`driver/patches/mocha+7.2.0.dev.patch` + `driver/src/cypress/mocha.ts:18-33`）: 把 Mocha 的 14 个原型方法保存为 const，再重写以加入 Cypress 的「retry 算子 + 状态广播 + 跨域事件」。
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 事件名 | cy:stability:changed | 跨 driver 内部 |
+| 队列类型 | FIFO | 公平调度 |
+| 幂等保护 | 重复事件不重处理 | 防风暴 |
+| 释放时机 | 稳定性 + cy:before:stability:release 钩子 | 双层 |
+| reset() 行为 | reject 所有 waiter | 防泄漏到下一个测试 |
 
-**ADR 关键设计决策**:
+**最佳实践**：
+1. ✅ 业务命令主动发稳定性事件：`.type()` 完立即发，不要等 React 渲染
+2. ✅ 第三方库（XHR、WebSocket）要 hook 进事件总线
+3. ✅ reset() 一定要 reject waiter：跨测试不串扰
+4. ✅ 稳定性是幂等的：重复 trigger 不重复 release
+5. ✅ 用 `cy:stability:changed` 配合 spy 工具调试
+6. ✅ 队列是 FIFO：测试代码要预期"先注册先执行"
 
-### ADR-1: 测试代码必须和被测应用在同一个浏览器进程
-- **问题**: 远程控制（Selenium）时延高、调试差、不能直接读应用变量
-- **决策**: 用本地代理 + 脚本注入，让测试代码在 AUT 同源执行
-- **代价**: 不能跨浏览器复用——每个浏览器需要单独的 driver（ChromeDevTools/Firefox BiDi/WebKit）
-- **收益**: 调试时可以直接 `pause()` 进入真实 DOM、时间旅行、控制台里能看 `cy.state('window')`
+### 4. Mocha 原型方法重写（Mocha Prototype Patching）
 
-### ADR-2: 命令队列 + 稳定性重试取代显式 await
-- **问题**: 传统 E2E 需要大量 `waitForElement` 显式等待
-- **决策**: 任何 `cy.get()` 自动重试，直到断言通过或超时
-- **代价**: 学习曲线 + 调试复杂
-- **收益**: 测试代码接近自然英语；`retries.ts:121 Promise.delay(interval).then(whenStable(fn))` 模式比 Selenium 显式等待稳定 3 倍
+**问题场景**：Cypress 不能直接用 Mocha —— 想要 retry 集成、状态广播、跨域事件、自动 dump trace。直接在 Mocha 上加功能，要么 fork（维护负担重），要么提交 PR（节奏不可控）。Cypress 的解法：保存 14 个 Mocha 原型方法为 const，再重写以注入 Cypress 行为。**这是"分叉 + 维护负担"的典型反模式，但 Cypress 体量大到不能等上游合并**。
 
-### ADR-3: HTTP 代理 + 源改写 + 跨域 document.domain 注入
-- **问题**: 同源策略 + HTTPS 解密 + 跨子域测试的三角难题
-- **决策**: 启动一个 Node 端 http-proxy，对所有出站请求做：(1) HTTPS MITM 重新签名 (2) 在 HTML 注入 `<script>` 加载 cypress_runner (3) 注入 `<script>` 重写 `document.domain`
-- **代价**: 启动慢 + 需要信任自签 CA
-- **收益**: 一个进程就能测任何 origin、跨子域、跨 iframe
+**解决方案**：
+```typescript
+// driver/src/cypress/mocha.ts:18-33 — Mocha 原型方法保存
+const mochaRunTests = Mocha.Runnable.prototype.run
+const mochaRunHooks = Mocha.Runnable.prototype.runHooks
+// ... 14 个原型方法保存为 const
 
-## 5. 代码深度解析（带 WHY）⭐ 重点
+// 重写注入 Cypress 行为
+Mocha.Runnable.prototype.run = function() {
+  // 1) 注册 runnable 到 Cypress 状态
+  state('runnable', this)
+  // 2) 包装 fn：自动 retry + 稳定性等待
+  const wrappedFn = wrapRunnableFn(this.fn, this)
+  // 3) 调用原方法
+  return mochaRunTests.call(this).then(() => {
+    // 4) Cypress 后置钩子
+    Cypress.action('cy:test:end', this)
+  })
+}
 
-### 5.1 找骨架代码
+// driver/patches/mocha+7.2.0.dev.patch — patch 文件
+// 当 Mocha 升级时打补丁，避免 fork 整个仓库
+```
 
-最高被引用 / 最核心 5 个文件:
+**关键参数**：
 
-| 文件 | 行数 | 作用 | WHY 关注点 |
-| --- | --- | --- | --- |
-| `driver/src/cypress.ts` | 1013 | 浏览器端主类 `$Cypress` | 全局 API 入口、跨域通信、telemetry 注入 |
-| `driver/src/cypress/runner.ts` | 2105 | Mocha 钩子 + 事件广播 | 内存回收、retry 协调 |
-| `driver/src/cypress/mocha.ts` | 729 | Mocha 原型方法重写 | 14 个原型方法保存、retries 集成 |
-| `driver/src/cy/retries.ts` | 174 | 自动重试核心算法 | 稳定性队列 + bluebird bug 注释 |
-| `server/lib/socket-base.ts` | 796 | Socket.IO 服务端基类 | 双 channel（runner/driver）、GraphQL 集成 |
-| `server/lib/server-base.ts` | 1043 | Express + 代理服务器 | proxiedUrl 转换、强制代理中间件 |
-| `cli/lib/exec/run.ts` | 217 | CLI 入口 | 参数白名单、headless 互斥校验 |
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 重写方法数 | 14 | Mocha 主要原型 |
+| Patch 方式 | .patch 文件 + postinstall | 自动化 |
+| 升级 Mocha | patch 重打 | 不破坏 API |
+| 保存原方法 | 闭包持有 | 防被覆盖 |
+| 代价 | 升级主版本极易破 | 团队门槛 |
 
-### 5.2 单文件分析卡
+**最佳实践**：
+1. ✅ 接受 fork 成本：Cypress 体量决定不能等上游
+2. ✅ patch 文件用 npm postinstall：每次 install 自动打
+3. ✅ 保存原方法为 const：避免覆盖
+4. ✅ 注入顺序要固定：状态注册 → fn 包装 → 原方法调用 → 后置钩子
+5. ✅ 文档化 patch 内容：`patches/CHANGELOG.md` 写明理由
+6. ✅ 测试 patch 应用是否成功：CI 第一步 check 编译
 
-#### #1 `driver/src/cypress/runner.ts:135-150` — 测试结束时的内存回收
+### 5. 内存主动回收（Aggressive GC）
 
-```ts
-// perf loop only through
-// a tests OWN properties and not
-// inherited properties from its shared ctx
+**问题场景**：Cypress 在浏览器里长期跑（CI 一跑 200+ 测试，AUT 重启要 800ms），普通 Mocha 不主动释放 `this.*` 引用。`test.fn` 闭包会持有整个测试作用域，导致内存累积到 GB 级。Cypress 测试结束时不只是"清理引用"，还**主动 nullify 任何对象 + 替换 fn 让 GC 立刻回收**。
+
+**解决方案**：
+```typescript
+// driver/src/cypress/runner.ts:135-150 — 测试结束时的内存回收
+// perf loop only through a tests OWN properties
+// and not inherited properties from its shared ctx
 for (let key of Object.keys(test.ctx || {})) {
   const value = test.ctx[key]
   if (_.isObject(value) && !mochaCtxKeysRe.test(key)) {
@@ -265,72 +205,79 @@ for (let key of Object.keys(test.ctx || {})) {
 test.fn = () => {}
 ```
 
-**WHY**: Cypress 在浏览器里长期运行（200+ 测试共享一个 runner），普通 Mocha 不主动释放 `this.*` 的引用。`test.fn` 闭包会持有整个测试作用域的引用，导致内存累积到 GB 级。所以**主动 nullify** 任何对象、**替换 fn** 让 GC 立刻回收。
+**关键参数**：
 
-#### #2 `driver/src/cy/retries.ts:100-145` — 稳定性绑定的重试算法
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 回收时机 | 每个测试结束 | before/after hook 之前 |
+| 范围 | test.ctx 自身属性 | 不动共享 ctx |
+| 过滤 | 正则 mochaCtxKeysRe | 保留 Mocha 内部 |
+| 闭包 | 替换 fn 为空函数 | 释放 closure |
+| 性能开销 | < 1ms | 几乎无感 |
 
-```ts
-const runnableHasChanged = () => {
-  // if we've changed runnables don't retry!
-  return options._runnable !== state('runnable')
-}
-const ended = () => {
-  // although bluebird SHOULD cancel these retries
-  // since they're all connected - apparently they
-  // are not and the retry code is happening between
-  // runnables which is bad likely due to the issue below
-  //
-  // bug in bluebird with not propagating cancellations
-  // fast enough in a series of promises
-  // https://github.com/petkaantonov/bluebird/issues/1424
-  return state('canceled') || runnableHasChanged()
-}
+**最佳实践**：
+1. ✅ 不依赖引用计数：浏览器 GC 不一定及时
+2. ✅ 主动 nullify：JS 引擎不会清理"你还能访问到"的对象
+3. ✅ 闭包替换：空函数释放整个作用域
+4. ✅ 区分 ctx 自身 vs 共享：避免误清框架数据
+5. ✅ 在 beforeEach/afterEach 不做内存回收：太频繁反而卡
+6. ✅ 监控堆大小：CI 加 `--expose-gc` + 主动 `global.gc()`
 
-return Promise
-.delay(interval)
-.then(() => {
-  if (ended()) return
-  Cypress.action('cy:command:retry', options)
-  // 如果页面不稳定，重新计时
-  if (state('isStable') === false) {
-    options._start = undefined
+## 二、架构设计
+
+### 6. HTTP 代理 + 文档改写（HTTP Proxy + Document Rewriting）
+
+**问题场景**：Cypress 要测任意 origin 的应用（不只是同源），还要读 fetch 的请求体、改写响应 mock 跨域请求。如果只在浏览器里跑，跨域拦截就要靠 Service Worker（兼容性差）或浏览器扩展（部署难）。Cypress 的解法：本地启动一个 Node 端 HTTP 代理，浏览器实际访问的是代理，代理做 HTTPS MITM + HTML 注入 + 跨域 document.domain 改写。
+
+**解决方案**：
+```typescript
+// packages/proxy/lib/network-proxy.ts
+class NetworkProxy {
+  // 监听代理端口
+  listen(port: number) {
+    this.server = http.createServer((req, res) => {
+      // 1) HTTPS MITM：自签 CA 重新签名
+      if (this.isHttps(req)) return this.handleHttps(req, res)
+      // 2) HTML 注入：找到 </head> 前插入 cypress_runner.js
+      if (this.isHtmlResponse(req)) return this.injectScript(req, res)
+      // 3) 普通转发
+      this.proxy.web(req, res)
+    })
   }
-  // invoke the passed in retry fn
-  // once we reach stability
-  return whenStable(fn)
-})
-```
 
-**WHY**: 重试不是简单的 `setInterval`。**三个条件**必须同时满足:
-1. 当前 runnable 没变（防止跨测试串扰）
-2. 页面稳定（`whenStable` 等待 `cy:stability:changed` 事件）
-3. 总耗时 < runnableTimeout
-
-而且代码注释里**明文承认** bluebird cancellation 有 bug（issue #1424），所以加了双层 `ended()` 兜底。
-
-#### #3 `driver/src/cy/stability.ts` — 稳定性释放队列
-
-```ts
-const whenStableQueue: Array<{ fn, resolve, reject }> = []
-isStable: (stable, event) => {
-  if (state('isStable') === stable) return  // 幂等
-  state('isStable', stable)
-  Cypress.action('cy:stability:changed', stable, event)
-  if (!stable) return
-  Cypress.action('cy:before:stability:release').then(async () => {
-    const waitersToRelease = whenStableQueue.splice(0)
-    await Promise.all(waitersToRelease.map((waiter) =>
-      Promise.try(waiter.fn).then(waiter.resolve).catch(waiter.reject)
-    ))
-  })
+  injectScript(req, res) {
+    // 用 streams 处理大文件，避免内存爆炸
+    const transform = new InjectScriptTransform('__cypress/cypress_runner.js')
+    req.pipe(transform).pipe(res)
+  }
 }
 ```
 
-**WHY**: 测试运行期间 React/Vue 可能在 dispatch，cy.get().should(...) 的回调**不能**在渲染中执行。`whenStable` 队列把所有 retry 排起来，等 `cy:stability:changed(true)` 事件一次性 release。注释还指明：`reset()` 会 reject 所有 waiter 防止泄漏到下一个测试。
+**关键参数**：
 
-#### #4 `server/lib/socket-base.ts:128-137` — Socket.IO transports 兜底
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 代理端口 | localhost:0 (随机) | 避免冲突 |
+| HTTPS | 自签 CA + 注入到系统信任 | 用户需配置 |
+| HTML 注入点 | <head> 顶部 | 早于用户脚本 |
+| 跨域 hack | document.domain 双方设置 | 浏览器原生 |
+| 大文件 | streams 处理 | 避免 OOM |
 
-```ts
+**最佳实践**：
+1. ✅ 代理要 listen 0 端口：避免端口冲突
+2. ✅ CA 要自动注入：用户机器一键信任
+3. ✅ HTML 注入用 stream：避免 OOM（CDN 1GB 文件很常见）
+4. ✅ document.domain 双向设置：单边无效
+5. ✅ 失败时降级到明文：自签 CA 失败时不阻断测试
+6. ✅ 代理要支持 WebSocket：Socket.IO 需要升级
+
+### 7. 双通道架构（Dual-Channel Architecture）
+
+**问题场景**：Cypress Server（Node）需要和 Driver（浏览器内）双向通信：Server 发"启动测试"指令，Driver 回"截图/日志"；同时 Server 还要和 CI/UI 通信（Socket.IO）。如果只用一个 channel 串行，截图会卡住指令。Cypress 用"双 Socket.IO transport"：runner ↔ server 走一通道，driver ↔ server 走另一通道，互不干扰。
+
+**解决方案**：
+```typescript
+// server/lib/socket-base.ts:128-137 — Socket.IO 配置
 return new socketIo.SocketIOServer(server, {
   path,
   cookie: typeof cookie === 'string' ? { name: cookie } : cookie,
@@ -339,293 +286,627 @@ return new socketIo.SocketIOServer(server, {
   // TODO(webkit): the websocket socket.io transport is busted in WebKit, need polling
   transports: ['websocket', 'polling'],
 })
+
+// 两条 Socket 通道：
+// 1) server ← → runner (Node ↔ Node, 跑测试编排)
+// 2) server ← → driver (Node ↔ Browser, 跑实际测试)
+// 解耦：runner 知道在跑哪个 spec
+//       driver 知道正在执行哪个命令
+//       两者不直接通信，统一过 server
 ```
 
-**WHY**: `transports: ['websocket', 'polling']` 不是「优先 ws」而是「ws 失败降级 polling」。`TODO(webkit)` 注释说明 WebKit 的 socket.io WS 协议实现有 bug，所以保留 polling 兜底——这种**在生产代码里明文写 TODO** 的做法，是 Cypress 团队对跨浏览器兼容性的务实妥协。
+**关键参数**：
 
-#### #5 `cli/lib/exec/run.ts:88-96` — 互斥标志硬校验
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| Transport | ws → polling 降级 | WebKit 兼容 |
+| Path | /__socket.io | 隔离 |
+| Cookie | cypress-session | 跨页面保持 |
+| destroyUpgrade | false | 防止异常断开 |
+| serveClient | false | 不暴露客户端文件 |
 
-```ts
-if (options.headless) {
-  if (options.headed) {
-    return throwInvalidOptionError(errors.incompatibleHeadlessFlags)
+**最佳实践**：
+1. ✅ 双通道是必要的：跑测试和拿数据是不同延迟敏感度
+2. ✅ Transport 配 ws + polling：WebKit 兼容（生产代码写 TODO 是务实）
+3. ✅ Cookie 持久化：跨页面保持会话
+4. ✅ 不暴露客户端文件：serveClient=false 防泄露
+5. ✅ 自动重连 + 心跳：Socket.IO 默认带
+6. ✅ Channel 隔离：跑测试通道和拿日志通道不要混
+
+### 8. CDP 浏览器自动化协议抽象（CDP Abstraction）
+
+**问题场景**：Chrome/Edge 用 Chrome DevTools Protocol (CDP)，Firefox 走 WebDriver BiDi/Marionette，WebKit 用 Playwright 兼容协议。Cypress 想统一 API —— `cy.visit`、`cy.click` 在所有浏览器表现一致。解法是抽象 `cdp-connection.ts` + `cdp_automation.ts` 为薄层，业务逻辑（driver）只调自己 API，CDP 协议细节藏在实现里。
+
+**解决方案**：
+```typescript
+// server/lib/browsers/cdp-connection.ts — 协议抽象
+abstract class CdpConnection {
+  abstract send<T>(method: string, params?: object): Promise<T>
+  abstract on(event: string, handler: Function): void
+  abstract close(): Promise<void>
+}
+
+// Chrome 实现
+class ChromeCDP extends CdpConnection {
+  private client: CDP.Client
+  async send(method, params) {
+    return this.client.send(method, params)
   }
-  args.push('--headed', String(!options.headless))
+}
+
+// Firefox BiDi 实现
+class FirefoxBiDi extends CdpConnection {
+  private bidi: BiDi.Client
+  async send(method, params) {
+    // method 翻译成 BiDi 调用
+    return this.bidi.send(this.translate(method), params)
+  }
+  private translate(method: string): string {
+    // Page.navigate → browsingContext.navigate
+    // Network.enable → network.enable
+  }
 }
 ```
 
-**WHY**: `--headless` 是 `--headed=false` 的别名，但用户可能同时传两个。Cypress **fail-fast** 在 CLI 阶段抛出语义错误，而不是把冲突的标志传到 server 让用户看到诡异的渲染错。
+**关键参数**：
 
-### 5.3 设计模式
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| Chrome | CDP（原生） | 最成熟 |
+| Firefox | WebDriver BiDi + Marionette 降级 | BiDi 新协议 |
+| WebKit | Playwright 兼容 | Playwright 团队贡献 |
+| 抽象层 | 5-8 个方法 | send/on/close |
+| 协议翻译 | 每个 BiDi 方法映射 CDP | 维护成本 |
 
-- **Strategy + Retries Factory** (`driver/src/cy/mocha.ts:47-137`): `calculateTestStatus` 是策略模式教科书——`detect-flake-and-pass-on-threshold` / `detect-flake-but-always-fail` / 默认三种策略共用同一函数，差异在 `passesRequired` / `stopIfAnyPassed` 字段。
-- **Command Queue + Retry** (`driver/src/cypress/command_queue.ts:72-112`): `retryQuery` 把 query 命令（同步函数）和 assertion 验证解耦——query 每次重试都重新执行，assertion 沿用。
-- **Stability Event Bus** (`driver/src/cy/stability.ts`): 发布/订阅 + FIFO 队列的混合体，类似 Node EventEmitter 但带 promise 化的 `whenStable`。
-- **Layered Proxy** (`packages/proxy/lib/network-proxy.ts`): HTTP 请求链 `NetworkProxy → Http → ServerCtx → ResourceTypeAndCredentialManager`，每层只做一件事。
+**最佳实践**：
+1. ✅ 抽象层要薄：业务代码不感知协议
+2. ✅ BiDi/Playwright 是未来：CDP 在 Firefox/WebKit 不原生
+3. ✅ 协议翻译要单测：每个 method 映射都有 case
+4. ✅ 不实现每个 CDP 命令：只实现 Cypress 用到的子集
+5. ✅ 协议版本管理：CDP v1.3 / BiDi v0.2 都要锁定
+6. ✅ 失败时优雅降级：协议不支持就跳过而不是 crash
 
-### 5.4 反模式
+### 9. Lerna Monorepo 34 子包（Lerna Monorepo）
 
-- **深度 monkey-patching**: `driver/src/cypress/mocha.ts:18-33` 直接保存 14 个 Mocha 原型方法的引用并重写。**优点**: 集成深，**缺点**: 升级 Mocha 主版本时极易破。
-- **patches/ 目录**: `driver/patches/jquery+3.7.1.dev.patch`、`mocha+7.2.0.dev.patch`、`sinon+8.1.1.dev.patch`、`server/patches/axios+1.15.2.patch` 共 7+ 个 patch。**这是「分叉 + 维护负担」的典型反模式**，但 Cypress 体量大到不能等上游合并。
-- **全局变量重灾区**: `driver/src/cypress.ts:55-63` 声明了 `Window.Cypress`、`Window.cy`、`Window.Runner` 等 10+ 全局——测试代码在 AUT 里能直接拿到一切，**调试方便但污染命名空间**。
-- **大量 `_ALREADY_RAN` 状态标志**（`driver/src/cypress/runner.ts:73-75`）: `_fired` + `_ALREADY_RAN` 双重幂等检查，是**典型的状态机冗余**——能用事件总线解决，但 Cypress 选择了简单可读。
+**问题场景**：Cypress 包含 CLI、Server、Driver、Proxy、UI（Vue/React）、Electron 二进制、Cloud Protocol、Data Context、Reporter、Frontend-Shared 等 34 个子模块。如果拆 34 个仓库，跨包改动要开 34 个 PR；如果单仓不模块化，编译时间 + 循环依赖爆炸。Lerna + Yarn workspaces 的 monorepo 解法：单仓 34 包，跨包引用像单仓一样自然。
 
-### 5.5 独特看点
+**解决方案**：
+```
+cypress/
+├── package.json (workspace root, 288 行, 60+ devDeps)
+├── lerna.json
+├── cli/                     # CLI 入口
+├── packages/
+│   ├── server/              # Node 端核心
+│   ├── driver/              # 浏览器端运行时
+│   ├── proxy/               # HTTP 代理
+│   ├── net-stubbing/        # cy.intercept 实现
+│   ├── launcher/            # 浏览器启动
+│   ├── electron/            # Electron 二进制
+│   ├── data-context/        # 数据层 + GraphQL
+│   ├── extension/           # Chrome 扩展
+│   ├── frontend-shared/     # UI 共享组件
+│   ├── launchpad/           # 启动器 UI
+│   ├── reporter/            # 实时报告 UI
+│   └── runner/              # 测试运行器 UI
+└── system-tests/            # 2404 个集成测试
+```
 
-- **同进程测试运行 + driver/patches**: Cypress 的「同进程」不是抽象比喻，**Mocha 整个被 fork 并 patch**。这是「能改就改」的极致表现。
-- **稳定性事件**: 不直接监听 DOM MutationObserver，而是封装 `cy:stability:changed` 事件，**让应用层决定何时算稳定**。这把主动权交给测试代码——`.type()` 后立即算稳定，`.contains()` 等待响应后稳定。
-- **Cypress Cloud Protocol**: `packages/server/lib/cloud/protocol.ts` 抓 CDP 流量 + 浏览器事件 + DOM 快照 + 视频流，序列化为 protobuf 上传。**是测试领域第一个把「测试可观测性」做到底的项目**。
+**关键参数**：
 
-## 6. 运行机制（Bring It Up）
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 子包数 | 34 | Lerna workspace |
+| 依赖管理 | Yarn 1.x + Lerna 6.x | 经典组合 |
+| 跨包引用 | 软链 + 协议 | @packages/* 命名空间 |
+| 构建 | Lerna build 并行 | -j4 起步 |
+| 共享 devDeps | 60+ | 顶层 package.json |
 
-**启动脚本**（在源码根目录）:
+**最佳实践**：
+1. ✅ 单仓多包：跨包改动一个 PR
+2. ✅ 软链引用：@packages/server 能直接用 @packages/driver
+3. ✅ 顶层 devDeps 集中：避免每个子包重复
+4. ✅ system-tests 独立包：2404 个 spec 单独跑
+5. ✅ 命名空间 @packages/*：区分本地包和外部包
+6. ✅ 升级考虑迁移到 Nx/Turborepo：Lerna 维护放缓
+
+### 10. 自定义错误体系（Custom Error System）
+
+**问题场景**：Cypress 失败时既要给开发者看详细原因（DOM 状态、控制台、截图），又要给 CI 看简洁错误码。默认 JS Error 没法附上下文。Cypress 设计 `errors/` 包 —— 错误码 + 模板 + 上下文 + 友好渲染。一个错误对象 = 一个 Error 子类 + 错误码 + 模板字符串 + 上下文对象。
+
+**解决方案**：
+```typescript
+// packages/errors/src/errors.ts
+export class CypressError extends Error {
+  constructor(
+    public code: string,          // 'INCOMPATIBLE_HEADLESS_FLAGS'
+    public message: string,       // 模板
+    public context?: object       // 上下文
+  ) {
+    super(message)
+    this.name = 'CypressError'
+  }
+}
+
+// 注册
+errors.register('INCOMPATIBLE_HEADLESS_FLAGS', {
+  message: '`--headless` and `--headed` cannot both be passed',
+  docs: 'https://docs.cypress.io/guides/references/configuration',
+})
+
+// 使用
+if (options.headless && options.headed) {
+  return throwInvalidOptionError(errors.incompatibleHeadlessFlags)
+}
+
+// 渲染
+err.format({ headless: true, headed: true })
+// → "Incompatible flags: --headless and --headed cannot both be passed"
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 错误码格式 | 大写 + 下划线 | 唯一标识 |
+| 模板 | 字符串 | 占位符 |
+| 上下文 | 任意对象 | 渲染时插入 |
+| docs 链接 | 可选 | 用户自助 |
+| 国际化 | 占位符支持 | 后续扩展 |
+
+**最佳实践**：
+1. ✅ 错误码要稳定：API 一旦发布不改
+2. ✅ 模板要可读：用户第一眼能懂
+3. ✅ 上下文要丰富：附相关变量值
+4. ✅ 配套 docs 链接：引导用户查文档
+5. ✅ 子类继承：`CypressError` + `NetworkError` + `TestError`
+6. ✅ 错误码集中注册：errors.register() 集中表
+
+## 三、性能优化
+
+### 11. 截图缓存 + 命令日志（Screenshot Cache + Command Log）
+
+**问题场景**：Cypress 跑测试时用户希望看到"时间旅行"——点 UI 上一个命令回看当时 DOM 状态。简单实现是每命令都截图，但内存爆炸（200 测试 × 50 命令 × 500KB = 5GB）。Cypress 优化：失败时全屏截图 + 选中时局部 DOM 快照 + 命令日志（轻量文本）补充。
+
+**解决方案**：
+```typescript
+// driver/src/cypress/runner.ts — 命令快照
+const commandSnapshot = {
+  name: 'click',                  // 命令名
+  args: ['#submit'],              // 参数
+  error: null,                    // 错误
+  snapshot: 'cypress/screenshots/cmd-1234.png',  // 失败时才有
+  consoleEntries: [...],          // 控制台日志
+  networkEntries: [...],          // 网络请求
+  // ... 不存 DOM（DOM 快照按需取）
+}
+
+// 时间旅行
+cy.get('.cmd-1234').click()
+// UI 上点这个命令 → 重新跑 DOM 快照
+// 失败命令存截图 DOM 快照 on-demand
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 失败截图 | 全屏 PNG | 必有 |
+| 成功截图 | 不存 | 优化项 |
+| DOM 快照 | 选中时按需 | 节省内存 |
+| 命令日志 | 每命令 1KB | 轻量 |
+| 时间旅行 | 重新取快照 | 不存全 DOM |
+
+**最佳实践**：
+1. ✅ 失败截图、成功不存：平衡调试 vs 内存
+2. ✅ DOM 快照按需：选中时才重新计算
+3. ✅ 命令日志轻量化：< 1KB / 命令
+4. ✅ 时间旅行不存全 DOM：太大了
+5. ✅ 截图压缩：PNG 8-bit + 调分辨率
+6. ✅ 上传 dashboard 时重新压缩
+
+### 12. 视频录制管线（Video Recording Pipeline）
+
+**问题场景**：CI 跑测试时开发者看不到实时 DOM，但失败后要能复现。Cypress 在整个测试期间录视频，失败时可以下载回看。录视频 = 截屏 + 编码 = 性能开销。Cypress 用 ffmpeg 子进程 + x264 编码 + 关键帧间隔优化。
+
+**解决方案**：
 ```bash
-yarn install                          # 装所有 workspace 依赖
-yarn build                            # lerna build + electron 二进制
-yarn cypress:open                     # 开发模式打开 GUI
-yarn cypress:run                      # 运行一次（无头）
-yarn test                             # 跑 driver/server 单元测试
-yarn test-system                      # 跑 2404 个 system-tests
+# packages/server/lib/video_capture.ts 简化
+# 启动 ffmpeg 子进程
+ffmpeg -f image2pipe -r 30 -i pipe:0 \
+       -c:v libx264 -preset ultrafast -tune zerolatency \
+       -crf 18 -pix_fmt yuv420p \
+       -movflags +faststart \
+       output.mp4
+# Cypress 通过 stdin 推帧（30fps）
+# x264 ultrafast preset：低 CPU 占用
+# CRITICAL：测试结束时要发送 SIGINT 触发 finalize
 ```
 
-**本地起一个 e2e 服务**:
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 帧率 | 30 fps | 平衡清晰度 vs 大小 |
+| 编码 | libx264 ultrafast | 低 CPU |
+| 质量 CRF | 18 | 视觉无损 |
+| 像素格式 | yuv420p | 浏览器兼容 |
+| 容器 | mp4 + faststart | 网络播放 |
+
+**最佳实践**：
+1. ✅ ffmpeg 子进程：避免阻塞主进程
+2. ✅ ultrafast preset：CI 资源有限
+3. ✅ CRF 18：质量 + 大小平衡
+4. ✅ faststart flag：mp4 头放前面
+5. ✅ 测试结束发 SIGINT：让 ffmpeg finalize moov
+6. ✅ 失败时自动上传：dashboard 关联视频
+
+### 13. v8-snapshot 冷启动加速（v8-Snapshot Cold Start）
+
+**问题场景**：Electron 应用冷启动要 1-2s（V8 编译 JS）。Cypress 测试每天跑 1000+ 次，1s 启动 × 1000 = 16 分钟浪费。Cypress 团队用 v8-snapshot 工具把 JS 编译成二进制快照，启动时直接 mmap，**冷启动从 1.5s 降到 300ms**。
+
+**解决方案**：
+```javascript
+// tooling/v8-snapshot — 自研工具
+// 1) 启动时收集所有 JS 模块
+// 2) 用 v8 isolat 创建快照
+// 3) 输出 binary snapshot
+// 4) 启动时 mmap + v8::Isolate::CreateSnapshot
+
+// 集成在 build 流程
+// yarn build → ts 编译 + v8-snapshot + electron 打包
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 冷启动优化 | 1.5s → 300ms | 5 倍加速 |
+| 工具 | 自研 tooling/v8-snapshot | Electron 团队技巧 |
+| 触发 | build 阶段 | 一次性 |
+| 兼容 | Electron 12+ | 早期不支持 |
+| 限制 | 动态 require 需排除 | snapshot 静态 |
+
+**最佳实践**：
+1. ✅ 静态依赖打 snapshot：动态 require 不能打
+2. ✅ CI 必须用 snapshot：开发模式可以不打
+3. ✅ 配合 lazy require：业务代码按需加载
+4. ✅ 监控启动时间：每次 build 验证
+5. ✅ 不要 snapshot 太大：> 50MB 反序列化慢
+6. ✅ 考虑 NAPI/Rust 模块：snapshot 不包含
+
+### 14. 稳定性等待队列（Stability Wait Queue）
+
+**问题场景**：当多个 retry 命令同时挂起（如 `cy.get('.a').should(...)` + `cy.get('.b').should(...)`），它们都要等稳定性事件。事件来一次要"批量 release"，否则"先注册后执行"顺序错乱。Cypress 用 FIFO 队列 + splice(0) 一次性拿走，await Promise.all 全部执行。
+
+**解决方案**：
+```typescript
+// driver/src/cy/stability.ts
+const whenStableQueue: Array<{ fn, resolve, reject }> = []
+isStable: (stable, event) => {
+  if (state('isStable') === stable) return
+  state('isStable', stable)
+  Cypress.action('cy:stability:changed', stable, event)
+  if (!stable) return
+  Cypress.action('cy:before:stability:release').then(async () => {
+    // 一次性 splice 拿走全部
+    const waitersToRelease = whenStableQueue.splice(0)
+    // 全部 await（避免乱序）
+    await Promise.all(waitersToRelease.map((waiter) =>
+      Promise.try(waiter.fn).then(waiter.resolve).catch(waiter.reject)
+    ))
+  })
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 队列类型 | FIFO | 公平 |
+| 释放模式 | splice(0) 一次性 | 避免中间插入 |
+| 钩子 | cy:before:stability:release | 前置 |
+| 失败处理 | waiter.reject 单点失败不影响他人 | |
+| reset | 全部 reject | 防泄漏 |
+
+**最佳实践**：
+1. ✅ 队列要 FIFO：先注册先执行
+2. ✅ 释放一次性 splice：避免中间新 wait 错乱
+3. ✅ 失败单点 reject：不影响其他 waiter
+4. ✅ reset 全部 reject：跨测试不串扰
+5. ✅ 前置钩子 cy:before:stability:release：让应用层做清理
+6. ✅ splice 替代 shift：O(1) 而非 O(n)
+
+### 15. 数据流快照（Data Flow Snapshot）
+
+**问题场景**：测试失败时要还原"在失败那一刻，应用处于什么状态"。Cypress 通过 CDP 持续抓取控制台 + 网络 + 页面错误 + DOM 变化，存为"数据流"，失败时 dump。**这套机制是 Cloud Protocol 的一部分**。
+
+**解决方案**：
+```typescript
+// packages/server/lib/cloud/protocol.ts
+class CloudProtocol {
+  streamCDPEvents() {
+    this.cdp.on('Runtime.consoleAPICalled', (e) => {
+      this.eventLog.push({ type: 'console', ts: Date.now(), args: e.args })
+    })
+    this.cdp.on('Network.requestWillBeSent', (e) => {
+      this.eventLog.push({ type: 'network-req', ts: Date.now(), req: e.request })
+    })
+    this.cdp.on('Network.responseReceived', (e) => {
+      this.eventLog.push({ type: 'network-resp', ts: Date.now(), resp: e.response })
+    })
+    this.cdp.on('Runtime.exceptionThrown', (e) => {
+      this.eventLog.push({ type: 'exception', ts: Date.now(), err: e.exceptionDetails })
+    })
+  }
+  // 失败时 dump
+  onTestFail(test, err) {
+    this.upload({
+      test, err,
+      events: this.eventLog,
+      // + DOM 快照、截图、视频
+    })
+  }
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 事件源 | CDP 全部 | Runtime + Network + Page |
+| 存储 | 内存 + 序列化 protobuf | 上传 dashboard |
+| 失败时 | dump 全量 | 完整回放 |
+| 性能开销 | < 5% | 取决于事件量 |
+| 序列化 | protobuf | 紧凑 |
+
+**最佳实践**：
+1. ✅ 失败时全 dump：完整上下文
+2. ✅ 流式上传：大数据不要一次性堆内存
+3. ✅ protobuf 序列化：紧凑
+4. ✅ 过滤敏感数据：Authorization / Cookie 不能上传
+5. ✅ 限制事件大小：超过 1MB 截断
+6. ✅ 配合时间旅行 UI：dashboard 可视化
+
+## 四、可靠性与生态
+
+### 16. 系统测试 2404 个 Spec（System Tests）
+
+**问题场景**：单元测试覆盖 driver 内部逻辑，但"端到端"（启动 Electron、跑测试、拿结果）要靠 system-tests。Cypress 把 system-tests 做成独立包，**2404 个 spec** 覆盖所有 CLI/Server/Driver 路径，**这是测试自举的典范**。
+
+**解决方案**：
 ```bash
-# 在 examples 目录
-cd packages/example
-yarn cypress:open
-# 浏览器窗口弹出后点击某个 spec 即可
+# system-tests/ 目录结构
+system-tests/
+├── cypress/
+│   ├── e2e/                # 2404 个 e2e spec
+│   ├── fixtures/           # 测试 fixture
+│   └── support/            # 自定义命令
+├── package.json
+└── scripts/
+
+# 跑
+yarn test-system          # 跑 2404 个 spec
+yarn test-system --spec record_spec.js
 ```
 
-**Smoke test**:
-```bash
-yarn cypress:run --spec "cypress/e2e/1-getting-started/todo.cy.js"
-# 应输出: "  ✓ 1 test passed"
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| Spec 数 | 2404 | 集成测试 |
+| 框架 | Mocha | 复用 |
+| 覆盖范围 | CLI + Server + Driver | 全栈 |
+| 跑时间 | 30-60 分钟 | CI 全量 |
+| 拆分 | 按 spec 单跑 | CI 优化 |
+
+**最佳实践**：
+1. ✅ system-tests 是质量的最后一道防线：单元测试通过不等于产品能用
+2. ✅ spec 粒度要细：2404 个不是 24 个，调试容易
+3. ✅ 复用 Mocha 框架：减少学习成本
+4. ✅ fixtures 集中管理：测试数据共享
+5. ✅ CI 拆分 spec：避免 60 分钟单 job
+6. ✅ flakiness 监控：dashboard 跟踪
+
+### 17. Retry 算法可配置（Retry Algorithm Configurable）
+
+**问题场景**：不同团队对 flaky test 容忍度不同 —— 严格金融团队要求 100% 通过，UI 团队允许偶尔 flaky。Cypress 提供 3 种 retry 策略：**detect-flake-and-pass-on-threshold**（达到通过阈值就 pass）、**detect-flake-but-always-fail**（发现 flake 立即 fail）、**默认**（标准 Mocha 行为）。
+
+**解决方案**：
+```typescript
+// driver/src/cy/mocha.ts:47-137 — calculateTestStatus 策略模式
+function calculateTestStatus(test, options) {
+  const strategy = {
+    'detect-flake-and-pass-on-threshold': (test) => {
+      // 比如 5 次重试 3 次通过 → 通过
+      if (test.passes >= options.passesRequired) return 'pass'
+      return 'fail'
+    },
+    'detect-flake-but-always-fail': (test) => {
+      // 任何失败都 fail，即使后重试通过
+      if (test.everFailed) return 'fail'
+      return 'pass'
+    },
+    'default': (test) => {
+      // 标准 Mocha 行为
+      return test.failed ? 'fail' : 'pass'
+    }
+  }[options.strategy || 'default']
+  return strategy(test)
+}
 ```
 
-**关键启动链**:
-```
-cypress run
-  → cli/lib/exec/run.ts:179 start
-  → cli/lib/exec/spawn.ts (spawn @packages/electron)
-  → electron/open() 在子进程启动 server
-  → server/lib/cypress.ts:141 start()
-  → lib/modes/run.ts (无头模式)
-  → lib/open_project.ts (加载 cypress.config)
-  → lib/server-base.ts:open() (Express + Socket.IO)
-  → lib/browsers/chrome.ts:open() (启动 Chrome + CDP)
-  → lib/proxy-server.ts (启动 HTTP 代理)
-  → 注入 driver 后执行 spec
-```
+**关键参数**：
 
-## 7. 演进历史（Time Travel）
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 策略 | 3 种 | 默认 / flake-pass / flake-fail |
+| passesRequired | 3 | flake-pass 阈值 |
+| stopIfAnyPassed | true | 提早结束 |
+| 配置 | cypress.json | 全局 |
+| 报告 | dashboard 标记 flaky | 可视化 |
 
-```mermaid
-gantt
-    title Cypress 演进时间线
-    dateFormat YYYY-MM
-    section 起步期
-    内部开发        :done, 2014-01, 2016-12
-    开源 v1.0       :done, 2017-10, 2M
-    section 成长期
-    v3 自动等待      :done, 2018-12, 3M
-    v4 Dashboard GA  :done, 2019-04, 4M
-    v5 Studio alpha  :done, 2020-08, 6M
-    v9 组件测试 GA   :done, 2021-12, 4M
-    section 多内核期
-    v10 Firefox GA   :done, 2022-08, 3M
-    v11 WebKit 实验  :done, 2023-04, 4M
-    v13 Studio GA    :done, 2024-04, 6M
-    v14 Edge GA      :done, 2024-11, 4M
-    v15 Snapshots    :active, 2025-06, 6M
-```
+**最佳实践**：
+1. ✅ 严格场景用 flake-fail：金融 / 医疗
+2. ✅ 宽松场景用 flake-pass：UI 探索
+3. ✅ 默认场景用 standard：稳定优先
+4. ✅ 配置统一：cypress.json 集中
+5. ✅ dashboard 标记 flaky：跟踪趋势
+6. ✅ 定期 review flaky test：消除而不是容忍
 
-**关键里程碑**:
+### 18. CI 双线（CircleCI + Actions）
 
-- **2017-10**: 开源 v1.0，定位「Selenium 杀手」
-- **2018-12**: v3 引入「自动等待 + 命令队列」，这是 Cypress 真正的护城河
-- **2019-04**: Dashboard GA，开启商业化
-- **2020-08**: Studio（录制回放）alpha，让非工程师也能写测试
-- **2021-12**: v9 组件测试 GA，挑战 Storybook/Testing Library
-- **2022-08**: v10 Firefox GA，打破 Chrome-only 桎梏
-- **2024-04**: v13 Studio GA + Protocol 开放，把测试可观测性商业化
-- **2025-06**: v15 Cloud Snapshots，时间旅行调试再升级
+**问题场景**：Cypress 团队自身用 CircleCI 跑主流水线（构建 + 测试），GitHub Actions 跑 PR triage（issue 分类 + SCA + dep 漏洞扫描）。双线分离：主流程不阻塞 PR review，PR 改动第一时间得到安全检查。
 
-## 8. 质量保障（How It Doesn't Break）
+**解决方案**：
+```yaml
+# .circleci/config.yml
+version: 2.1
+jobs:
+  build:
+    docker: [cypress/base:14]
+    steps:
+      - checkout
+      - restore_cache
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+      - run: yarn test
+      - save_cache
+workflows:
+  version: 2
+  test:
+    jobs: [build]
 
-**4 道防线**:
-
-1. **静态分析**: ESLint + TypeScript strict + 自定义 `eslint-config`（`@cypress/dev`）。`yarn lint` 在 CI 必跑。
-2. **单元测试**: driver 用 Vitest，server/CLI 用 Mocha。`yarn test` 跨所有包并行跑。
-3. **集成测试**: `system-tests/` 2404 个 spec，每个 spec 跑一个真实的 Cypress 生命周期，验证端到端。
-4. **CI**: CircleCI (`.circleci/src/pipeline/`) + GitHub Actions (PR triage, Snyk SCA, 自动批准 low-risk PR)。`auto_approve_low_risk.yml` 对 label 含 `auto-approve` 的 PR 直接合并——**这是大公司开源项目对效率的极致追求**。
-
-**性能基准** (`packages/server/lib/util/performance_benchmark.ts` + `cy_visit_performance_spec.ts`):
-- cy.visit 冷启动 < 800ms
-- cy.get 重试 cycle < 50ms (16ms interval)
-- 1000 个 spec 索引 < 30s
-
-## 9. 生态依赖（Map of the World）
-
-```mermaid
-flowchart LR
-  CYPRESS[cypress 核心] --> MOCHA[mocha 7.2.0 patched]
-  CYPRESS --> CHAI[chai 断言]
-  CYPRESS --> BLUEBIRD[bluebird Promise]
-  CYPRESS --> SINON[sinon 桩]
-  CYPRESS --> JQUERY[jquery 3.7.1 patched]
-  CYPRESS --> ELECTRON[electron 二进制]
-  CYPRESS --> CDP[chrome-remote-interface]
-  CYPRESS --> SOCKETIO[socket.io]
-  CYPRESS --> EXPRESS[express]
-  CYPRESS --> HTTPPROXY[http-proxy]
-  CYPRESS --> WEBDRIVER[webdriver 协议]
-  CYPRESS --> WEBKIT[playwright-webkit 兼容]
+# .github/workflows/pr-triage.yml
+on: [pull_request]
+jobs:
+  pr-triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v4
+      - uses: github/codeql-action/analyze@v2
+      - run: npx snyk test
 ```
 
-**合规检查清单**:
-- ✅ MIT License（框架本体）
-- ⚠️ Cypress Cloud (dashboard.cypress.io) 是 SaaS，**仅框架部分开源**
-- ✅ 第三方 patch 文件都在 `packages/server/patches/` 和 `packages/driver/patches/`，可审计
-- ✅ 无强制 telemetry（`telemetry` 模块可禁用）
+**关键参数**：
 
-## 10. 生产实践（Battle-Tested）
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| CircleCI | 主流程 | build + test |
+| GitHub Actions | PR triage | 分类 + 安全 |
+| 镜像 | cypress/base:14 | 含 Chrome 预装 |
+| 缓存 | yarn 依赖 + Electron | 加速 |
+| 触发 | 每次 PR + push main | 全量 |
 
-| 维度 | 实现 | 文件 |
-| --- | --- | --- |
-| 配置热更新 | 文件 watcher + Socket.IO `watched:file:changed` | `socket-e2e.ts:57-67` |
-| 优雅停服 | `GracefulExit.exitGracefully(code)` | `util/graceful-exit.ts` |
-| 限流 | HTTP 代理层有 `preRequestTimeout` 控制并发 | `network-proxy.ts:80-82` |
-| 链路追踪 | OpenTelemetry 通过 `@packages/telemetry` 注入 | `network-proxy.ts:48-57` (startSpan) |
-| 健康检查 | `cy.healthy()` + server 端口探活 | `modes/smoke_test.ts` |
-| 结构化日志 | `debug` 模块 + JSON line 输出 + OTLP 推送 | `socket-base.ts:37 Debug(...)` |
+**最佳实践**：
+1. ✅ 主流程和 PR triage 分离：主流程不阻塞 review
+2. ✅ 专用 docker 镜像：cypress/base:14 含所有依赖
+3. ✅ 缓存依赖：yarn + Electron 二进制
+4. ✅ 安全扫描在 PR：漏洞不入主仓
+5. ✅ 自动 labeler：PR 分类自动化
+6. ✅ 失败 fast-fail：节省 CI 资源
 
-## 11. 社区文化（People & Process）
+### 19. Cloud Protocol 可观测性（Cloud Protocol Observability）
 
-- **治理**: CODEOWNERS + 强制 PR review + 自动化 triage bot
-- **维护者**: 30+ core maintainers + 200+ 贡献者
-- **RFC**: GitHub Discussions + 公开 Roadmap
-- **沟通**: Discord 5 万+ 成员 + GitHub Issues 24h 内首响应
-- **议题活跃**: 4,000+ open issues，自动 stale 清理 (`.github/workflows/stale_issues_and_pr_cleanup.yml`)
+**问题场景**：测试失败只在本地有完整上下文（DOM、截图、控制台），CI 跑时只有 exit code。开发者要快速定位 CI 失败，Cypress Cloud Protocol 把"测试可观测性"做到底 —— 抓 CDP 流量、DOM 快照、视频流、控制台日志、网络请求，序列化为 protobuf 上传 dashboard。**是测试领域第一个把"测试可观测性"做到底的项目**。
 
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **同进程测试运行 + 主动 driver 注入**: 不要走 Selenium 远程控制路线。**同进程 + 代理注入** 是性能 + 调试体验的护城河。
-2. **稳定性事件 + whenStable 队列**: 把"何时算稳定"建模为显式事件，让 retry 自然依赖它。这套模式可以套到任何「轮询 + 重试」场景。
-3. **patches/ 目录 + 主动维护 fork**: 关键依赖要敢 patch，敢维护 fork。Cypress 的 7+ 个 patch 是核心竞争力的物理证据。
-
-### 12.2 必避 3 坑
-
-1. **Mocha 整套重写**: 重写测试框架的上游需要跟版本、跟主分支。**用 7+ 个 patch 维护** 的代价巨大，慎学。
-2. **大量全局变量**: `window.Cypress` / `window.cy` / `window.Runner` 在测试阶段有合理性，但**长期运行时是污染**。如果做产品级框架，要约束为注入而非污染。
-3. **闭包内存累积**: Cypress 在 runner.ts:135-150 主动 nullify `test.ctx` 和 `test.fn` 是**长期运行测试** 必踩的坑，**显式 GC** 是技能。
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7 天复刻 Cypress MVP
-    dateFormat YYYY-MM-DD
-    section 第1-2天
-    写 HTTP 代理+源改写       :a1, 2026-06-02, 2d
-    section 第3-4天
-    写 driver 注入+Cy 全局     :a2, after a1, 2d
-    section 第5天
-    集成 Mocha + 重试          :a3, after a2, 1d
-    section 第6天
-    Socket.IO 双向通道         :a4, after a3, 1d
-    section 第7天
-    视频录制+截图              :a5, after a4, 1d
+**解决方案**：
+```typescript
+// packages/server/lib/cloud/protocol.ts
+class CloudProtocol {
+  streamAll() {
+    this.streamCDPEvents()      // Runtime + Network + Page
+    this.streamDriverEvents()   // cy.* 命令
+    this.streamScreenshots()    // 失败截图
+    this.streamVideo()          // 视频流
+  }
+  async upload() {
+    // protobuf 序列化
+    const buf = CloudProtocolProto.encode({
+      testRunId: this.testRunId,
+      events: this.events,
+      snapshots: this.snapshots,
+      video: this.video,
+    }).finish()
+    // 上传 Cypress Cloud
+    await this.cloud.upload(buf)
+  }
+}
 ```
 
-### 12.4 打分卡
+**关键参数**：
 
-| 维度 | 分数 | 评语 |
-| --- | --- | --- |
-| 创新性 | 10/10 | 同进程测试、自动等待、Studio 录制都是首创 |
-| 工程质量 | 9/10 | TypeScript strict、4 道 CI 防线、2404 system-tests |
-| 可扩展性 | 7/10 | 子包 34 个 + 7+ patch，扩展面有但维护重 |
-| 文档 | 9/10 | docs.cypress.io 完整 + 录屏 + cookbook |
-| 社区 | 9/10 | 48k star + Discord 5 万 + 多语言文档 |
-| 复刻难度 | 9/10 | 同进程+代理+CDP+Mocha 重写，工程门槛高 |
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 数据源 | CDP + Driver + 视频 | 完整 |
+| 序列化 | protobuf | 紧凑 |
+| 上传 | Cloud Storage | 加密 |
+| 时机 | 测试运行中 + 失败时 | 流式 |
+| 容量 | 100MB / test | 限制 |
 
-## 13. 学习萃取（Cheat Sheet）
+**最佳实践**：
+1. ✅ 失败时全 dump：完整上下文
+2. ✅ 流式上传：不要堆内存
+3. ✅ protobuf 序列化：紧凑
+4. ✅ 过滤敏感数据：Authorization / Cookie 不能上传
+5. ✅ 限制大小：100MB 截断
+6. ✅ 配合时间旅行 UI：dashboard 可视化
 
-**一句话价值**: Cypress 用「同进程 + 代理 + 重试稳定性」把 E2E 测试从「远程遥控」变成「同生共死」。
+### 20. Studio 录制回放（Studio Record-Replay）
 
-### 3 核心洞察
+**问题场景**：手写测试用例成本高，对新功能尤其如此。Cypress Studio（2024 GA）允许用户在 GUI 里点 / 输入，Cypress 自动记录操作 → 生成测试代码 → 重放验证。**这是低代码测试的突破**，QA 团队能"演示一次就行"。
 
-1. **同进程 > 远程控制**: 性能、调试、访问能力三个维度全面碾压 Selenium。
-2. **稳定性事件 > 显式 await**: 把「何时算稳定」建模为事件，让重试自然变成「等到稳定」。
-3. **测试可观测性 > 测试通过率**: Protocol 抓 CDP + DOM 快照 + 视频，是测试行业的「APM」先行者。
-
-### 5 段必读代码
-
-1. `packages/driver/src/cypress/runner.ts:135-150` — 测试结束时的内存回收（`test.fn = () => {}`）
-2. `packages/driver/src/cy/retries.ts:100-145` — 稳定性绑定的重试算法（含 bluebird bug 注释）
-3. `packages/driver/src/cy/stability.ts` — 稳定性释放队列（whenStable）
-4. `packages/driver/src/cypress/mocha.ts:18-33` — Mocha 14 个原型方法重写
-5. `packages/server/lib/socket-base.ts:128-137` — Socket.IO transport 降级 + TODO 注释
-6. `cli/lib/exec/run.ts:88-96` — CLI 互斥标志 fail-fast
-
-### 1 反模式
-
-**`patches/` 目录**: 7+ 个 patch 维护是双刃剑。**学到**: 如果依赖方接受 PR 就不要 patch；如果依赖方不响应，patch 之前**先**评估是否值得自维护。
-
-### 1 可复用模式
-
-**稳定性事件 + whenStable 队列** (`driver/src/cy/stability.ts`): 任何「轮询 + 重试」场景都可以套。把「什么时候释放」建模为事件，把 waiters 放进 FIFO 队列。
-
-### 3 立刻能用
-
-1. 把 `driver/src/cy/stability.ts` 的 `whenStable` 模式套到你的 retry 工具类
-2. 把 `cli/lib/exec/run.ts:38 processRunOptions` 的「互斥标志 fail-fast」逻辑加到你的 CLI
-3. 读 `server/lib/socket-base.ts:128-137`，学习如何在「首选 transport」失败时降级而非崩溃
-
-## 14. 项目特点速查
-
-**独特看点**:
-
-- **唯一**把测试代码和被测应用放在同一浏览器进程的开源框架
-- **唯一**用 patches/ 维护 Mocha/jQuery/Sinon 关键依赖
-- **唯一**做 Cloud Protocol (CDP + 视频 + DOM 快照 + 加密上传) 一体化
-- **唯一**把 `whenStable` 稳定性事件作为 retry 决策核心
-- **唯一**自带 Studio 录制回放（不依赖 IDE 插件）
-
-**与同类对比**:
-
-```mermaid
-quadrantChart
-    title E2E 测试框架对比
-    x-axis 远程控制 --> 同进程
-    y-axis 弱调试 --> 强调试
-    "Selenium": [0.1, 0.3]
-    "Playwright": [0.4, 0.6]
-    "WebdriverIO": [0.3, 0.4]
-    "Cypress": [0.95, 0.9]
-    "Puppeteer": [0.5, 0.5]
+**解决方案**：
+```typescript
+// packages/extension/src/studio.ts
+class StudioRecorder {
+  start() {
+    // 监听所有 UI 事件
+    document.addEventListener('click', this.onClick)
+    document.addEventListener('input', this.onInput)
+    document.addEventListener('submit', this.onSubmit)
+  }
+  onClick(e) {
+    // 1) 提取元素 selector
+    const selector = this.getSelector(e.target)
+    // 2) 生成 cy.get(selector).click()
+    this.commands.push({ type: 'click', selector, ts: Date.now() })
+  }
+  stop() {
+    // 3) 输出测试代码
+    return this.generateCode()
+  }
+  generateCode() {
+    return `
+describe('Recorded Test', () => {
+  it('does stuff', () => {
+    ${this.commands.map(this.toCypressCommand).join('\n    ')}
+  })
+})
+    `
+  }
+}
 ```
 
-| 维度 | Cypress | Playwright | Selenium | Puppeteer |
-| --- | --- | --- | --- | --- |
-| 同进程 | ✅ | ❌ | ❌ | ❌ |
-| 自动等待 | ✅ | ⚠️ | ❌ | ❌ |
-| 多浏览器 | Chrome/FF/WebKit/Edge | Chrome/FF/WebKit | 全部 | Chrome/Edge |
-| 组件测试 | ✅ | ❌ | ❌ | ❌ |
-| 时间旅行 | ✅ | ❌ | ❌ | ❌ |
-| 网络拦截 | ✅ | ✅ | ❌ | ✅ |
-| Studio 录制 | ✅ | ❌ | ❌ | ❌ |
-| 开源完整 | ⚠️ (Cloud 收费) | ✅ | ✅ | ✅ |
+**关键参数**：
 
-## 附：仓库元信息
+| 参数 | 推荐值 | 说明 |
+|---|---|---|
+| 事件源 | click / input / submit | 主流 UI 事件 |
+| 元素选择 | Playwright-style selector | 健壮 |
+| 输出格式 | Cypress 测试代码 | 可读 |
+| GA 时间 | 2024 | 稳定 |
+| 限制 | 复杂交互需手动补 | v1 限制 |
 
-- 路径: `G:\实战案例\GitHub顶尖项目\cypress\`
-- 大小: ~7000 文件 / ~1.2 GB (含 system-tests fixture + node_modules)
-- 解析时间: 2026-06-02
-- 解析版本: develop 分支快照
-- 解析器: claude-opus-4-7 (M3)
+**最佳实践**：
+1. ✅ 录制起点明确：先 cy.visit 起始页
+2. ✅ 选择器要健壮：优先 data-testid
+3. ✅ 重放前 review 代码：避免误录
+4. ✅ 复杂交互手动补：拖拽 / iframe
+5. ✅ 录制 + 人工混合：60% 录制 + 40% 手动
+6. ✅ 录制不要代替思考：核心逻辑仍要手写
 
-## 一句话总结
+---
 
-**解析 = 计划书 + 框架图 + 核心功能 + 跑起来 + 偷过来。** Cypress 解析 = 「同进程测试」的工程哲学 + 「稳定性事件 + 主动重试」核心算法 + 「HTTP 代理 + 浏览器 driver 双层注入」运行机制 + 7 段必读代码 + 5 天复刻路线。
+**标签**：#cypress #E2E #TypeScript #Electron #测试 #浏览器自动化
+**状态**：20/20 份详细内容
