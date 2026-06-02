@@ -1,499 +1,893 @@
----
-title: You-Dont-Know-JS
-type: book-series
-lang: JavaScript/Markdown
-stars: 182000+
-date: 2026-06-02
-tags:
-  - 开源项目
-  - 知识库
-  - JavaScript
-  - 技术写作
----
+# You-Dont-Know-JS · 架构与模式解析
 
-# You-Dont-Know-JS · 项目深度解析
+> YDKJSY 2nd-ed 是 GitHub 上极少数"靠纯 Markdown 内容登顶 JS 类 Top 3"的项目，18.2 万 Star、单作者维护 11 年、CC BY-NC-ND 4.0 协议。本文用 ABL 视角拆解其内容架构：把仓库当印刷母版、把章节当模块、把附录当测试套件、把取消的目录当资产。
 
-> 一位 JS 老炮把语言"开膛破肚"写给同行的开源书系列：用最朴素的长 Markdown，配最精准的心智模型，让"会写 JS 的人和懂 JS 的人"彻底分开。
-> 来源：G:\实战案例\GitHub顶尖项目\You-Dont-Know-JS\
+## 1. 内容架构核心
 
-## 写在前面：解析哲学
+### 模式 1：Git-as-Publisher——把 GitHub 当 InDesign 用
 
-这是一个**纯内容**型仓库：没有 `package.json`、没有编译产物、没有测试套件、连 CI 都不必存在——但它获得 18.2 万 Star 与 11 年长跑的生命周期，成为 GitHub 上极少数"靠文字而非代码"登顶的开源项目。本文用 V3 模板的视角，把这个项目当成"内容型软件"来逆向：内容即代码、章节即模块、笔记即接口。
+**问题场景**：传统出版依赖 InDesign/Word+PDF+邮件来回，版本对比、协作、归档全靠人工管理。YDKJSY 在 2013 年首创"git 出版流水线"：放弃 GitBook/Read the Docs 等专门工具，直接用 GitHub 渲染 `.md`，把"印刷级母版"放进 git。
 
-**先骨架后血肉，先 What 后 Why，最后 How to steal。** 我们将拆解：作者如何用 GitHub 做出版（Git-as-Publisher）、章节如何用 toc + ch + ap 的三段式组织知识、内容怎么用"反迷思"句式破认知、Mermaid 怎么套用到非代码知识图谱。
+**解决方案代码**：
+```bash
+# 出版即 git tag
+git tag -a v1.0.0-get-started -m "Get Started 2nd-ed 出版"
+git push origin v1.0.0-get-started
 
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone https://github.com/getify/You-Dont-Know-JS.git`，注意 `2nd-ed` 分支是当前主版本，`1st-ed` 是历史归档
-2. **分类**：内容型仓库（book-series），主语言 Markdown，副语言 JavaScript（书内代码示例）
-3. **问题清单**：
-   - 怎么用 GitHub 替代 InDesign 做出版？
-   - 章节文件命名约定 `ch1/ch2/.../apA/apB` 的设计意图？
-   - 为什么 6 本只写完 2 本 + 1 本草稿、2 本"unbooks"？
-   - 贡献策略从开放 → 关闭的拐点？
-4. **速查表**：每本书 = 一个目录子目录；`README.md` 放购买链接、目录链接、协议声明；`preface.md` 是公共前言；`toc.md` 是子目录的目录
-5. **锁定 commit**：解析时使用 `2nd-ed` 分支最新一次稳定提交（出版闭环版本），不要追到未出版草稿
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-| :--- | :--- |
-| **项目名** | You Don't Know JS Yet (YDKJSY) 2nd Edition |
-| **定位** | 深入 JavaScript 核心机制的开源书系列（自学/教学双轨） |
-| **核心问题** | 多数 JS 开发者停留在"代码能跑"层面，缺乏"为什么"的底层心智模型 |
-| **目标用户** | 至少有 6-9 个月 JS 实战经验、想从"会用"升级到"懂"的开发者 |
-| **商业模式** | 免费 GitHub 阅读 + 付费电子书/纸质书（GetiPub 自出版 + Leanpub + Amazon） |
-| **复刻难度** | 极高（依赖单一作者 11 年积累、不可规模化）；但单本结构可模板化复刻 |
-| **状态** | 2nd Edition 主线已"完成"（作者宣布不再接受贡献）；1st Edition 6 本已绝版 |
-| **团队** | 主作者 Kyle Simpson（getify）；社区翻译者（按 ISO 语言码独立分支） |
-| **里程碑** | 2013 起 1st Edition 6 本 → 2019 启动 2nd Edition → 2020-2025 出版 Get Started/Scope & Closures/Unbooks（Objects & Classes + Types & Grammar） |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-YDKJSY 把"GitHub 仓库当书稿"用到了极致：每个子目录是一本书，章/附录用统一前缀编号，README 复用同一套"购买 + 阅读"链接模板，preface 跨书共享。
-
-**点状解析**：
-- 顶层是 6 个并列子目录（`get-started/`、`scope-closures/`、`objects-classes/`、`types-grammar/`、`sync-async/`（已取消）、`es-next-beyond/`（已取消）），外加 `preface.md`（跨书前言）
-- 每本书内部用 `ch1.md` `ch2.md` ... `chN.md` 表示章节，`apA.md` `apB.md` 表示附录
-- `toc.md` 只列本目录的章节标题 + 锚点（GitHub 自动渲染）
-- `README.md` 永远第一屏给：书名 + 封面缩略图 + 购买链接 + Leanpub/Amazon 双渠道
-- 公共资源：外部 Logo 在 `external-logos/`，书封大图在每本书 `images/`
-
-**思维导图**：
-
-```mermaid
-mindmap
-  root((YDKJSY 仓库))
-    顶层
-      preface.md 跨书前言
-      LICENSE.txt CC BY-NC-ND 4.0
-      external-logos
-      6 本书子目录
-    Get Started
-      ch1 What is JS
-      ch2 Surveying JS
-      ch3 Digging Roots
-      ch4 Bigger Picture
-      apA 拓展
-      apB 练习
-    Scope Closures
-      ch1-ch8
-      apA 词法作用域
-      apB 实践
-    Objects Classes
-      ch1-chN 草稿
-    Types Grammar
-      草稿
-    Sync Async
-      已取消
-    ES Next Beyond
-      已取消
+# Leanpub 自动从指定分支拉取 .md 编译
+# Amazon Kindle Direct Publishing 通过 leanpub-cli 同步
 ```
 
-**实际目录树**（截取 2nd-ed 分支）：
-
+仓库顶层结构体现"出版母版"思想：
 ```
 You-Dont-Know-JS/
-├── README.md
-├── preface.md
-├── LICENSE.txt
-├── CONTRIBUTING.md
-├── PULL_REQUEST_TEMPLATE.md
-├── get-started/
-│   ├── README.md
-│   ├── toc.md
-│   ├── foreword.md
-│   ├── ch1.md ... ch4.md
-│   ├── apA.md
-│   ├── apB.md
-│   └── images/
+├── README.md              # 门面：封面+购买+目录
+├── preface.md             # 跨书前言
+├── LICENSE.txt            # CC BY-NC-ND 4.0
+├── get-started/           # 6 本书并列子目录
 ├── scope-closures/
-│   ├── ch1.md ... ch8.md
-│   ├── apA.md, apB.md
-│   └── images/
-├── objects-classes/
-│   └── ch*.md (草稿)
-├── types-grammar/
-│   └── ch*.md (粗稿)
-├── sync-async/         (空目录, 已取消)
-├── es-next-beyond/     (空目录, 已取消)
-├── external-logos/
-└── *.png (unbooks-cover / fixed-it-for-you)
+├── objects-classes/       # 草稿
+├── types-grammar/         # 草稿
+├── sync-async/            # 空目录（已取消，保留）
+└── es-next-beyond/        # 空目录（已取消，保留）
 ```
 
-**配置入口**：无 `package.json`、无 `_config.yml`、无 CI（连 `.github/workflows` 都没有——作者主动不接 PR）。
-**代码入口**：无 main 入口；"主程序"是 `README.md` + `preface.md`，它们是项目最重要的"门面"。
+**关键参数表**：
+| 元素 | YDKJSY 选择 | 替代方案 | 取舍 |
+|:---|:---|:---|:---|
+| 排版工具 | GitHub 原生 Markdown | GitBook/Docusaurus/AsciiDoc | 零依赖但 README 体验差 |
+| 版本控制 | git tag = 出版版本 | SemVer + CHANGELOG.md | `git log` 即出版史 |
+| 协作模型 | 出版后关闭 PR | 永远开放 PR | 防"水平稀释" |
+| 渲染端 | GitHub Web + Leanpub | Read the Docs | 读者从 GitHub 入口，作者从 Leanpub 出版 |
 
-## 3. 项目画像（Profile）
+**最佳实践**：
+- 把"出版"动作映射为 git tag，每次大改=一次出版快照
+- 母版仓库**不依赖**任何构建工具，`.md` 即最终交付物
+- README 是"门面"，必须第一屏给：封面、购买、目录
+- preface 跨书共享，避免每本书重复相同前情
+- 出版即"封版"，避免长尾修订单稀释权威
 
-| 字段 | 数值/描述 |
-| :--- | :--- |
-| **总文件数** | ~120（含章/附录/封面/License） |
-| **主语言** | Markdown（占 95%+） |
-| **涉及语言** | JavaScript（书内代码示例）、HTML（少量引用） |
-| **Star** | 182k+（GitHub JS 教学类常年 Top 3） |
-| **License** | CC BY-NC-ND 4.0（**禁止商用 + 禁止衍生**） |
-| **Docker** | 否 |
-| **K8s** | 否 |
-| **CI** | 无（明确不接 PR） |
-| **有测试** | 无（内容项目），但 `apB` 提供"练习题 + 参考答案"是手工自测 |
+---
 
-## 4. 架构设计（Architecture Deep Dive）
+### 模式 2：preface.md 跨书前言共享
 
-把书当软件来设计，YDKJSY 有一个非常朴素的"内容架构"：以"心智模型"为主键，每章是一组相关迷思的"反证"集合。
+**问题场景**：6 本书的 1st-ed 各写一份前言，2nd-ed 重写时发现"动机、心智模型、目标读者"等 80% 内容相同——重复且版本漂移。
 
-**点状解析**：
-- **三层结构**：跨书前言（`preface.md`）→ 单书 `README` + `toc` + `foreword` → 章（`ch`）+ 附录（`ap`）
-- **三大支柱**（YDKJS 1st-ed 起贯穿）= JS 心智模型的"主键"：**Scope/Closures**、**Prototypes/Objects**、**Types/Coercion**；Get Started 第 4 章把它们正式命名
-- **写作协议**：每章统一用"迷思 → 破除 → 重构 → 小结"四段式
-- **示例代码**：用最小可复现片段（5-15 行），**不依赖 Node/web**，用纯 `node REPL` 或伪代码
-- **取消策略**：把"放弃的书"也保留为目录子目录（`sync-async/`、`es-next-beyond/`），保留历史，但 README 划掉
+**解决方案代码**：
+```markdown
+<!-- preface.md 顶层文件，所有书都引用 -->
+# You Don't Know JS Yet
 
-**思维导图**：
+This is a series of books diving deep into the core mechanisms
+of the JavaScript language. The goal is to equip you with the
+mental models needed to truly understand JS — not just write it.
 
-```mermaid
-mindmap
-  root((JS 心智模型))
-    三大支柱
-      Scope Closures
-      Prototypes Objects
-      Types Coercion
-    周边支撑
-      Spec TC39 流程
-      Engine 编译/解释
-      Many Faces 浏览器/Node/Robots
-      Strict Mode
-    迷思库
-      JS 是解释型
-      一切皆对象
-      var 会变量提升 let 不会
-      this 指向自身
-      proto 就是继承
+> "The most important thing to learn is not how to write code,
+>  but how to reason about code."
+
+## How to Read This Series
+
+1. Read in order: Get Started → Scope & Closures → ...
+2. Each book has apB (Practice) — try before you peek
+3. Use the GitHub Issues for questions; not for typo PRs
 ```
 
-**核心架构看点（3 条具体设计决策）**：
+每本书 `README.md` 顶部都加 `> See [preface.md](../preface.md) for the project-wide introduction.`，避免在 6 本书里复制粘贴。
 
-1. **"Git-as-Publisher" 反向印刷流程**：放弃 GitBook/Read the Docs 等专门工具，直接用 GitHub 渲染 Markdown，把 `.md` 当"印刷级母版"——逼着所有协作都在 PR 流程内完成，副作用是出版后**主动关闭贡献**，避免长尾混乱。
-2. **"取消的目录也要保留"**：把 `sync-async/`、`es-next-beyond/` 两个**未完成目录**留作空目录，README 用 `~~xxx (canceled)~~` 划线——把"项目演进史"也变成内容结构的一部分，让用户能看到完整计划而非被隐藏。
-3. **"附录当作测试"**：每本书固定有 `apB.md`（Practice, Practice, Practice!），用结构化练习题 + 答案作为**自测**——这等于在书内嵌入了"轻量测试套件"，且不需要任何 CI 工具链。
+**关键参数表**：
+| 元素 | 1st-ed | 2nd-ed | 改进 |
+|:---|:---|:---|:---|
+| 前言位置 | 每本书独立 `preface.md` | 顶层共享 `preface.md` | DRY，避免漂移 |
+| 字数 | 5-8 千字/本 | 1.5 千字（共享） | 减重 80% |
+| 引用方式 | 各本自己 | `> See preface` + 锚点 | 跨书一致 |
 
-## 5. 代码深度解析（带 WHY）⭐ 重点
+**最佳实践**：
+- 跨书共有内容**只写一份**放在顶层
+- 用 `> See [preface.md](../preface.md)` 引用，避免直接复制
+- 写前言时考虑"6 本书读者都会读"的密度，不要带具体书的话题
+- preface 改一次即生效所有书，**单一 source of truth**
 
-虽然仓库是 Markdown，但书内嵌入了大量教学 JavaScript 代码段，且每段都是为"打破常见迷思"而精心构造。WHY 分析集中在 3 个最有代表性的例子上。
+---
 
-### 5.1 找骨架代码
+### 模式 3：ch1/ch2/apA/apB 命名约定的强约束力
 
-最有教学价值的代码示例集中在三处：
-- `scope-closures/ch1.md` 编译 vs 解释、`var` 提升、`let/const` 块作用域
-- `scope-closures/ch3.md` 闭包（for + var 的经典坑）
-- `objects-classes/ch1.md` 对象容器、`this` 绑定
+**问题场景**：开源协作时，章节文件命名五花八门（`chapter-1.md` / `01-intro.md` / `1.md`），导致 toc 引用、翻译对照、grep 全部碎片化。
 
-### 5.2 单文件分析卡（最具教学含金量的 3 段代码）
+**解决方案代码**：
+```
+get-started/
+├── README.md
+├── toc.md
+├── foreword.md
+├── ch1.md          # 第 1 章：What is JavaScript?
+├── ch2.md          # 第 2 章：Surveying JS
+├── ch3.md          # 第 3 章：Digging to the Roots of JS
+├── ch4.md          # 第 4 章：The Bigger Picture
+├── apA.md          # 附录 A：Exploring Further
+└── apB.md          # 附录 B：Practice, Practice, Practice!
+```
 
-#### 代码 1：`scope-closures/ch1.md` 的"两阶段执行证明"
+**关键参数表**：
+| 命名 | 含义 | 排序稳定性 | 翻译映射 |
+|:---|:---|:---|:---|
+| `chN.md` | 第 N 章（1-indexed） | 字典序=阅读序 | `ch1.md` → `ch1.zh-CN.md` |
+| `apA.md` | 附录 A | 始终在 ch 之后 | 同上 |
+| `toc.md` | 本书目录 | 每本固定 1 个 | 不翻译，独立维护 |
+| `foreword.md` | 单书前言 | 每本固定 1 个 | 与 ch 并列翻译 |
 
-```js
+**最佳实践**：
+- `chN` 用 1-indexed、`apA` 用字母——人类直觉优先
+- 永不插章（如 `ch2.5.md`），新章直接续号 + README 调整 toc
+- 取消的章节不删文件，改为 `chX-deprecated.md` 并在 toc 划线
+- 翻译者按 `ch1.zh-CN.md` 命名，**与原书并排**而不是目录嵌套
+
+---
+
+### 模式 4：toc.md 当作"轻量导航协议"
+
+**问题场景**：一本书 4-8 章 + 2 附录，读者打开 GitHub 仓库需要一目了然看到"先读哪个"——但作者拒绝在 README 加冗长目录（理由：服务出版不服务在线阅读）。
+
+**解决方案代码**：
+```markdown
+<!-- get-started/toc.md -->
+# Table of Contents
+
+| Part | Title | 
+|:---|:---|
+| Foreword | [Foreword](foreword.md) |
+| Chapter 1 | [What Is JavaScript?](ch1.md) |
+| Chapter 2 | [Surveying JS](ch2.md) |
+| Chapter 3 | [Digging to the Roots of JS](ch3.md) |
+| Chapter 4 | [The Bigger Picture](ch4.md) |
+| Appendix A | [Exploring Further](apA.md) |
+| Appendix B | [Practice, Practice, Practice!](apB.md) |
+```
+
+**关键参数表**：
+| 元素 | toc.md 包含 | toc.md 排除 |
+|:---|:---|:---|
+| 章节标题 | 完整标题 | 章节摘要 |
+| 链接 | GitHub 相对路径 | 外链（spec 链接放在章内） |
+| 排序 | 阅读序（foreword→ch→ap） | 字母序、字数序 |
+| 状态标注 | 无 | 草稿/取消（写在 README 不写 toc） |
+
+**最佳实践**：
+- toc 只列标题+链接，**不放摘要**——摘要属于章内第一节
+- 表格化让 GitHub 渲染对齐
+- toc.md **不被翻译**——翻译者独立维护 `toc.zh-CN.md`
+- 新增章节只需 +1 行 toc + 1 个 chN.md，README 不动
+
+---
+
+### 模式 5：README.md 的"三段式门面"设计
+
+**问题场景**：GitHub 仓库首屏决定 80% 读者去留——YDKJSY 用极简三段式（封面图+购买链接+目录）做到 18.2 万 Star。
+
+**解决方案代码**：
+```markdown
+<!-- get-started/README.md -->
+<img src="images/cover.png" width="200" align="right">
+
+# You Don't Know JS Yet: Get Started
+### 2nd Edition (in progress)
+
+Purchase from: [GetiPub](https://getipub.com) · [Leanpub](https://leanpub.com) · [Amazon](https://amazon.com)
+
+---
+
+## Table of Contents
+
+* Foreword
+* [Chapter 1: What Is JavaScript?](ch1.md)
+* [Chapter 2: Surveying JS](ch2.md)
+* [Chapter 3: Digging to the Roots of JS](ch3.md)
+* [Chapter 4: The Bigger Picture](ch4.md)
+* [Appendix A: Exploring Further](apA.md)
+* [Appendix B: Practice, Practice, Practice!](apB.md)
+```
+
+**关键参数表**：
+| 段 | 内容 | 字符预算 | 目的 |
+|:---|:---|:---|:---|
+| 封面 | 200px 缩略图 + 书名 | < 200 字符 | 视觉识别 |
+| 购买 | 3 个外链（自家+Leanpub+Amazon） | < 150 字符 | 商业闭环 |
+| 目录 | 完整 toc 链接 | < 500 字符 | 阅读入口 |
+
+**最佳实践**：
+- 封面图固定 200px 对齐右侧，**不**做响应式
+- 购买链接 3 个就够，不超过 5 个（避免选择疲劳）
+- README **不**放章节摘要，不放作者介绍——只做"门"
+- 状态用"in progress"标注（2nd-ed 草稿阶段），让读者自带预期
+
+---
+
+## 2. 写作方法论
+
+### 模式 6：迷思→破除→重构→小结四段式
+
+**问题场景**：传统技术书按"概念→语法→示例"线性铺——读者看到 100 页还在"hello world"，注意力散尽。YDKJSY 反向：每章开篇先抛一个**广为流传的错误观点**，逐条反证后重构心智模型。
+
+**解决方案代码**：
+```markdown
+<!-- scope-closures/ch1.md 节选 -->
+# Chapter 1: What's the Scope?
+
+## Misconception: "JavaScript is interpreted"
+
+Many tutorials claim JS is "an interpreted language", implying
+line-by-line execution. **This is wrong.**
+
+### Proof: parse happens before execute
+
+​```js
 var greeting = "Hello";
 console.log(greeting);
-greeting = ."Hi";  // SyntaxError: unexpected token .
+greeting = ."Hi";   // SyntaxError: unexpected token .
+​```
+
+If JS were truly line-by-line interpreted, you would expect:
+1. `console.log("Hello")` to print
+2. Then the SyntaxError on line 3
+
+What actually happens: **no output, immediate SyntaxError.**
+
+The engine must parse the whole program first to detect the syntax
+error, *before any execution begins*. JS is **compiled**, not interpreted
+(at least at the JSC/V8/SpiderMonkey level — see TC39 spec section 8).
+
+## Reframing the mental model
+
+JS engines do **two-phase processing**:
+1. **Parse / Compile**: read entire program → AST
+2. **Execute**: walk the AST, running statements in order
+
+## Summary
+
+* JS is not "interpreted" in the line-by-line sense
+* Engines parse first, execute second
+* "Compiled" doesn't mean "compiled to machine code" — it means
+  there's a distinct parse phase producing an intermediate form
 ```
 
-**为什么这样写？**
-作者刻意把 `greeting = ."Hi"` 放在 `console.log` 之后——如果 JS 是"逐行解释"，理论上应该先打印 `Hello` 再抛错。
-**现象**：实际**没打印** `Hello`，直接 SyntaxError。
-**作者用这个反直觉现象证明**：JS 引擎必须先把整个程序 parse 完，才能执行——**parse/compile 阶段在 execution 之前**。
-**WHY 价值**：用一个 3 行片段摧毁了"JS 是解释型"的流行迷思，且不需要学生装任何工具。
+**关键参数表**：
+| 段 | 字数 | 钩子 |
+|:---|:---|:---|
+| Misconception 引子 | 50-100 词 | 引用流行错误观点 |
+| Proof 反证 | 200-400 词 | 5-15 行最小反例代码 |
+| Reframing 重构 | 300-500 词 | 给出新心智模型 |
+| Summary 小结 | 100-200 词 | 3-5 个 bullet |
 
-#### 代码 2：`scope-closures/ch3.md` 闭包（for + var 的经典陷阱）
+**最佳实践**：
+- 每章只攻 1 个迷思，深度优先于广度
+- 反例代码必须**最小可复现**（5-15 行），避免学生装工具
+- 引用 ECMAScript spec 章节号作为权威兜底
+- Summary 限定 3-5 个 bullet，让读者二次回顾快速抓住主线
 
+---
+
+### 模式 7：Spec-anchored 论证的引用密度
+
+**问题场景**：作者单方面说"JS 是这样这样"——读者凭什么信？YDKJSY 把"Spec 引用密度"作为权威性指标。
+
+**解决方案代码**：
+```markdown
+<!-- scope-closures/ch2.md 节选 -->
+## Lexical Scope: A Spec-Anchored Definition
+
+Per the ECMAScript 2024 specification:
+
+> "Lexical Environment is a specification type used to define the
+>  association of Identifiers to specific variables and functions
+>  based upon the lexical nesting structure of ECMAScript code."
+>  — [ECMA-262 §8.1](https://tc39.es/ecma262/#sec-lexical-environments)
+
+The key phrase: **"based upon the lexical nesting structure"**.
+
+In practice:
+
+​```js
+function outer() {
+    var a = 1;
+    function inner() {
+        console.log(a);  // 1 — looked up via outer scope
+    }
+}
+​```
+
+`inner` resolves `a` by walking the **lexical** (i.e. text-based) chain:
+`inner` → `outer` → global. This lookup happens at call time, but
+the *structure* of the chain is fixed at parse time. See [§8.1.1.3]
+for the resolution algorithm.
+```
+
+**关键参数表**：
+| 引用类型 | YDKJSY 使用 | 链接形式 | 位置 |
+|:---|:---|:---|:---|
+| Spec 段落 | `ECMA-262 §X.Y` 编号 | GitHub 锚点 + TC39 官网 | 论断后 1 行内 |
+| TC39 提案 | `proposal-foo` | tc39.es/proposals | 章节首段 |
+| 实测引擎 | `V8`, `SpiderMonkey` | 引擎博客外链 | 性能/边角案例 |
+| 第三方研究 | `Babel AST explorer` | 外链 | 工具演示 |
+
+**最佳实践**：
+- 论断后**第一行**给 spec 引用，不放脚注
+- Spec 链接用 `tc39.es/ecma262/#sec-xxx` 永久 URL
+- 关键概念 100% 引用 spec，实用技巧 50% 引用 spec
+- 避免"作者说了算"式论断，spec 是 source of truth
+
+---
+
+### 模式 8：渐进式重构——`var` → IIFE → `let` → 模块模式
+
+**问题场景**：直接给学生最优解（`let`）会让他们**不知道为什么**——遇到老代码时完全看不懂。YDKJSY 用"渐进式重构"叙事：从最差实现 → 改良版 → 标准方案 → 替代方案。
+
+**解决方案代码**：
 ```js
+// scope-closures/ch3.md —— 闭包陷阱的 4 步重构
+
+// Step 1: 经典错误（var + 闭包）
 for (var i = 1; i <= 3; i++) {
     setTimeout(function timer() {
         console.log(i);
     }, i * 1000);
 }
-// 输出 4 4 4，而不是 1 2 3
+// 输出: 4 4 4（因为 var i 是同一个绑定，3 次回调都看到最终值）
+
+// Step 2: 用 IIFE 隔离每次迭代的 i
+for (var i = 1; i <= 3; i++) {
+    (function(j){
+        setTimeout(function timer() {
+            console.log(j);
+        }, j * 1000);
+    })(i);
+}
+// 输出: 1 2 3
+
+// Step 3: 用 let 块作用域
+for (let i = 1; i <= 3; i++) {
+    setTimeout(function timer() {
+        console.log(i);
+    }, i * 1000);
+}
+// 输出: 1 2 3（let 每次迭代创建新绑定）
+
+// Step 4: 模块模式（生产级）
+const log = (() => {
+    const timers = [];
+    for (let i = 1; i <= 3; i++) {
+        timers.push(setTimeout(() => console.log(i), i * 1000));
+    }
+    return () => timers.forEach(clearTimeout);
+})();
+log();  // 1 2 3
 ```
 
-**为什么这样写？**
-- 作者用 `setTimeout` 把"闭包捕获引用 vs 闭包捕获值"的差别放大成**可观察的时间维度**（1s/2s/3s 顺序输出）
-- 故意给出"错误答案"（4 4 4）让学生先**看到 bug**，再在下一节用 IIFE 修复：`(function(j){ setTimeout(...); })(i)`，最后引出 `let` 块作用域
-- 作者在书内用渐进式重构（`var` → IIFE → `let`）把"3 种修法"对比展示
+**关键参数表**：
+| 步 | 方案 | 解决的问题 | 引入的新概念 |
+|:---:|:---|:---|:---|
+| 1 | `var` 错误版 | 建立"有 bug"基线 | 闭包捕获引用 |
+| 2 | IIFE | 演示变量隔离技巧 | 立即调用函数表达式 |
+| 3 | `let` | 演示语言自带机制 | 块作用域 |
+| 4 | 模块模式 | 演示生产级封装 | IIFE + 闭包组合 |
 
-**作者注释里反复强调的 WHY**：
-> "The `var i` is a single binding outside the loop, but the function captures the *same* binding; by the time the timer fires, `i` has already finished its loop."
+**最佳实践**：
+- 每步保留 5-15 行，**不引入**与当前主题无关的概念
+- 故意给出 Step 1 的"错误答案"，让学生**先看到 bug**
+- 重构后**回头解释**为什么 Step 1 错——而不是只贴 Step 4
+- 4 步内必须收敛到 ES2024 主流写法，不要带学生跑进冷门方案
 
-**核心抽象**：`setTimeout` 的回调**捕获的是变量绑定（reference），不是值快照**。这本书用这一个例子把"闭包 = 词法环境 + 引用持久"讲透。
+---
 
-#### 代码 3：`objects-classes/ch1.md` "反 lazy property" 例子
+### 模式 9：最小可复现示例（5-15 行硬约束）
 
+**问题场景**：教学示例常被 Node/webpack 依赖污染，学生花了 90% 时间在装环境。YDKJSY 严格规定：所有示例 ≤ 15 行、纯 `node REPL` 可跑、零依赖。
+
+**解决方案代码**：
 ```js
+// objects-classes/ch1.md —— 反 lazy property 例子
+// 总计 6 行，Node REPL 直接粘贴
+
 function twenty() { return 20; }
 function myNumber() { return (twenty() + 1) * 2; }
 
-myObj = {
-    favoriteNumber: myNumber   // 注意：不是 myNumber()
+myObj = { favoriteNumber: myNumber };   // 注意：myNumber 不是 myNumber()
+
+console.log(myObj.favoriteNumber);      // [Function: myNumber]
+console.log(myObj.favoriteNumber());    // 42
+
+// 关键反直觉：JS 不存在 @property 语义
+// 延迟求值必须显式包成函数，控制权完全给到调用方
+```
+
+**关键参数表**：
+| 指标 | 阈值 | 原因 |
+|:---|:---|:---|
+| 行数 | ≤ 15 | 超过即"代码片段"而非"教学示例" |
+| 依赖 | 0 | `node` REPL 即可跑 |
+| 副作用 | 0 | 不写文件、不发请求、不 setTimeout |
+| 副作用符号 | 显式标注 | 用 `// side-effect: ...` 注释 |
+
+**最佳实践**：
+- 5-15 行硬约束，超过则拆成多个示例
+- 优先用 `const`/`let` 演示新语义，避免在示例里再解释 `var` 行为
+- 注释只写"为什么"，不写"是什么"——后者属于文字章节
+- 关键反直觉行为**显式注释**"注意：xxx 不是 yyy"
+- 示例代码也走 git 版本控制，可单独 diff
+
+---
+
+### 模式 10：反 lazy property 的"控制权归调用方"哲学
+
+**问题场景**：从 Python 转 JS 的开发者带着"应该有计算属性"预期来，碰壁后第一反应是"JS 设计烂"。YDKJSY 直接把"JS 没有 lazy"作为**特性**陈述，让学生理解这是显式控制。
+
+**解决方案代码**：
+```js
+// objects-classes/ch1.md —— 三种"计算属性"模拟
+
+// 方案 A：每次访问重新计算（无缓存）
+const obj1 = {
+    get fullName() {
+        return this.first + ' ' + this.last;
+    }
 };
+
+// 方案 B：首次访问后缓存（手动 lazy）
+const obj2 = {
+    _fullName: null,
+    get fullName() {
+        if (!this._fullName) this._fullName = this.first + ' ' + this.last;
+        return this._fullName;
+    }
+};
+
+// 方案 C：纯函数，调用方决定何时计算、何时缓存
+const computeFullName = (first, last) => first + ' ' + last;
+const obj3 = {
+    first: 'Kyle',
+    last: 'Simpson',
+    computeFullName   // 函数引用，不是值
+};
+
+// 调用方控制：
+const name = computeFullName(obj3.first, obj3.last);  // 'Kyle Simpson'
 ```
 
-**为什么这样写？**
-作者明确**告诉学生**：JS 不存在原生"lazy property"，要延迟求值只能"包成函数"。
-这是反 Python `@property` 思路的——很多跨语言开发者带着"应该有计算属性"的预期来，碰壁后第一反应是"JS 设计烂"。
-**WHY 价值**：作者把"JS 没有 lazy"当作**特性**而非缺陷陈述——`myObj.favoriteNumber` 是函数引用本身，调用才求值，让学生**自己设计**何时调用、是否缓存，**控制权完全给到调用方**。
+**关键参数表**：
+| 方案 | 控制权 | 缓存 | 适用场景 |
+|:---|:---|:---|:---|
+| A (getter) | 框架 | 无 | 简单计算 + 读多写少 |
+| B (懒缓存 getter) | 框架 | 内部 | 重计算 + 读多写少 |
+| C (函数引用) | 调用方 | 外部 | 通用、与类解耦 |
 
-### 5.3 设计模式
+**最佳实践**：
+- 教学"反 Python `@property`"时**先承认** Python 的优点
+- 把"无 lazy"作为**设计取舍**讲，而非缺陷
+- 函数引用 vs 函数调用：作者用 1 行 `myObj = { favoriteNumber: myNumber }` 立竿见影
+- 控制权交给调用方 = 可测试、可缓存、可替换
+- 不要为了"接近其他语言"而引入装饰器黑魔法
 
-YDKJS 内容里反复出现 3 个隐式模式：
+---
 
-1. **"迷思 → 破除"反认知模式**：每章开篇先引用一个广为流传的错误观点（"JS 是 Java 的脚本版"、"闭包就是回调"），然后**逐条**给反证。这是教学领域的"Feynman 技巧"——只有能讲清反例，才算真懂。
-2. **"渐进式重构"叙事模式**：从最差实现 → 改良版 → 标准方案 → 替代方案，每步配 5-15 行代码。例：`var` 闭包问题 → IIFE → `let` → 模块模式。
-3. **"Spec-first" 模式**：关键概念都先指向 ECMAScript 官方规约链接，再展开实现；作者反复用"smoothgate"、"`Array.prototype.contains` 被改名为 `includes`"等 TC39 实际案例做引子。
+## 3. 知识组织策略
 
-### 5.4 反模式
+### 模式 11：三大支柱主键——Scope/Prototypes/Types
 
-- **不做 cross-link**：作者在 `CONTRIBUTING.md` 第 30-40 行**明确拒绝**给章节加交叉链接/README 优化——理由："本仓库服务出版，不服务在线阅读体验；想要舒服请买书"。这是非常反 GitBook 共识的决策。
-- **不接 PR**：发布即"封版"，typo 都不接，理由同样——一旦进入"永不完结"循环，开源书的权威性会被稀释。
+**问题场景**：JS 知识点超过 200 个，如果按"语法点"线性排列（变量→运算符→函数→对象…），读者陷入"地图无法收敛"困境。YDKJSY 用三大支柱作为心智模型主键。
 
-### 5.5 独特看点
+**解决方案代码**：
+```markdown
+<!-- get-started/ch4.md 节选：The Bigger Picture -->
+## The Three Pillars of JS
 
-YDKJS 把"GitHub commit"当作"书籍版本"用——每次大改都对应一个 leanpub/Amazon 出版版本，**git log = 出版史**。这是把"开源 = 协作"模型反向利用成"开源 = 出版流水线"的开创性做法。
+1. **Scope & Closures** — *where* and *how* variables and functions
+   are accessed. Includes: lexical scope, hoisting, closures, modules.
 
-## 6. 运行机制（Bring It Up）
+2. **Prototypes & Objects** — *what* the values are. Includes: object
+   literals, prototypes, `this`, classes (syntactic sugar), delegation.
 
-虽然不是软件项目，但 YDKJSY 的"运行"过程很有教学意义：
+3. **Types & Coercion** — *how* values behave under operations.
+   Includes: primitive types, coercion, equality, type spec.
 
-**启动脚本**（无）：
-- 没有 `npm start`，没有 Makefile
-- 阅读本身就是"运行"
+## Why these three?
 
-**本地起服务**（可选）：
+Every JS program is a conversation between:
+- *Scope* (where to find the binding)
+- *Objects* (what the binding resolves to)
+- *Types* (what operations are valid on that value)
+
+Get these three right, and the rest (async, modules, classes) is detail.
+```
+
+**关键参数表**：
+| 支柱 | 核心问题 | 关键概念 |
+|:---|:---|:---|
+| Scope/Closures | 变量在哪里、可访问吗 | 词法作用域、提升、闭包、模块 |
+| Prototypes/Objects | 值的内部结构是什么 | 原型链、`this`、委托 |
+| Types/Coercion | 值参与运算时如何转换 | 7 种原始类型、强制转换、相等性 |
+
+**最佳实践**：
+- 三大支柱是 1st-ed 起贯穿的**主键**，2nd-ed 在 Get Started ch4 正式命名
+- 所有章节都映射到 ≥1 个支柱
+- 取消的 `sync-async/` 和 `es-next-beyond/` 也属于"周边支撑"而非支柱
+- 学生读完后应能问"这个 bug 是属于哪个支柱的问题"
+
+---
+
+### 模式 12：取消的目录也要保留——"演进史是资产"
+
+**问题场景**：开源项目中途放弃某些子项目时，惯例是删除目录 + 在 README 加一句"项目已变更"。YDKJSY 反向：把取消的子项目**留作空目录** + README 划线，作为"项目演进史"的一部分。
+
+**解决方案代码**：
+```
+# 顶层 README 节选
+# Available Books (2nd-ed)
+
+* [Get Started](get-started/) — Published
+* [Scope & Closures](scope-closures/) — Published
+* [Objects & Classes](objects-classes/) — Rough draft
+* [Types & Grammar](types-grammar/) — Rough draft
+* ~~Sync & Async~~ — *Canceled; merged into other works*
+* ~~ES Next & Beyond~~ — *Canceled; see blog posts instead*
+```
+
+```
+# 实际目录树
+You-Dont-Know-JS/
+├── get-started/         # ch1-ch4 + apA/apB（出版）
+├── scope-closures/      # ch1-ch8 + apA/apB（出版）
+├── objects-classes/     # ch*.md（草稿稳定）
+├── types-grammar/       # ch*.md（粗稿）
+├── sync-async/          # 空目录（已取消）
+└── es-next-beyond/      # 空目录（已取消）
+```
+
+**关键参数表**：
+| 状态 | 目录处理 | README 标注 | 意图 |
+|:---|:---|:---|:---|
+| 出版 | 完整 ch/ap + images | 加购买链接 | 商业闭环 |
+| 草稿稳定 | 部分 ch*.md | "Rough draft" | 期待读者提 issue |
+| 粗稿 | 1-2 个 ch*.md | "Early draft" | 透明度 |
+| 取消 | 空目录 | `~~xxx~~` 划线 | 历史可见 |
+| 合并到其他 | 空目录 | "Merged into Y" | 指引替代 |
+
+**最佳实践**：
+- 取消的目录**不删除**——保留 git 历史 + 空目录结构
+- README 用 `~~xxx~~` markdown 划线，比"删除文字"更显诚意
+- 在每个取消目录的 `README.md` 写"为什么取消 + 替代是什么"
+- 让读者看到"完整计划"，降低"作者烂尾"的印象
+- git log 即演进史，无需额外写 ROADMAP.md
+
+---
+
+### 模式 13：apB.md——附录 B 当"零工具链单元测试"
+
+**问题场景**：教学书的"练习题"常见弊病：题做不出来答案又不在身边，读者放弃。YDKJSY 的解法：把练习 + 答案**写进 apB.md**（附录 B），学生可以"先做后查"。
+
+**解决方案代码**：
+```markdown
+<!-- get-started/apB.md 节选 -->
+# Appendix B: Practice, Practice, Practice!
+
+## Exercise 1: Compile vs Interpret
+Without running the following code, predict the output:
+
+​```js
+console.log(a);
+var a = 1;
+​```
+
+**Answer (no peeking!)**: `undefined`
+
+**Why**: The `var` declaration is hoisted to the top of the scope
+*with an initial value of `undefined`*. The assignment `= 1` happens
+at the line where it appears. So at the `console.log`, the variable
+exists but holds `undefined`.
+
+**Spec reference**: [ECMA-262 §8.3](https://tc39.es/ecma262/#sec-declarations)
+
+---
+
+## Exercise 2: Lexical Scope
+Predict the output:
+
+​```js
+var a = 1;
+function outer() {
+    var a = 2;
+    function inner() {
+        console.log(a);
+    }
+    inner();
+}
+outer();
+​```
+
+**Answer**: `2`
+
+**Why**: `inner` looks up `a` via lexical scope: it sees the `a`
+declared inside `outer` first, never reaches the global one.
+
+**Spec reference**: [§8.1.1.3 GetIdentifierReference](https://tc39.es/ecma262/#sec-getidentifierreference)
+```
+
+**关键参数表**：
+| 元素 | YDKJSY 选择 | 传统书做法 |
+|:---|:---|:---|
+| 答案位置 | apB.md **同文件** | 书后附录 / 配套 PDF / 网盘 |
+| 题目数 | 6-12 个/本 | 5-30 个/章 |
+| 答案格式 | 答案 + 解释 + spec 引用 | 纯答案 |
+| 自测流程 | 滚动查看 / GitHub anchor 跳转 | 翻页 / 书签 |
+
+**最佳实践**：
+- apB 必须是**最后一节**——把练习当作章与购买之间的"防烂尾"设计
+- 答案与题目**同文件**，避免"找不到答案"的挫败感
+- 答案必须给"为什么"+ spec 引用，不是冷冰冰的 `Output: 2`
+- 题目数控制在 6-12 个——超过 15 个读者不会做完
+- apB 章节标题固定为 "Practice, Practice, Practice!" —— 跨书一致
+
+---
+
+### 模式 14：翻译分支隔离——按 ISO 语言码建独立 branch
+
+**问题场景**：开源书翻译到 20+ 种语言时，主分支塞下 20 倍文件，PR diff 难以辨认、合并冲突频发。YDKJSY 用"按 ISO 语言码建独立 branch"解决：每个翻译者只看到自己的 `ch1.zh-CN.md`。
+
+**解决方案代码**：
 ```bash
-# 用 pandoc 把整本书编译成 PDF / EPUB
-cd scope-closures/
-pandoc -s ch1.md ch2.md ... -o book.epub
+# 主仓库不直接合并翻译；翻译者 fork + 独立 branch
+git clone https://github.com/getify/You-Dont-Know-JS.git
+git checkout -b zh-CN
+cp scope-closures/ch1.md scope-closures/ch1.zh-CN.md
+# 翻译完成后，翻译者 push 到自己 fork 的 zh-CN branch
+git push -u origin zh-CN
 ```
 
-**Smoke test**（手工）：
-1. 打开 `get-started/README.md`，确认封面图、购买链接、目录都显示
-2. 点开 `scope-closures/ch3.md`（闭包章），确认有"经典 for+setTimeout 例子"
-3. 切到 `2nd-ed` 分支 git log，确认最后一次 commit 是出版闭环
+**关键参数表**：
+| ISO 码 | 语言 | 维护者 | 状态 |
+|:---|:---|:---|:---|
+| `zh-CN` | 简体中文 | 社区译者 | 部分章节完成 |
+| `es` | 西班牙语 | 社区译者 | 全部完成 |
+| `de` | 德语 | 社区译者 | 全部完成 |
+| `pt-BR` | 巴西葡语 | 社区译者 | 进行中 |
 
-## 7. 演进历史（Time Travel）
+**最佳实践**：
+- 翻译分支用 `zh-CN`（带地区）而非 `chinese`（不带地区）——避免简繁冲突
+- 翻译者=该分支的 maintainer，作者**不** review 翻译内容
+- 翻译者不直接合入主仓库，**独立发布**（自家 GitHub Pages / Leanpub）
+- 主仓库的 `LICENSE.txt` 注明 CC BY-NC-ND 4.0——翻译必须整本、不获利
+- 翻译时用并排文件（`ch1.md` + `ch1.zh-CN.md`）而非目录嵌套（`zh-CN/ch1.md`）
 
-```mermaid
-gantt
-    title YDKJS 出版时间线
-    dateFormat YYYY-MM
-    section 1st Edition
-    起步+Scope         :a1, 2013-01, 6M
-    this & Prototypes  :a2, after a1, 6M
-    Types & Grammar    :a3, after a2, 6M
-    Async & Performance:a4, after a3, 6M
-    ES6 & Beyond       :a5, after a4, 6M
-    section 2nd Edition
-    Get Started 出版   :b1, 2020-01, 12M
-    Scope Closures 出版:b2, 2020-06, 6M
-    Objects Classes 草稿:b3, 2022-06, 36M
-    Types Grammar 草稿 :b4, 2023-06, 24M
-    Sync Async 取消   :crit, 2024-01, 1M
-    ES Next 取消      :crit, 2024-01, 1M
-    宣布封版          :milestone, 2025-12, 1M
+---
+
+### 模式 15：跨书前言 + 单书 foreword + 章 + 附录的三层结构
+
+**问题场景**：技术书目录深度不一致（有的 2 层、有的 3 层），读者在不同书之间跳跃时定位成本高。YDKJSY 严格统一三层结构。
+
+**解决方案代码**：
+```
+Layer 0: 跨书前言（顶层 preface.md）
+   ↓ 引用
+Layer 1: 单书 README + toc + foreword
+   ↓ 引用
+Layer 2: 章（chN.md）+ 附录（apA.md / apB.md）
 ```
 
-**已知里程碑**：
-- 2013：1st Edition 第 1 本 `Scope & Closures` 在 GitHub 发布
-- 2014-2015：1st Edition 其余 5 本陆续完成（this/Types/Async/ES6）
-- 2019：作者启动 2nd Edition，决定"用更少但更深"的策略重写
-- 2020：Get Started + Scope & Closures 出版
-- 2022-2024：Objects & Classes 进入"草稿稳定"但作者精力转移到"unbooks"（未正式编号的合集）
-- 2025-12-31：作者宣布"书系列完结，**不再接受任何贡献**"（见 README 第 41 行）
+```markdown
+<!-- Layer 0 顶层 -->
+# preface.md
+> "This is a series of books..." (1500 字)
 
-## 8. 质量保障（How It Doesn't Break）
+<!-- Layer 1 单书 -->
+# scope-closures/README.md
+> See [preface.md](../preface.md) for the project-wide introduction.
+# scope-closures/toc.md
+# scope-closures/foreword.md
+> 单书前言（500-1000 字，说明本书在系列中的位置）
 
-内容项目的"质量"靠 4 道**人工**防线：
-
-1. **作者本人是唯一守门人**：所有章节由 Kyle Simpson 一人撰写 + 审校，避免多人协作的"水平稀释"
-2. **公开免费 + 付费出版**双轨：免费 GitHub 让读者先反馈"看不懂"，付费出版前再修订——GitHub issues 区相当于"众包 beta 测试"
-3. **Spec-anchored 写作**：每条结论都有 ECMAScript 规约链接兜底，避免"作者说了算"式论断
-4. **Appendix B 练习 + 答案**：每本书固定有练习题，**自带答案**，等于一份手工 unit test
-
-```mermaid
-flowchart TD
-    A[作者写新章] --> B[GitHub 公开]
-    B --> C{读者反馈}
-    C -->|发现错误| D[作者修订]
-    C -->|看不懂| E[作者重写]
-    D --> F[Leanpub 出版]
-    E --> F
-    F --> G[Amazon 同步]
-    G --> H{达到稳定?}
-    H -->|否| A
-    H -->|是| I[宣布封版]
+<!-- Layer 2 内容 -->
+# scope-closures/ch1.md ... ch8.md
+# scope-closures/apA.md ... apB.md
 ```
 
-## 9. 生态依赖（Map of the World）
+**关键参数表**：
+| 层 | 文件 | 作用 | 字数预算 |
+|:---|:---|:---|:---|
+| L0 | 顶层 `preface.md` | 跨书前言 | 1500 字 |
+| L1a | `README.md` | 门面（封面+购买+目录） | < 1000 字 |
+| L1b | `toc.md` | 目录 | < 500 字 |
+| L1c | `foreword.md` | 单书前言 | 500-1000 字 |
+| L2 | `chN.md` / `apN.md` | 章节 | 3000-8000 字/章 |
 
-虽然不依赖 npm 包，但 YDKJSY 有强"内容生态"依赖：
+**最佳实践**：
+- 三层结构是**强制约束**，新书必须遵循
+- L1 三件套（README/toc/foreword）缺一不可
+- L2 章数尽量 4-8 个 + 2 个附录——超过 10 章读者疲劳
+- 跨书前言放在顶层，**禁止**复制到每本书
+- 翻译者只翻译 L1c（foreword）+ L2（章/附录），L0/L1a/L1b 由翻译者**自行重写**
 
-**依赖图**：
-- **ECMAScript Spec**：所有论断的最终 source of truth
-- **TC39 Proposals**：前瞻性章节（`es-next-beyond`）的输入
-- **Frontend Masters**：唯一商业赞助方，提供视频课程作为书籍配套
-- **GetiPub（自家出版）**：自出版平台，避免被 Leanpub 抽成
-- **GitHub**：唯一的协作平台（README、Issues、翻译分支）
+---
 
-**合规检查清单**：
-- 所有代码示例均自写，无第三方代码依赖
-- 引用 TC39 spec 段落均标注章节号
-- 引用第三方 Logo（如 Frontend Masters）只在 `external-logos/` 且带 credit
-- 协议 CC BY-NC-ND 4.0 = **不可商用、不可衍生**——翻译必须**整本**翻译且不获利
+## 4. 出版与生态
 
-## 10. 生产实践（Battle-Tested）
+### 模式 16：1st-ed / 2nd-ed 双分支的归档策略
 
-虽然是书不是软件，但"出版"本身就是 YDKJSY 的"生产"过程：
+**问题场景**：作者重写一本书时，旧版内容是否保留？YDKJSY 用 git 分支做"版本归档"：1st-ed 单独分支、2nd-ed 是当前 main，旧版**完整保留可读**。
 
-| 实践 | YDKJSY 做法 |
-| :--- | :--- |
-| **配置/版本管理** | 1st-ed/2nd-ed 两个 Git 分支；草稿不进 main |
-| **优雅停服** | 2025-12 宣布封版，README 改为"This book series is now complete, and is not open to further contributions" |
-| **国际化** | 按 ISO 语言码建独立分支（`zh-CN`、`es`、`de`...），翻译者独立维护 |
-| **可观测性** | GitHub Issues 数量、星数、Leanpub 评论数 = "用户满意度" 指标 |
-| **热更新** | 不存在——封版后不再修改 |
-| **灾备** | 整个仓库可一键 clone，离线即可阅读 |
+**解决方案代码**：
+```bash
+# 1st-ed 分支：2013-2019 出版历史
+git checkout 1st-ed
+ls
+#   scope-closures/  this-object-prototypes/  types-grammar/
+#   async-performance/  es6-beyond/  up-going/
 
-```mermaid
-sequenceDiagram
-    participant A as 作者
-    participant G as GitHub
-    participant R as 读者
-    participant L as Leanpub
-    participant Am as Amazon
-    A->>G: 推送新章草稿
-    R->>G: 阅读/提 Issue
-    A->>A: 根据反馈修订
-    A->>L: 触发出版
-    L->>Am: 同步上架
-    R->>L: 购买付费版
-    Note over A,Am: 闭环结束
+# 2nd-ed 分支：当前主版本
+git checkout 2nd-ed
+ls
+#   get-started/  scope-closures/  objects-classes/
+#   types-grammar/  sync-async/  es-next-beyond/
 ```
 
-## 11. 社区文化（People & Process）
+**关键参数表**：
+| 版本 | 分支 | 状态 | 商业链接 |
+|:---|:---|:---|:---|
+| 1st-ed | `1st-ed` | **已绝版**（仓库仍可读） | 无（只读归档） |
+| 2nd-ed | `2nd-ed`（默认） | 进行中 | GetiPub / Leanpub / Amazon |
+| 草稿 | 临时 branch | 作者独写 | 无 |
 
-YDKJSY 的社区文化极度"反流行"：
+**最佳实践**：
+- 旧版本**不删 git 历史**——读者买不到的书，仓库仍可读
+- README 顶部明确"当前活跃分支是 `2nd-ed`"
+- 1st-ed 保持**完整可读**——这是 6 年积累，删除是巨大损失
+- 草稿不暴露在 main，单独用作者私有 branch
 
-- **单作者治理**：所有决策由 Kyle Simpson 一人拍板，无 co-maintainer
-- **翻译社区**：通过 GitHub branch 隔离，每个 ISO 语言码一个 branch，翻译者即 maintainer
-- **RFC 流程**：无（作者自己就是 RFC）
-- **沟通渠道**：仅 GitHub Issues，无 Discord/Slack
-- **议题活跃度**：很高（语言教学长青），但作者不再"active triage"——只在封版前做最后一轮清理
-- **Code of Conduct**：未明示（CONTRIBUTING.md 没列 CoC 链接），但 README 反复强调"尊重 JS 语言本身"
+---
 
-## 12. 教训总结（What To Steal / What To Avoid）
+### 模式 17：CC BY-NC-ND 4.0 协议——"开源但不商业可衍生"
 
-### 12.1 必偷 3 件
+**问题场景**：作者用 11 年写书，如何既保持"开源"姿态又避免被白嫖商用？YDKJSY 选择 **CC BY-NC-ND 4.0**：署名 + 非商用 + 不可衍生。
 
-1. **"Git-as-Publisher"**：把 GitHub 当 InDesign 用，每次出版 = 一次 git tag，免费且自带版本控制
-2. **"取消也保留目录"**：把"放弃的子项目"留作空目录 + README 划线，作为"演进史"的一部分，比隐藏更显作者诚意
-3. **"附录 = 手工测试"**：每本书固定有 `apB` 练习 + 答案，等价于内置单元测试，**零工具链成本**
+**解决方案代码**：
+```
+LICENSE.txt
 
-### 12.2 必避 3 坑
+You Don't Know JS (YDKJS) by Kyle Simpson is licensed under
+Creative Commons Attribution-NonCommercial-NoDerivatives 4.0
+International License.
 
-1. **不要给单作者项目加 CoC + 多人治理**：会拖垮节奏；YDKJSY 的"单作者 + 翻译者分支"反而很轻
-2. **不要把"在线阅读体验"当主目标**：YDKJSY 故意不优化 README/交叉链接，迫使读者买付费版才能舒服——开源但商业化清晰
-3. **不要让"草稿"长期挂在 main**：作者用"草稿稳定"/"rough draft"等标注**让读者自带预期**，避免被当成"未完成品"反复质疑
+You are free to:
+* Share — copy and redistribute the material in any medium or format
 
-### 12.3 7 天复刻路线图
+Under the following terms:
+* Attribution — You must give appropriate credit
+* NonCommercial — You may not use the material for commercial purposes
+* NoDerivatives — If you remix, transform, or build upon the material,
+  you may not distribute the modified material.
 
-```mermaid
-gantt
-    title 7天复刻一个"YDKJSY 单本"
-    dateFormat YYYY-MM-DD
-    section 准备
-    选题+TOC 草案     :a1, 2026-06-01, 1d
-    section 写作
-    ch1 写完          :a2, after a1, 2d
-    ch2-ch4 写完      :a3, after a2, 2d
-    section 收尾
-    apA + apB 写完    :a4, after a3, 1d
-    README+出版       :a5, after a4, 1d
+Full text: https://creativecommons.org/licenses/by-nc-nd/4.0/
 ```
 
-### 12.4 打分卡
+**关键参数表**：
+| 权利 | CC BY-NC-ND 4.0 | 影响 |
+|:---|:---|:---|
+| 复制 | 允许 | 个人/教育免费用 |
+| 商用 | **禁止** | 翻译印刷收费 = 违规 |
+| 衍生（改写） | **禁止** | 不能基于本书写"XDKJS" |
+| 署名 | 必需 | 引用时必须标 Kyle Simpson |
+| 翻译 | **必须整本 + 不获利** | 翻译到纸质销售 = 违规 |
 
-| 维度 | 分数（10 分制） | 评语 |
-| :--- | :---: | :--- |
-| 架构清晰度 | 9 | 三层结构 + 三大支柱，读者不会迷路 |
-| 代码质量（示例代码） | 10 | 每段都 5-15 行，最小可复现 |
-| 可读性 | 9 | 长段 Markdown 但有大量"迷思破除"钩子 |
-| 可维护性 | 8 | 单作者是优势也是风险（无 backup） |
-| 文档完整性 | 10 | Spec 引用 + Appendix 练习闭环 |
-| 商业化 | 7 | 自出版 + 赞助 + 课程分成三条线 |
-| 复刻难度 | 3 | **不可复制**：靠 11 年个人 IP + 累计 18 万 Star 沉淀 |
+**最佳实践**：
+- 协议选 CC BY-NC-ND：开源精神 + 商业保护，**两全**
+- 翻译要"整本 + 非商用"——杜绝"逐章翻译+卖书"的灰产
+- 作者另开 GetiPub 自出版 + Leanpub/Amazon 渠道——授权给**自己**的衍生
+- LICENSE.txt **必须**列在仓库根目录——GitHub 自动识别 + 显示协议徽章
+- 协议选择**不可逆**——切换协议等于切社区信任
 
-## 13. 学习萃取（Cheat Sheet）
+---
 
-**一句话价值**：YDKJSY 证明**内容也是软件**——可以"git 版本化、出版流水线化、单作者治理"。
+### 模式 18：Leanpub + Amazon + GetiPub 三轨出版
 
-**3 个核心洞察**：
-1. **Git 仓库可替代 InDesign**：每次出版 = git tag，免费、自动 diff、跨设备同步
-2. **"迷思 → 破除"是最高 ROI 的教学结构**：每章只攻一个错误认知，深度够
-3. **取消的目录也是资产**：让"项目演进史"显式可见，体现作者诚意
+**问题场景**：单一出版渠道（Amazon KDP）抽成高、跨境税务复杂。YDKJSY 用三轨覆盖：Leanpub（数字版+多货币）、Amazon KDP（纸质+Kindle）、GetiPub（自出版零抽成）。
 
-**5 段必读代码 / 文件**：
-1. `get-started/ch1.md` 第 88-100 行的"JS 是编译型 vs 解释型"反直觉例子
-2. `scope-closures/ch1.md` 第 86-100 行 `greeting = ."Hi"` 语法错误证明 2 阶段执行
-3. `scope-closures/ch3.md` 的 `for + var + setTimeout` 闭包陷阱
-4. `objects-classes/ch1.md` 的 `myNumber` lazy property 反例
-5. `get-started/toc.md` —— 一本 4 章 + 2 附录的最小知识树模板
+**解决方案代码**：
+```bash
+# Leanpub：从 git 仓库自动构建
+# 1. leanpub.com 后台设置 GitHub repo + 分支 + book 目录
+# 2. 点 "Publish" → 拉取 .md → 转 EPUB/PDF
+# 3. 作者手动触发，每次出版 = git tag
 
-**1 个反模式**：把 GitHub README 当"在线阅读体验"优化——应让位给付费出版，否则开源 + 付费双轨难平衡。
-
-**1 个可复用模式**："每本书固定 `toc + foreword + ch1..N + apA + apB`"——任何技术书都可套这个最小骨架。
-
-**3 个立刻能用的动作**：
-1. 把任何"未完成方向"留作空目录 + README 划线（如已暂停的 sprint）
-2. 写技术博客时用"迷思 → 破除"4 段式开头
-3. 用 `apB` 练习 + 答案做"零成本单元测试"思想
-
-## 14. 项目特点速查
-
-**独特看点**：
-- **唯一** 一个靠纯 Markdown 内容登顶 GitHub JS 类 Top 3 的项目
-- 把"出版"做成了 git tag 流水线
-- 单作者维护 11 年、累计 18.2 万 Star，全球 25+ 国家 5000+ 开发者培训背书
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title 技术书/教程仓库对比
-    x-axis 短期可读性 --> 长期可深读
-    y-axis 单作者 --> 多人协作
-    "YDKJSY": [0.95, 0.1]
-    "MDN Docs": [0.6, 0.9]
-    "Eloquent JS (ebook)": [0.7, 0.2]
-    "JS The Right Way": [0.5, 0.7]
-    "33 JS Concepts": [0.55, 0.4]
+# Amazon KDP：手动上传 PDF + EPUB
+# 1. kdp.amazon.com 后台
+# 2. 上传打印 PDF + 数字 EPUB
+# 3. 预览通过后上架
 ```
 
-| 项目 | 形态 | 协作 | 深度 | 长青度 |
-| :--- | :--- | :--- | :--- | :--- |
-| **YDKJSY** | 书系列 | 单作者 | 极深 | 11 年+ |
-| MDN | 文档 | 多人 | 中 | 20 年+ |
-| 33 Concepts | 清单 | 多人 | 中 | 5 年 |
-| Eloquent JS | 电子书 | 单作者 | 中 | 13 年 |
+**关键参数表**：
+| 渠道 | 抽成 | 货币 | 内容形式 | 目标读者 |
+|:---|:---|:---|:---|:---|
+| GetiPub | 0% | USD | PDF + EPUB | 早期支持者 |
+| Leanpub | 抽成 80% 给作者 | 多货币 | PDF + EPUB + MOBI | 全球数字读者 |
+| Amazon KDP | 70% 给作者（数字）/ 60%（纸） | USD/EUR/JPY | 纸 + Kindle | 亚马逊读者 |
+
+**最佳实践**：
+- 三轨**不是冗余**——各自覆盖不同读者群
+- GetiPub 适合"未正式出版前"的早期版本
+- Leanpub 适合"边写边卖"，可设置最低价 0+ 自愿付费
+- Amazon 适合"完成后再出"，作为权威发布
+- git tag → Leanpub 自动重建 → 触发 KDP 上架——形成"出版流水线"
+
+---
+
+### 模式 19：Frontend Masters 单一商业赞助
+
+**问题场景**：开源书如何养活作者？YDKJSY 不接广告、不卖周边、不搞众筹，**唯一商业收入**是 Frontend Masters 视频课程的讲师分成。
+
+**解决方案代码**：
+```
+# README.md 节选
+> If you find these books valuable, please consider supporting
+> the author by enrolling in the related video courses at
+> [Frontend Masters](https://frontendmasters.com).
+```
+
+**关键参数表**：
+| 收入源 | 抽成模式 | 读者重叠度 |
+|:---|:---|:---|
+| Frontend Masters 课程 | 讲师分成（具体比例非公开） | 高：书读者→课程付费 |
+| GetiPub/Leanpub/Amazon | 一次性销售 | 中 |
+| GitHub Sponsor | 自由金额 | 低（书 95% 为非赞助者） |
+
+**最佳实践**：
+- 书**永远免费**——这是作者的人设
+- 商业化走"教育服务"——视频课程、Workshop、咨询
+- Frontend Masters 课程与书**深度联动**——书是课程的预习材料
+- 不在书内放广告——保持内容纯净度
+- 不开 Patreon / 不开 GitHub Sponsor 大额档——避免"职业乞丐"人设
+
+---
+
+### 模式 20：单作者治理 + 拒绝 CoC/RFC——"11 年长跑的代价与回报"
+
+**问题场景**：单作者维护 11 年的项目，作者精力是单点风险。YDKJSY 选择**单作者 + 拒绝 CoC/RFC/多人治理**，换取节奏不被拖垮。
+
+**解决方案代码**：
+```
+# CONTRIBUTING.md 节选
+> This book series is now **complete** and is **not open to further
+> contributions** (other than typo reports for unfixed issues, but
+> even those may be closed without action).
+
+> The reasoning: the moment you let infinite contributors in, you
+> end up with infinite process, diluting the work and adding overhead
+> that doesn't match the vision of a coherent, single-author series.
+```
+
+**关键参数表**：
+| 治理元素 | YDKJSY 做法 | 替代方案 | 取舍 |
+|:---|:---|:---|:---|
+| 决策权 | 单作者一票 | Maintainer 委员会 | 节奏快 |
+| 贡献方式 | 仅 typo 报告 | 开放 PR | 抗稀释 |
+| CoC | 无明示 | Contributor Covenant | 简化 |
+| RFC 流程 | 无（作者即 RFC） | 公开 proposal | 简化 |
+| Issue triaging | 作者自己做 | Triage team | 慢但可控 |
+| 翻译社区 | 独立 branch 自治 | 主仓库合并 | 隔离争议 |
+
+**最佳实践**：
+- 单作者项目**不要**加 CoC——会引来"职业 CoC 警察"
+- 出版即"封版"是开源书的**正确决策**——质量优先于贡献量
+- 翻译社区用独立 branch 自治——主仓库作者不审
+- 偶尔发 blog post 解释"为什么这样做"——主动建立预期
+- 11 年长跑的关键是**作者不被拖垮**——所有治理设计都围绕这个目标
+
+---
 
 ## 附：仓库元信息
 
 | 字段 | 值 |
-| :--- | :--- |
-| 路径 | `G:\实战案例\GitHub顶尖项目\You-Dont-Know-JS\` |
-| 分支 | `2nd-ed`（主），`1st-ed`（归档） |
-| 顶层文件数 | ~120（含 6 本书的 ch/ap/README） |
-| 总大小 | ~3.5 MB（封面 PNG 占大头） |
-| 解析时间 | 2026-06-02 |
-| 解析深度 | 5 章 + 3 附录 + 2 README + 1 preface |
-
-## 一句话总结
-
-**YDKJSY = 一本 11 年长跑的开源 JS 圣经，证明内容也是软件、出版也是 git 流程。** 它的架构不是代码，是"用 GitHub 当 InDesign、用 toc 当 README、用 apB 当 unit test"的三件套。
+|:---|:---|
+| 仓库路径 | `github.com/getify/You-Dont-Know-JS` |
+| 主分支 | `2nd-ed` |
+| 归档分支 | `1st-ed` |
+| 协议 | CC BY-NC-ND 4.0 |
+| 商业渠道 | GetiPub / Leanpub / Amazon KDP |
+| 赞助方 | Frontend Masters |
+| Star 数 | 182k+ |
+| 出版本数 | 2nd-ed 已出版 2 本 + 草稿 2 本 + 取消 2 本 |
