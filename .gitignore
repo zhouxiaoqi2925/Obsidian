@@ -43,6 +43,8 @@ $RECYCLE.BIN/
 *.log
 .backup-logs/
 .backup-test*.txt
+.backup-stdout.txt
+.backup-err.txt
 
 # ============== Local config (per-machine) ==============
 .obsidian/plugins/obsidian-git/data.json
