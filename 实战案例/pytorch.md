@@ -1,483 +1,879 @@
----
-title: pytorch
-type: deep-learning
-lang: C++ / Python
-stars: 84000+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - deep-learning
+# PyTorch - 动态图深度学习框架
+
+**来源**：GitHub https://github.com/pytorch/pytorch
+**创建时间**：2026-06-02
+
 ---
 
-# pytorch · 项目深度解析
+## 一、核心机制与张量模型
 
-> 全球最主流的动态图深度学习框架，张量 + autograd + nn.Module 三件套定义 Python 端 AI 编程模型
-> 来源：G:\实战案例\GitHub顶尖项目\pytorch\
+### 1. Tensor / Storage / TensorImpl 三层分离（Three-Layer Tensor Model）
 
-## 写在前面：解析哲学
+**问题场景**：NumPy 数组 view 必须复制数据；PyTorch 的 `tensor[1:3, 2:4]` 必须零拷贝且自动跟踪 autograd。**Tensor（语义） / Storage（存储） / TensorImpl（元数据）三层分离**让"语义"和"存储"解耦——多 Tensor 共享同一 Storage 是视图、切片、转置的零成本前提。
 
-PyTorch 是"动态图派"战胜"静态图派"（TensorFlow 1.x）的代表作。1.5GB 仓库、CMake + Bazel 双构建、Python C++ 深度交织——**没有"读完整 PyTorch"的可能**。本笔记只聚焦在它最值得理解的 4 件事：① `torch.Tensor` 在 C++ 层到底是个什么对象；② `autograd` 怎么在每次 op 时构建计算图；③ `dispatch` 怎么把 `tensor.cuda()` 路由到 GPU kernel；④ `torch.compile`（Dynamo+Inductor）如何把 Python 编译成 Triton。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone --recursive https://github.com/pytorch/pytorch.git`
-2. **分类**：深度学习框架 / Python 绑定到 C++ / 多后端（CPU/CUDA/ROCm/MPS/XPU）
-3. **问题清单**：① Tensor 内存布局怎么定？② autograd 的 backward 怎么扫图？③ dispatcher 怎么选后端？④ `torch.compile` 怎么 hook Python？⑤ 分布式通信怎么和 tensor 融合？
-4. **速查表**：`torch/`（Python 入口）/ `aten/`（A Tensor Expressions，C++ 算子）/ `c10/`（核心抽象）/ `torch/csrc/`（C++ ↔ Python 桥）
-5. **锁定 commit**：v2.6+（2025+）
-
-## 1. 开发计划书（Project Charter）
-
-| 项 | 内容 |
-|---|---|
-| 项目名 | PyTorch |
-| 定位 | 动态图深度学习框架，研究 + 工业部署双场景 |
-| 核心问题 | TensorFlow 1.x 静态图难调试；NumPy 无 GPU / 无 autograd |
-| 用户 | 学术研究者（70%）+ 工业部署（30%） |
-| 商业模式 | Linux 基金会 PyTorch Foundation 治理；Meta、NVIDIA、AWS、Google 共同投资 |
-| 复刻难度 | ★★★★★（3 大后端 + 算子注册 + 自动微分 + 编译栈） |
-| 状态 | 活跃；月度 release |
-| 团队 | Meta AI + 3000+ 贡献者；Soumith Chintala 创始人 |
-| 里程碑 | 2016 发布 · 2017 0.4 autograd 稳定 · 2018 1.0 JIT · 2019 1.3 mobile · 2022 2.0 torch.compile · 2024 2.4 FSDP v2 · 2025 2.6 torch.func |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((PyTorch))
-    torch/ Python
-      nn/ 网络层
-      optim/ 优化器
-      autograd/ 自动微分
-      cuda/ CUDA 绑定
-      distributed/ 分布式
-      jit/ TorchScript
-      dynamo/ torch.compile
-      inductor/ Triton 编译
-    c10/ 核心抽象
-      core/ TensorImpl
-      macros/ 跨平台宏
-      util/ 工具
-    aten/ 算子
-      src/ATen C++ ops
-      native/ 后端实现
-    torch/csrc C++↔Python
-      autograd/ C++ autograd
-      Module pybind
-    caffe2/ 旧Caffe2引擎
-    binaries/ 预编译whl
-```
-
-**核心角色**：
-- `torch/`（Python 入口）：用户 `import torch` 看到的
-- `aten/`（ATen，A Tensor Library）：所有算子的 C++ 实现
-- `c10/`（Caffe2 + ATen）：跨进程跨后端的"基础类型"
-- `torch/csrc/`：pybind11 把 C++ 类暴露给 Python
-
-**代码入口**：
-- `torch/__init__.py` → `torch._C` 加载 `_C.cpython-310-x86_64-linux-gnu.so`
-- `torch/csrc/Module.cpp` 注册 `THPVariable`（Python 端 Tensor 包装）
-
-## 3. 项目画像（Profile）
-
-| 指标 | 数值 / 描述 |
-|---|---|
-| 总文件数 | ~12000（CMake + Python + C++ + CUDA） |
-| 主语言 | C++ (~55%) |
-| 涉及语言 | C++ / Python / CUDA / Cython / Metal / HIP / Triton / CMake / Bazel |
-| Star | 84k+ |
-| License | BSD-3-Clause |
-| Docker | 官方 `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime` |
-| K8s | 库；常用于 K8s Job（分布式训练） |
-| CI | 自家 `hud.pytorch.org` + GitHub Actions（多 GPU 矩阵） |
-| 有测试 | 是；`torch/testing/` + `test/` 数十万行 |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-### 4.1 四层模型
-
-```mermaid
-flowchart TB
-  subgraph PY[Python 层]
-    TN[torch.nn.Module]
-    F[torch.func]
-    C[torch.compile]
-  end
-  subgraph BR[pybind 桥]
-    THP[THPVariable]
-  end
-  subgraph C10[c10 核心]
-    TI[TensorImpl]
-    T[Tensor]
-  end
-  subgraph AT[ATen 算子]
-    DISP[Dispatcher]
-    CPU[CPUImpl]
-    GPU[CUDAImpl]
-  end
-  TN --> THP
-  THP --> T
-  T --> TI
-  T --> DISP
-  DISP --> CPU
-  DISP --> GPU
-```
-
-### 4.2 Tensor 的真实身份
-
-`torch.Tensor` 在 Python 是 `THPVariable`（pybind 包装），在 C++ 是 `c10::Tensor`（值类型，16 字节），背后是 `c10::intrusive_ptr<c10::TensorImpl>`（引用计数智能指针）持有实际存储 `Storage` 和元数据 `TensorImpl`。
-
-```mermaid
-classDiagram
-  class Tensor {
-    +TensorImpl* impl
-    +storage
-  }
-  class TensorImpl {
-    +Storage storage
-    +TensorType type
-    +Device device
-    +autograd_meta
-  }
-  class Storage {
-    +DataPtr data_ptr
-    +size_t size
-    +Allocator* allocator
-  }
-  Tensor --> TensorImpl
-  TensorImpl --> Storage
-```
-
-**WHY 这层设计**：把"语义（Tensor）"和"存储（Storage）"分离，多个 Tensor 可共享同一 Storage（视图 / 切片零拷贝）。
-
-### 4.3 Dispatcher
-
-Dispatcher 是 PyTorch 的"算子路由中心"。当用户写 `tensor.add(other)`，调用链：
-
-```mermaid
-sequenceDiagram
-  participant U as 用户
-  participant P as Python
-  participant T as c10::Tensor
-  participant D as Dispatcher
-  participant K as Kernel
-  U->>P: tensor.add(other)
-  P->>T: at::add(tensor, other)
-  T->>D: add(self, other)
-  D->>D: 查 op 注册表
-  D->>K: CPU / CUDA / Quantized / 等
-  K-->>T: 结果 Tensor
-  T-->>P: Tensor 包装
-  P-->>U: 输出
-```
-
-**WHY Dispatcher**：同个 op 在 CPU / CUDA / MPS / 量化 / sparse / meta 多种实现下都能找到正确后端，无需在 Python 端写 if-else。
-
-### 4.4 自动微分
-
-`torch.autograd` 的核心是 `Node`（`torch/csrc/autograd/function.h`）：
-
+**解决方案**：
 ```cpp
-struct Node {
-  std::vector<edge> next_edges;
-  std::weak_ptr<Node> sequence_nr;
-  std::string name;
-  // backward 实现
-  variable_list operator()(const variable_list& grad_outputs);
+// c10/core/Tensor.h
+class Tensor {
+  c10::intrusive_ptr<TensorImpl> impl_;             // 16 字节值类型
+public:
+  const TensorImpl* unsafeGetTensorImpl() const { return impl_.get(); }
+};
+
+// c10/core/TensorImpl.h
+struct TensorImpl {
+  Storage storage_;                                  // 实际数据指针 + 大小
+  TensorType type_;                                  // dtype, device
+  std::vector<int64_t> sizes_;                       // shape
+  std::vector<int64_t> strides_;                     // 步长
+  c10::optional<AutogradMetaInterface> autograd_meta_;
+  // ...
 };
 ```
+**关键参数**：
 
-每次 op 创建一个 `Node`，记录输入输出 Tensor 的 `grad_fn`。`loss.backward()` 时：
+| 字段 | 用途 | 大小 |
+|------|------|------|
+| `storage_` | 实际数据 DataPtr | 1 个 |
+| `sizes_` | 维度大小 | `ndim` |
+| `strides_` | 每维步长 | `ndim` |
+| `dtype` | 元素类型 | 1 |
+| `device` | 设备 | 1 |
+| `layout` | 内存布局 | Strided/Sparse |
+| `autograd_meta` | 梯度元数据 | optional |
 
-1. **拓扑排序**：从 `loss` 反向走 `next_edges`，得到 topological order
-2. **执行 backward**：按顺序调每个 Node 的 `operator()`
-3. **累积 grad**：把 `grad_outputs` 累加到 `Tensor.autograd_meta_.grad_`
+**最佳实践**：
+1. ✅ 视图/切片/转置零拷贝——只改 TensorImpl 字段
+2. ✅ `tensor[1:3, 2:4]` = 新 Tensor 共享 Storage
+3. ✅ `tensor.t()` 转置也是 view
+4. ✅ `tensor.contiguous()` 强制连续内存
+5. ✅ 不要假设 stride 一定紧凑——要调 `.is_contiguous()`
 
-**WHY 动态图**：TensorFlow 1.x 用 `tf.GradientTape` 后置；PyTorch 把"构建图 + 执行 op"合二为一，调试时直接 `pdb` 进去。
+### 2. autograd 动态计算图（Dynamic Autograd Graph）
 
-### 4.5 核心架构看点（3 条）
+**问题场景**：TensorFlow 1.x `tf.GradientTape` 是"后置记录"——先建图再算。PyTorch 走"动态图"——每次 op 自动创建 `Node` 记录依赖，`loss.backward()` 一次拓扑遍历反传梯度。**结果是：调试时直接 `pdb` 进去，逐步执行 + 看中间值**。
 
-1. **Tensor / Storage / TensorImpl 三层分离**：让 view / slice / 共享存储零成本
-2. **Dispatcher 注册表**：算子多后端多 dtype 多 device 的"路由中心"，是 PyTorch 可扩展性的关键
-3. **动态图 + Node 链式反向**：每次 op 创建 Node 记录依赖，`backward()` 一次拓扑遍历
-
-### 4.6 关键 ADR
-
-- **2018**：从 Lua Torch 转向 Python 端入口
-- **2020**：PyTorch 1.5 引入 C++ 端 nn.Module 加速
-- **2022**：PyTorch 2.0 引入 `torch.compile`（Dynamo + Inductor），挑战 JAX 的可编译性
-- **2023**：FSDP v2 重写，训练 Llama 70B 单机 8 卡
-- **2025**：torch.func + torch.export 双模式稳定（编程 + 部署）
-
-## 5. 代码深度解析（带 WHY）⭐
-
-### 5.1 找骨架代码
-
-`torch.add(tensor, other)` 链：
-1. Python: `torch/_C/_VariableFunctions.pyi` 的 add stub
-2. pybind: `torch/csrc/autograd/generated/python_torch_functions.cpp` 调 `at::add`
-3. C++: `aten/src/ATen/native/Add.cpp` 的 CPU 实现
-4. CUDA: `aten/src/ATen/native/cuda/AddKernel.cu`
-
-### 5.2 单文件分析卡
-
-#### `c10/core/TensorImpl.h`（~500 行）
-
-Tensor 的"真身"——storage offset、sizes、strides、dtype、device、grad_fn 全在这里。**WHY 集中**：所有 Tensor 操作（view、reshape、as_strided）都改 TensorImpl 字段。
-
-#### `c10/core/DispatchKeySet.h`
-
-Dispatcher 的 key 集合。一个 Tensor 同时有 `{Backend.CUDA, Layout.Strided, dtype.float, autograd}` 多个 key，Dispatcher 找最匹配的 kernel。**WHY key 集合**：动态分发比查多维表快。
-
-#### `aten/src/ATen/native/Add.cpp`
-
+**解决方案**：
 ```cpp
+// torch/csrc/autograd/function.h
+struct Node {
+  std::vector<edge> next_edges_;                     // 父节点列表
+  std::uint64_t sequence_nr_;                        // op 序号
+  std::string name_;
+  // ...
+  virtual variable_list apply(variable_list&& grads) = 0;
+};
+
+// 反向流程（torch.autograd.backward()）
+// 1. 从 loss.grad_fn_ 出发，DFS / BFS 收集所有 Node
+// 2. 拓扑排序：得到 backward 顺序
+// 3. 对每个 Node 调 apply(grad_outputs) → 累积到 Tensor.autograd_meta_.grad_
+```
+**关键参数**：
+
+| 概念 | 作用 |
+|------|------|
+| `Node` | 一次 op 的反向函数 |
+| `next_edges` | 前向输入 → 反向输出映射 |
+| `sequence_nr` | 拓扑排序次序 |
+| `requires_grad` | 是否记录梯度 |
+| `grad_fn` | 创建该 Tensor 的 Node |
+| `is_leaf` | 叶子节点（用户创建） |
+
+**最佳实践**：
+1. ✅ `with torch.no_grad():` 推理/评估——不构建图，省 30% 内存
+2. ✅ `tensor.detach()` 中断梯度流
+3. ✅ `loss.backward()` 一次反传，retain_graph=True 多次反传
+4. ✅ `tensor.retain_grad()` 叶子节点保留 grad
+5. ✅ `torch.autograd.gradcheck()` 验证自定义 op
+
+### 3. Dispatcher 算子路由中心（Operator Router）
+
+**问题场景**：同一个 `tensor.add()` 在 CPU / CUDA / MPS / ROCm / XPU 都要有实现，在 float32 / float16 / bfloat16 / int8 都要工作。Python 端写 `if device == 'cuda': ...` 是噩梦。**Dispatcher** = 一个 op 多 kernel，按 DispatchKey 集合路由。
+
+**解决方案**：
+```cpp
+// c10/core/Dispatcher.h
+class TORCH_API OperatorHandle {
+  c10::Schema schema_;
+  std::array<KernelFunction, num_kernels()> kernels_;
+public:
+  template <typename... Args>
+  Tensor call(Args&&... args) {
+    auto& stack = ...;
+    // 1. 拿 dispatch key set（从 Tensor 算）
+    auto keys = ...;
+    // 2. 选 kernel
+    auto& kernel = pickKernel(keys);
+    // 3. 调 kernel
+    return kernel.call(stack);
+  }
+};
+
+// 用法（ATen 端）
 Tensor add(const Tensor& self, const Tensor& other, const Scalar& alpha) {
-  return dispatch_add(self, other, alpha);  // → Dispatcher
+  return at::add(self, other, alpha);  // 调 dispatcher
+}
+
+// 注册（cpu 实现）
+m.def("add(Tensor self, Tensor other, Scalar alpha=1) -> Tensor");
+m.impl("add", torch::dispatch::DispatchKeySet(torch::DispatchKey::CPU).backend_kernel(),
+       &add_cpu_kernel);
+```
+**关键参数**：
+
+| DispatchKey | 用途 |
+|-------------|------|
+| `CPU` | CPU 后端 |
+| `CUDA` | CUDA 后端 |
+| `MPS` | Apple GPU |
+| `ROCm` | AMD GPU |
+| `XPU` | Intel GPU |
+| `QuantizedCPU` | 量化 CPU |
+| `SparseCPU` | Sparse CPU |
+| `Meta` | Fake（形状） |
+| `Autograd` | autograd 包装 |
+| `Functionalize` | 函数式化包装 |
+| `JIT` | TorchScript |
+| `BackendSelect` | backend 选择 |
+| `Lazy` | lazy 评估 |
+
+**最佳实践**：
+1. ✅ Python 端不写 if-else，让 dispatcher 路由
+2. ✅ 注册 kernel 用 `m.impl("op_name", dispatch_keys, &func)`
+3. ✅ Schema 由 codegen 生成（`tools/codegen/`）
+4. ✅ 自定义 op 也走 dispatcher
+5. ✅ Meta kernel 给 fake tensor（无数据但有 shape）走
+
+### 4. DispatchKeySet 多维分发（Multi-Dim Dispatch）
+
+**问题场景**：一个 Tensor 同时有 `{CUDA, Strided, float, autograd}` 多个 key，Dispatcher 找"最匹配"的 kernel。朴素的"按 key 查多维表"慢，**DispatchKeySet 用位图 + 优先级**——一次位操作找到匹配 kernel。
+
+**解决方案**：
+```cpp
+// c10/core/DispatchKeySet.h
+class DispatchKeySet {
+  std::bitset<kNumDispatchKeys> keys_;               // 位图
+public:
+  bool has(DispatchKey k) const { return keys_[k]; }
+  DispatchKeySet add(DispatchKey k) const;
+  
+  // 高层 API：取最高优先级 key
+  DispatchKey highestPriority() const;
+};
+
+// 用法
+DispatchKeySet key_set({
+  DispatchKey::CUDA,           // 0b0000_0010
+  DispatchKey::Strided,        // 0b0000_0100
+  DispatchKey::Float,          // 0b0001_0000
+  DispatchKey::Autograd,       // 0b0010_0000
+});
+```
+**关键参数**：
+
+| 操作 | 行为 |
+|------|------|
+| `add(key)` | 插入 key |
+| `remove(key)` | 移除 key |
+| `has(key)` | 检查 key |
+| `highestPriority()` | 取最高优先级 |
+| `iterator` | 遍历所有 key |
+| 优先级 | `Autograd > Backend > Layout > dtype` |
+
+**最佳实践**：
+1. ✅ 高优先级 kernel（autograd）拦截底层 kernel
+2. ✅ Meta kernel 优先级高——fake tensor 优先走 Meta
+3. ✅ Functionalize 拦截所有算子做不可变包装
+4. ✅ Backend 在中间——避免 backend 之间的 cross-call
+5. ✅ dtype 优先级最低——dtype 转换走 cast kernel
+
+### 5. THPVariable Python 包装（pybind11 Bridge）
+
+**问题场景**：Python 端 `torch.Tensor` 是个对象，要调 C++ `c10::Tensor`。pybind11 把 C++ 类暴露成 Python 类，但**C++ ↔ Python 的引用计数 / 内存管理 / GIL 必须手动协调**。`THPVariable` 是 `c10::Tensor` 的 Python 包装。
+
+**解决方案**：
+```cpp
+// torch/csrc/autograd/python_variable.h
+struct THPVariable {
+  PyObject_HEAD                                          // PyObject 头
+  c10::Tensor cdata;                                     // 16 字节 tensor
+};
+
+// 创建
+THPVariable* THPVariable_NewWithTensor(const c10::Tensor& tensor) {
+  auto obj = (THPVariable*)THPVariable_Type.tp_alloc(&THPVariable_Type, 0);
+  new (&obj->cdata) c10::Tensor(tensor);
+  return obj;
+}
+
+// 释放（refcount 走 c10::intrusive_ptr）
+void THPVariable_dealloc(THPVariable* self) {
+  self->cdata.~Tensor();
+  Py_TYPE(self)->tp_free(self);
 }
 ```
+**关键参数**：
 
-`dispatch_add` 由代码生成器生成（`tools/codegen/`），不需要手写。
+| 字段 | 用途 |
+|------|------|
+| `cdata` | C++ Tensor 副本（16 字节） |
+| `_grad_fn` | 指向 autograd Node（Python 端） |
+| `_is_view` | 是否视图 |
+| `_version` | 版本号（inplace 检查） |
+| `data_ptr()` | 原始指针 |
 
-#### `torch/csrc/autograd/function.h`
+**最佳实践**：
+1. ✅ Python 端 tensor 是 `THPVariable` 包装
+2. ✅ `.detach()` 切断 autograd 链
+3. ✅ `tensor._version` 跟踪 inplace 变更
+4. ✅ `tensor.data_ptr()` 拿原始指针（用于外部 C++ 库）
+5. ✅ GIL 在 pybind 边界自动获取/释放
 
-`Node` 的定义。
+---
 
-#### `torch/_dynamo/`（torch.compile）
+## 二、编译栈与后端架构
 
-Dynamo 是 Python 字节码级 tracer，把 `def f(x): return x + 1` 转成 FX graph，再交 Inductor 编成 Triton / C++。
+### 6. torch.compile 字节码级编译（Bytecode-level Tracing）
 
-**WHY 字节码级**：能用最少的 hook 拦截 Python 调用，不用改用户代码。
+**问题场景**：JAX 的 `jit` 是"函数级"编译，PyTorch 想要同等能力但保持动态图灵活。**`torch.compile`** 用 Dynamo 拦截 Python 字节码，把 `def f(x): return x + 1` 转成 FX graph，再交 Inductor 编 Triton/C++。**40% 性能提升**且不改用户代码。
 
-### 5.3 设计模式
+**解决方案**：
+```python
+# torch/_dynamo/eval_frame.py 字节码级 hook
+import torch
 
-- **Handle/Body**：`Tensor` 是 `TensorImpl` 的句柄
-- **Factory Method**：Dispatcher 路由
-- **Strategy**：Kernel 是后端策略
-- **Visitor**：autograd 反向遍历
-- **Builder**：FX Graph 构造
+@torch.compile
+def f(x):
+    return torch.relu(x @ x.T)
 
-### 5.4 反模式
+x = torch.randn(3, 3)
+y = f(x)                                              # 第一次：tracing + 编译
+y = f(x)                                              # 第二次：cache 命中
 
-1. **`THPVariable_*` 大量宏**：pybind11 早期产物，调试噩梦
-2. **dispatch_keys 在头文件里硬编码**：增加 backend 要改 N 处
-3. **`torch.cuda.*` 散落在 `torch/cuda/`**：应该是 backend 接口统一
-4. **autograd Node 的 `sequence_nr` 是 `int64_t`**：百万次 op 后溢出风险
+# 内部流程
+# 1. CPython EvalFrame hook 拦截 f 的调用
+# 2. Dynamo 把字节码流转成 FX Graph
+# 3. AOTAutograd 拆前向/反向图
+# 4. Inductor 把 FX Graph 编成 Triton / C++ kernel
+# 5. 编译结果 cache 到 dynamo_cache
+```
+**关键参数**：
 
-### 5.5 独特看点
+| 概念 | 作用 |
+|------|------|
+| `Dynamo` | 字节码 → FX Graph |
+| `AOTAutograd` | 拆前向/反向图 |
+| `Inductor` | FX Graph → Triton / C++ |
+| `FX Graph` | PyTorch 内部 IR |
+| `dynamo_cache` | 编译结果 cache |
+| `compile(mode)` | `default` / `reduce-overhead` / `max-autotune` |
+| `backend` | `inductor` / `eager` / `aot_eager` |
 
-- **torch.compile**（Dynamo + Inductor）：字节码级 Python 编译到 Triton，40% 性能提升
-- **torch.func**（functorch 合并）：vmap / grad / jacrev 函数式变换
-- **FSDP v2**：完全分片数据并行，单机 8 卡训练 70B 模型
-- **torch.export**：TorchScript 后的新 IR，部署专用
-- **FlexAttention**：自定义 attention mask 编译
+**最佳实践**：
+1. ✅ `torch.compile(model)` 一行提速 30-50%
+2. ✅ `mode="reduce-overhead"` 配 CUDA Graph 省开销
+3. ✅ `mode="max-autotune"` 长跑训练用，找最优 kernel
+4. ✅ `dynamic=True` 处理变长输入（NLP）
+5. ✅ 失败的 op 标 `torch._dynamo.allow_in_graph` 跳过
 
-## 6. 运行机制（Bring It Up）
+### 7. Inductor Triton 代码生成（Triton Code Gen）
 
-### 6.1 本地构建
+**问题场景**：传统手写 CUDA kernel 难维护、专家级。**Inductor** 把 FX graph 转成 Triton 代码（Python 方言的 GPU 编程），自动融合（fuse）小 op、自动调优。**比手写 CUDA 慢 10%，但比纯 Python 调度快 30x**。
 
-```bash
-git submodule update --init
-pip install -r requirements.txt
-python setup.py develop  # 或用 pytorch/pytorch prebuilt
+**解决方案**：
+```python
+# torch._inductor 生成代码示例
+@triton.jit
+def fused_relu_mm_kernel(
+    x_ptr, w_ptr, out_ptr,
+    M, N, K,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    grid_m = tl.cdiv(M, BLOCK_M)
+    grid_n = tl.cdiv(N, BLOCK_N)
+    # ... 矩阵乘 + ReLU 融合
 ```
 
-### 6.2 Smoke test
+**关键参数**：
 
+| 概念 | 作用 |
+|------|------|
+| `Triton` | Python 方言 GPU 编程 |
+| `JIT` | runtime 编译 |
+| `Kernel` | 一段 GPU 代码 |
+| `Autotune` | 自动找最优 tile 大小 |
+| `Coalesce` | 内存访问合并 |
+| `Fuse` | 多 op 融合成单 kernel |
+
+**最佳实践**：
+1. ✅ `mode="max-autotune"` 让 Inductor 充分优化
+2. ✅ 失败 op 加 `torch._inductor.config.fallback_random` 调试
+3. ✅ `torch._inductor.config.triton.unique_kernel_names = True` 避免名字冲突
+4. ✅ 看 `torch._dynamo.utils.compile_times()` 监控编译耗时
+5. ✅ 配合 `torch.cuda.empty_cache()` 释放编译期内存
+
+### 8. 后端实现：CPU / CUDA / MPS / ROCm / XPU（Multi-Backend）
+
+**问题场景**：单一 backend 不能跨平台。**ATen native/** 是多 backend 实现目录——`native/cpu/` / `native/cuda/` / `native/mps/` / `native/rocm/` / `native/xpu/`。每个 op 都有 N 个 kernel，由 Dispatcher 选。
+
+**解决方案**：
+```cpp
+// aten/src/ATen/native/native_functions.yaml
+- func: add(Tensor self, Tensor other, Scalar alpha=1) -> Tensor
+  dispatch:
+    CPU: add_cpu
+    CUDA: add_cuda
+    MPS: add_mps
+    QuantizedCPU: add_quantized_cpu
+    Meta: add_meta
+
+// 选 kernel 时
+// Dispatcher 看 Tensor 的 DispatchKey 集合
+// {CUDA, Strided, float, Autograd}
+// 优先走 Autograd → CUDA → Strided → float
+// 最后落到 add_cuda_kernel
+```
+**关键参数**：
+
+| Backend | 硬件 | 头文件 |
+|---------|------|--------|
+| CPU | x86_64 / ARM | `aten/src/ATen/native/cpu/` |
+| CUDA | NVIDIA GPU | `aten/src/ATen/native/cuda/` |
+| MPS | Apple GPU | `aten/src/ATen/native/mps/` |
+| ROCm | AMD GPU | `aten/src/ATen/native/rocm/` |
+| XPU | Intel GPU | `aten/src/ATen/native/xpu/` |
+| QuantizedCPU | 量化 CPU | `aten/src/ATen/native/quantized/cpu/` |
+| Meta | fake tensor | `aten/src/ATen/native/meta/` |
+
+**最佳实践**：
+1. ✅ Meta kernel 提供"无数据有形状"实现——让 lazy graph 走通
+2. ✅ CPU / CUDA / MPS 都有现成 kernel
+3. ✅ 加新 backend 走 dispatcher 注册
+4. ✅ 跨 backend 数据搬运用 `tensor.to(device)` 显式
+5. ✅ `torch.backends.cuda.preferred_blas_library = "cublaslt"` 调 cuBLAS
+
+### 9. 量化与稀疏（Quantization & Sparsity）
+
+**问题场景**：模型部署时 fp32 → int8 可省 4x 内存 + 加速。PyTorch 量化分训练后量化（PTQ）、量化感知训练（QAT）、动态量化。**QInt8 / QUInt8 dtype + 独立 QuantizedCPU / QuantizedCUDA kernel**。
+
+**解决方案**：
 ```python
 import torch
-x = torch.randn(3, 3, requires_grad=True)
-y = x @ x.T
-y.sum().backward()
-assert torch.allclose(x.grad, 2 * x)
+from torch.ao.quantization import get_default_qconfig, quantize_dynamic
 
-# GPU
-if torch.cuda.is_available():
-    x = x.cuda()
-    print(x.device)
+# 动态量化（lstm / linear）
+model_int8 = quantize_dynamic(
+    model, {nn.Linear, nn.LSTM}, dtype=torch.qint8
+)
+
+# 静态量化（CNN）
+model.qconfig = get_default_qconfig('qnnpack')
+torch.ao.quantization.prepare(model, inplace=True)
+# 用校准数据喂几批
+torch.ao.quantization.convert(model, inplace=True)
 ```
+**关键参数**：
 
-### 6.3 启动链路
+| 量化方案 | 用途 | 速度提升 |
+|----------|------|----------|
+| `dynamic` | lstm / linear | 2-4x |
+| `static` (PTQ) | CNN 静态 | 2-4x |
+| `static` (QAT) | CNN 训练感知 | 2-4x |
+| `int8` | 大多数 | 2-4x |
+| `int4` | GPTQ / AWQ | 4-8x |
+| `fp16` | 推理 | 1.5-2x |
+| `bf16` | 训练 | 1.5-2x |
 
-```mermaid
-sequenceDiagram
-  participant U as 用户
-  participant P as torch/__init__.py
-  participant C as torch._C
-  participant C10 as c10
-  participant AT as ATen
-  U->>P: import torch
-  P->>C: import torch._C
-  C->>C10: 注册 Tensor / Device / DispatchKey
-  C->>AT: 注册 1000+ 算子
-  P-->>U: 全部就绪
-  U->>U: tensor = torch.zeros(3, 3)
-  U->>U: tensor.cuda() (可选)
+**最佳实践**：
+1. ✅ CNN 用静态量化（精度 + 速度平衡）
+2. ✅ LSTM 用动态量化（无校准数据）
+3. ✅ LLM 用 int4 量化（GPTQ / AWQ）
+4. ✅ `torch.compile` 配合 int8 量化
+5. ✅ `tensor.to(torch.float16)` 推理时省内存
+
+### 10. 分布式训练：DDP / FSDP / DeepSpeed（DDP / FSDP / DeepSpeed）
+
+**问题场景**：单卡装不下 70B 模型——必须多卡 / 多机并行。**DDP**（数据并行）/ **FSDP**（分片数据并行）/ **DeepSpeed**（集成 ZeRO）是三种主流方案。PyTorch 2.0+ 自带 FSDP v2 可训练 70B。
+
+**解决方案**：
+```python
+# DDP - 简单数据并行
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group("nccl")
+model = DDP(model, device_ids=[local_rank])
+
+# FSDP - 分片数据并行（70B 模型单机 8 卡）
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+model = FSDP(model, sharding_strategy=ShardingStrategy.FULL_SHARD)
+
+# FSDP v2（2.4+） - 简化 API
+from torch.distributed.fsdp import fully_shard
+model = fully_shard(model)  # 自动处理 wrap policy
 ```
+**关键参数**：
 
-## 7. 演进历史
+| 维度 | DDP | FSDP | DeepSpeed |
+|------|-----|------|-----------|
+| 内存 | 重复全模型 | 分片 | ZeRO 灵活 |
+| 通信 | AllReduce | AllGather + ReduceScatter | AllReduce + Reduce |
+| 适用 | < 1B | 1B-70B+ | 70B+ |
+| 速度 | 线性 | 90% 线性 | 90% 线性 |
+| API 复杂度 | 低 | 中 | 中 |
 
-```mermaid
-gantt
-  title PyTorch 关键版本
-  dateFormat YYYY-MM
-  section 起源
-  0.1 Meta发布 :done, 2016-10, 6m
-  0.4 autograd 稳定 :done, 2017-07, 6m
-  1.0 JIT + 图模式 :done, 2018-12, 3m
-  section 工业化
-  1.3 mobile :done, 2019-10, 3m
-  1.5 C++ frontend :done, 2020-04, 6m
-  1.10 distributed :done, 2021-10, 3m
-  section 编译时代
-  2.0 torch.compile :done, 2023-03, 6m
-  2.4 FSDP v2 :done, 2024-07, 3m
-  2.6 torch.func 稳定 :active, 2025-01, 3m
+**最佳实践**：
+1. ✅ 单机 8 卡、模型 < 7B 用 DDP
+2. ✅ 7B-70B 用 FSDP v2
+3. ✅ 70B+ 用 DeepSpeed ZeRO-3
+4. ✅ `torchrun --nproc_per_node=8` 启动
+5. ✅ `BACKEND=nccl` 配 GPU 节点
+
+---
+
+## 三、性能优化与 GPU 编程
+
+### 11. CUDA Stream 异步执行（Async Execution）
+
+**问题场景**：CPU 调 `tensor.cuda()` 同步等 GPU 完成——整批卡死。**CUDA Stream** 让多个 kernel 并发执行；**`non_blocking=True`** 让 CPU/GPU 计算重叠。
+
+**解决方案**：
+```python
+# 非阻塞拷贝
+x = torch.randn(3, 3, device='cuda', pin_memory=False)  # CPU→GPU
+# 等价于：
+x = torch.empty(3, 3, device='cuda')
+y_cpu = torch.randn(3, 3, pin_memory=True)  # pinned memory
+x.copy_(y_cpu, non_blocking=True)  # CPU 不等 GPU 完成
+
+# 多个 CUDA Stream
+stream1 = torch.cuda.Stream()
+stream2 = torch.cuda.Stream()
+
+with torch.cuda.stream(stream1):
+    a = compute_a()  # 在 stream1
+with torch.cuda.stream(stream2):
+    b = compute_b()  # 在 stream2
+torch.cuda.current_stream().wait_stream(stream1)
+torch.cuda.current_stream().wait_stream(stream2)
 ```
+**关键参数**：
 
-## 8. 质量保障
+| 字段 | 用途 |
+|------|------|
+| `device` | 目标设备 |
+| `non_blocking` | 异步拷贝 |
+| `pin_memory` | 锁页内存（加速） |
+| `Stream` | CUDA stream |
+| `Event` | 同步事件 |
+| `torch.cuda.synchronize()` | 强制同步 |
 
-- **单元测试**：Python `unittest` + C++ Google Test
-- **Differential testing**：和 TensorFlow / JAX / NumPy 同算法对比
-- **Fuzzing**：OSS-Fuzz
-- **CI**：自建 hud.pytorch.org（数百 GPU）
-- **Lint**：pre-commit（black/ruff/flake8）
-- **Benchmark**：`torch.utils.benchmark`
+**最佳实践**：
+1. ✅ `DataLoader(pin_memory=True)` + `non_blocking=True` 加速 3x
+2. ✅ 多 stream 配多 GPU pipeline
+3. ✅ `.item()` / `.cpu()` 触发同步——hot path 避免
+4. ✅ `torch.cuda.synchronize()` 在 benchmark 必加
+5. ✅ `torch.backends.cudnn.benchmark = True` 自动找最优 kernel
 
-## 9. 生态依赖
+### 12. cuDNN 加速（cuDNN Backend）
 
-```mermaid
-flowchart LR
-  P[PyTorch] --> CUDA Toolkit
-  P --> cuDNN
-  P --> MKL
-  P --> NNPACK
-  P --> Eigen
-  P --> Python 3.10+
-  P --> pybind11
-  P --> NumPy
-  P --> .可选.-> Triton
-  P -.可选.-> HIP/ROCm
-  P -.可选.-> MPS
+**问题场景**：手写卷积 kernel 性能差。**cuDNN** 是 NVIDIA 官方库，自动调优卷积算法。PyTorch 集成 cuDNN 后，Conv2d / BatchNorm / LSTM 性能开箱 SOTA。
+
+**解决方案**：
+```python
+# 启用 cuDNN benchmark
+torch.backends.cudnn.benchmark = True         # 自动找最快算法
+torch.backends.cudnn.deterministic = False     # 速度优先
+torch.backends.cudnn.allow_tf32 = True         # 允许 TF32
+
+# 用 cudnn.benchmark 时第一次会慢（找算法），后续快
+x = torch.randn(16, 3, 224, 224, device='cuda')
+conv = torch.nn.Conv2d(3, 64, 3).cuda()
+y = conv(x)  # 第一次：调 cudnn.benchmark 找算法
+y = conv(x)  # 第二次：直接跑最快算法
 ```
+**关键参数**：
 
-## 10. 生产实践
+| 字段 | 用途 | 副作用 |
+|------|------|--------|
+| `benchmark` | 找最快算法 | 启动慢 |
+| `deterministic` | 确定性 | 速度慢 5-10% |
+| `allow_tf32` | TF32 加速 | 精度略降 |
+| `benchmark_limit` | 限制测试数 | 启动更慢 |
+| `heuristic_mode` | 算法选择模式 | - |
 
-| 能力 | 是否支持 | 备注 |
-|---|---|---|
-| 配置热更新 | 否 | 编译时确定 |
-| 优雅停服 | 是 | distributed.barrier + signal handler |
-| 限流 | N/A | 库 |
-| 链路追踪 | 是 | Kineto profiler |
-| 健康检查 | N/A | 库 |
-| 结构化日志 | 部分 | torch._logging |
-| 多后端 | 是 | CPU/CUDA/ROCm/MPS/XPU |
+**最佳实践**：
+1. ✅ 训练 `benchmark=True`
+2. ✅ 复现实验 `deterministic=True`（关闭 benchmark）
+3. ✅ A100+ 默认开 TF32
+4. ✅ `cudnn.benchmark_limit = 10` 控制启动时间
+5. ✅ `torch.backends.cuda.matmul.allow_tf32 = True`
 
-## 11. 社区文化
+### 13. 内存优化：pin_memory + memory_format（Memory Optimization）
 
-- **治理**：PyTorch Foundation（Linux Foundation 旗下）
-- **维护者**：Meta AI + NVIDIA + 社区；Soumith Chintala
-- **RFC**：GitHub issue + `pytorch/rfcs` + 设计讨论
-- **沟通**：Discourse + Slack
-- **议题活跃**：日均 200+ issue；月度 release
+**问题场景**：CPU → GPU 拷贝要"锁页内存"才能用 DMA，省 50% 拷贝时间。**`pin_memory=True`** + **`non_blocking=True`** = 异步拷贝。**`memory_format=torch.channels_last`** 优化 Conv2d。
 
-## 12. 教训总结
+**解决方案**：
+```python
+# DataLoader 优化
+train_loader = DataLoader(
+    dataset,
+    batch_size=64,
+    num_workers=4,        # 多 worker 预取
+    pin_memory=True,      # 锁页内存
+    persistent_workers=True,
+)
 
-### 12.1 必偷 3 件
+# channels_last 优化（NCHW → NHWC，对 conv 更友好）
+x = x.to(memory_format=torch.channels_last)
+model = model.to(memory_format=torch.channels_last)
 
-1. **Tensor / Storage / TensorImpl 三层分离**：多视图共享存储零成本
-2. **Dispatcher 注册表**：多后端多 dtype 算子的"路由中心"是任何高性能算子库可复用的模式
-3. **autograd Node + 拓扑排序反向**：把"动态图"实现得和静态图一样高效
-
-### 12.2 必避 3 坑
-
-1. **不要把 op 实现直接写在 Python**：`for` 循环 + Tensor op 性能差 1000 倍
-2. **不要忘记 `torch.no_grad()`**：推理模式不构建 autograd 图，省 30% 内存
-3. **不要在 hot path 用 `.item()`**：触发 GPU→CPU 同步，整批卡死
-
-### 12.3 7 天复刻 mini-pytorch
-
-```mermaid
-gantt
-  title 7天复刻 mini-pytorch
-  dateFormat YYYY-MM-DD
-  section 阶段
-  Day1 Tensor + Storage :a1, 2026-06-01, 1d
-  Day2 算子注册 :a2, after a1, 1d
-  Day3 autograd Node :a3, after a2, 1d
-  Day4 backward 拓扑 :a4, after a3, 1d
-  Day5 nn.Module :a5, after a4, 1d
-  Day6 optim :a6, after a5, 1d
-  Day7 GPU 后端 :a7, after a6, 1d
+# 节省重复内存
+torch.backends.cudnn.benchmark = True
 ```
+**关键参数**：
 
-### 12.4 打分卡
+| 字段 | 用途 |
+|------|------|
+| `pin_memory` | DataLoader 锁页 |
+| `non_blocking` | 异步拷贝 |
+| `num_workers` | DataLoader 多进程 |
+| `prefetch_factor` | 预取批数 |
+| `channels_last` | NHWC 内存格式 |
+| `memory_format` | `torch.contiguous_format` / `channels_last` |
 
-| 维度 | 分数 | 评语 |
-|---|---|---|
-| 架构清晰 | 8 | 多层但合理 |
-| 代码可读 | 5 | C++ + Python 混读劝退 |
-| 文档 | 9 | pytorch.org 完善 |
-| 测试 | 9 | 数十万行 |
-| 性能 | 9 | SOTA GPU kernel |
-| 上手难度 | 3 | 改 framework 内核需 C++ + GPU 知识 |
+**最佳实践**：
+1. ✅ `pin_memory=True` + `non_blocking=True` 是标配
+2. ✅ `num_workers = os.cpu_count()` 看机器
+3. ✅ CNN 配 `channels_last` 提 5-10%
+4. ✅ `prefetch_factor=2` 多预取
+5. ✅ `persistent_workers=True` 避免 worker 反复创建
 
-## 13. 学习萃取
+### 14. Activation Checkpointing（Gradient Checkpointing）
 
-**一句话价值**：PyTorch 演示了"用 C++ 写高性能算子 + Python 写易用 API"的最优解，是所有科学计算库的可复用范式。
+**问题场景**：训练大模型时，激活值占 GPU 内存爆炸。**Activation Checkpointing** 只存部分激活，反向时重新计算，**省 60-80% 内存**。代价是 30% 多计算。
 
-### 3 核心洞察
+**解决方案**：
+```python
+from torch.utils.checkpoint import checkpoint
 
-1. **三层分离让"零成本视图"成为可能**：Tensor 共享 Storage
-2. **Dispatcher 让"多后端"零条件分支**：路由中心优于硬编码
-3. **动态图 + Node 链**：调试体验胜过静态图
+class MyModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer1 = nn.Linear(1024, 1024)
+        self.layer2 = nn.Linear(1024, 1024)
+    
+    def forward(self, x):
+        # 默认存所有激活 → 内存大
+        # 用 checkpoint 只存边界激活
+        x = checkpoint(self.layer1, x, use_reentrant=False)
+        x = checkpoint(self.layer2, x, use_reentrant=False)
+        return x
 
-### 5 段必读代码
-
-1. `c10/core/TensorImpl.h` —— Tensor 真实身份
-2. `c10/core/DispatchKeySet.h` —— Dispatcher 路由
-3. `torch/csrc/autograd/function.h` —— Node 定义
-4. `torch/_dynamo/eval_frame.py` —— torch.compile 字节码 hook
-5. `aten/src/ATen/native/Add.cpp` —— 算子派发实例
-
-### 1 反模式
-
-- Python 端 `for` 循环 + Tensor op：性能差 1000 倍
-
-### 1 可复用模式
-
-- **Handle/Body + Dispatcher + 动态图**：可移植到任何科学计算库
-
-### 3 立刻能用
-
-1. `with torch.no_grad():` 是推理 / 评估模式标配
-2. `torch.compile(model)` 一行提速 30-50%
-3. `tensor.to('cuda', non_blocking=True)` 异步拷贝 + pinned memory 提速 3 倍
-
-## 14. 项目特点速查
-
-- 独特看点：唯一把"动态图 + 工业级性能 + 多后端 + Python 友好"四件事都做到 SOTA
-- 同类对比：
-
-```mermaid
-quadrantChart
-  title 深度学习框架对比
-  x-axis 低性能 --> 高性能
-  y-axis 难用 --> 易用
-  "PyTorch": [0.9, 0.95]
-  "TensorFlow": [0.85, 0.7]
-  "JAX": [0.9, 0.65]
-  "MXNet": [0.7, 0.7]
-  "PaddlePaddle": [0.75, 0.8]
+# FSDP 配 checkpointing
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+layer = checkpoint_wrapper(layer)  # 自动处理
 ```
+**关键参数**：
 
-## 附：仓库元信息
+| 字段 | 用途 |
+|------|------|
+| `use_reentrant` | 是否可重入（推荐 False） |
+| `deterministic` | 确定性 |
+| `chunk_size` | 分块大小 |
+| `use_reentrant=True` | 旧 API，可能 OOM |
 
-- 路径：G:\实战案例\GitHub顶尖项目\pytorch\
-- 大小：~1.5 GB
-- 总文件：~12000
-- 解析时间：2026-06-02
+**最佳实践**：
+1. ✅ 训练大模型（> 1B）用 checkpoint
+2. ✅ `use_reentrant=False` 避免 autograd OOM
+3. ✅ 配合 FSDP / DeepSpeed
+4. ✅ 不要对所有层用——只对"内存大"层
+5. ✅ `model.gradient_checkpointing_enable()` 配 HuggingFace
 
-## 一句话总结
+### 15. 混合精度训练（AMP）（Mixed Precision Training）
 
-解析 PyTorch = 读懂 Dispatcher + 跑通 backward + 偷走 Tensor/Storage 分离思想。
+**问题场景**：fp32 训练慢、占内存；fp16 易溢出。**AMP**（自动混合精度）自动选 fp16 / fp32：大多数用 fp16，loss scaling 防溢出。**1.5-2x 加速、30-50% 省内存**。
+
+**解决方案**：
+```python
+from torch.cuda.amp import autocast, GradScaler
+
+scaler = GradScaler()
+
+for x, y in train_loader:
+    optimizer.zero_grad()
+    
+    with autocast():                                  # 自动 fp16
+        y_pred = model(x)
+        loss = criterion(y_pred, y)
+    
+    scaler.scale(loss).backward()                     # 缩放防溢出
+    scaler.step(optimizer)                            # 还原更新
+    scaler.update()
+
+# 新版 API（PyTorch 2.0+）
+with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+    y_pred = model(x)
+    loss = criterion(y_pred, y)
+loss.backward()
+```
+**关键参数**：
+
+| 字段 | 用途 |
+|------|------|
+| `dtype` | `torch.float16` / `torch.bfloat16` |
+| `device_type` | `cuda` / `cpu` |
+| `cache_enabled` | autocast cache |
+| `init_scale` | loss scale 初始值 |
+| `growth_factor` | 缩放步长 |
+| `backoff_factor` | 缩放回退 |
+
+**最佳实践**：
+1. ✅ `bfloat16` 优先（A100+、H100）—— 不需要 loss scale
+2. ✅ `float16` 配 `GradScaler`（V100 / T4）
+3. ✅ CNN 配 `autocast` 提 1.5x
+4. ✅ 不要手动 cast——让 autocast 决定
+5. ✅ 配 `torch.compile(mode="reduce-overhead")`
+
+---
+
+## 四、工程实践与生态
+
+### 16. nn.Module 网络层封装（nn.Module Pattern）
+
+**问题场景**：用户要能"像搭积木"一样组合层——`Conv2d → BatchNorm → ReLU → Linear`。"Module 模式"：每个层都是 `nn.Module` 子类，`forward()` 定义前向。**PyTorch nn 是设计得最干净的 OOP API**。
+
+**解决方案**：
+```python
+import torch.nn as nn
+
+class MyModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU()
+        self.fc = nn.Linear(64 * 32 * 32, 10)
+    
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = x.flatten(1)
+        x = self.fc(x)
+        return x
+
+model = MyModel()
+# 自动找到所有子模块
+for name, param in model.named_parameters():
+    print(name, param.shape)
+```
+**关键参数**：
+
+| 概念 | 作用 |
+|------|------|
+| `nn.Module` | 基类 |
+| `__init__` | 定义子层 |
+| `forward(x)` | 前向逻辑 |
+| `parameters()` | 递归收集参数 |
+| `state_dict()` | 序列化 |
+| `train() / eval()` | 模式切换 |
+| `to(device)` | 移动设备 |
+
+**最佳实践**：
+1. ✅ 子层 `nn.Conv2d` 直接 `self.x = nn.Conv2d(...)`
+2. ✅ 容器 `nn.Sequential` 简化简单堆叠
+3. ✅ 永远不重写 `__call__`——重写 `forward`
+4. ✅ `model.eval()` 关闭 dropout / BN
+5. ✅ `model.to(device)` + `tensor.to(device)` 配对
+
+### 17. torch.optim 优化器（Optimizer Pattern）
+
+**问题场景**：训练就是"反向传播 + 参数更新"。SGD / Adam / AdamW / LAMB / LARS 是常用优化器。`torch.optim` 统一封装：所有优化器继承 `Optimizer` 基类，有 `step()` / `zero_grad()` / `state_dict()`。
+
+**解决方案**：
+```python
+import torch.optim as optim
+
+model = MyModel()
+
+# 多种优化器
+optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+
+# 学习率调度
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.1, total_steps=1000)
+
+# 训练循环
+for epoch in range(num_epochs):
+    for x, y in train_loader:
+        optimizer.zero_grad()
+        loss = criterion(model(x), y)
+        loss.backward()
+        optimizer.step()
+    scheduler.step()
+```
+**关键参数**：
+
+| 优化器 | 关键参数 | 适用 |
+|--------|----------|------|
+| `SGD` | `lr, momentum, weight_decay` | CNN |
+| `Adam` | `lr, betas, eps, weight_decay` | Transformer |
+| `AdamW` | `lr, weight_decay` | LLM |
+| `LAMB` | `lr, weight_decay` | 大 batch |
+| `LARS` | `lr, momentum` | 分布式 |
+
+**最佳实践**：
+1. ✅ 训练前 `optimizer.zero_grad()`
+2. ✅ LLM 用 `AdamW` + `weight_decay=0.01`
+3. ✅ `CosineAnnealingLR` 收敛更稳
+4. ✅ `OneCycleLR` 训得快
+5. ✅ 保存 `optimizer.state_dict()` 断点续训
+
+### 18. DataLoader 多进程加载（DataLoader Pipeline）
+
+**问题场景**：训练时 GPU 等 CPU 加载数据——浪费算力。**DataLoader** 多 worker 预取 + `pin_memory` + 自动 batch。
+
+**解决方案**：
+```python
+from torch.utils.data import DataLoader, Dataset
+
+class MyDataset(Dataset):
+    def __len__(self): return len(data)
+    def __getitem__(self, idx):
+        return transform(data[idx]), label
+
+dataset = MyDataset()
+
+train_loader = DataLoader(
+    dataset,
+    batch_size=64,
+    shuffle=True,
+    num_workers=4,                # 多进程
+    pin_memory=True,              # 锁页内存
+    prefetch_factor=2,            # 预取 2 批
+    persistent_workers=True,      # 跨 epoch 复用
+    drop_last=True,               # 最后一批不完整时丢
+)
+```
+**关键参数**：
+
+| 字段 | 用途 |
+|------|------|
+| `batch_size` | 批大小 |
+| `shuffle` | 乱序 |
+| `num_workers` | 多进程数 |
+| `pin_memory` | 锁页内存 |
+| `prefetch_factor` | 预取批数 |
+| `persistent_workers` | 跨 epoch 复用 |
+| `drop_last` | 丢最后不完整 batch |
+| `collate_fn` | 批组合函数 |
+
+**最佳实践**：
+1. ✅ `num_workers = os.cpu_count() // 2` 起步
+2. ✅ `pin_memory=True` 是标配
+3. ✅ `persistent_workers=True` 减少 worker 创建
+4. ✅ 加载逻辑放 `__getitem__` 而非 collate_fn
+5. ✅ 大数据用 `IterableDataset`（流式）
+
+### 19. 模型序列化与部署（Serialization）
+
+**问题场景**：训练完的模型要保存 + 部署。PyTorch 多种序列化方案：`state_dict` / `torch.save` / `torch.export` / `TorchScript` / `ONNX`。**部署专用 export** 是 PyTorch 2.0+ 主推方案。
+
+**解决方案**：
+```python
+# 1. state_dict 序列化（最常用）
+torch.save(model.state_dict(), "model.pth")
+model = MyModel()
+model.load_state_dict(torch.load("model.pth"))
+
+# 2. 完整保存（含 optimizer / scheduler）
+torch.save({
+    "model": model.state_dict(),
+    "optimizer": optimizer.state_dict(),
+    "epoch": epoch,
+}, "checkpoint.pth")
+
+# 3. torch.export（部署专用，PyTorch 2.0+）
+from torch.export import export
+exported = export(model, (sample_input,))
+torch.export.save(exported, "model.pt2")
+
+# 4. ONNX 导出
+torch.onnx.export(model, sample_input, "model.onnx", opset_version=17)
+```
+**关键参数**：
+
+| 序列化 | 用途 | 文件格式 |
+|--------|------|----------|
+| `state_dict` | 训练 | `.pth` / `.pt` |
+| `torch.save` | 训练检查点 | `.pth` |
+| `torch.export` | 部署 | `.pt2` |
+| `TorchScript` | 部署（老） | `.pt` |
+| `ONNX` | 跨框架 | `.onnx` |
+
+**最佳实践**：
+1. ✅ 训练用 `state_dict`（.pth）
+2. ✅ 部署用 `torch.export`（.pt2）
+3. ✅ 检查点存 `model + optimizer + epoch`
+4. ✅ ONNX 跨平台（TF / TFLite / ONNX Runtime）
+5. ✅ 不要 pickle 整个模型（依赖 pickle 协议）
+
+### 20. 调试与 Profiling（Profiling Pipeline）
+
+**问题场景**：训练慢在哪？前向、反向、优化器、数据加载？**PyTorch Profiler** 集成 Chrome Tracing，能看 GPU / CPU 协同时间线。
+
+**解决方案**：
+```python
+from torch.profiler import profile, ProfilerActivity, record_function
+
+with profile(
+    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    record_shapes=True,
+    profile_memory=True,
+    with_stack=True,
+) as prof:
+    for i, (x, y) in enumerate(train_loader):
+        with record_function("data_load"):
+            x, y = x.to('cuda'), y.to('cuda')
+        with record_function("model_forward"):
+            y_pred = model(x)
+        with record_function("model_backward"):
+            loss = criterion(y_pred, y)
+            loss.backward()
+        if i >= 10: break
+
+# 打印统计
+print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+
+# 导出 trace.json 给 Chrome
+prof.export_chrome_trace("trace.json")
+# 在 chrome://tracing 打开
+```
+**关键参数**：
+
+| 字段 | 用途 |
+|------|------|
+| `activities` | `CPU` / `CUDA` |
+| `record_shapes` | 记录 shape |
+| `profile_memory` | 内存 |
+| `with_stack` | Python 栈 |
+| `record_function` | 自定义标签 |
+| `Kineto` | 后台 profiler |
+
+**最佳实践**：
+1. ✅ `profile(activities=[CPU, CUDA])` 起步
+2. ✅ `export_chrome_trace()` 导 trace.json
+3. ✅ `chrome://tracing` 看 GPU/CPU 协同
+4. ✅ `key_averages().table(sort_by="cuda_time_total")` 排前 10
+5. ✅ 用 `torch.cuda.synchronize()` 保证 trace 完整
+
+---
+
+**标签**：#pytorch #Python #深度学习 #CUDA #动态图
+**状态**：20/20 份详细内容

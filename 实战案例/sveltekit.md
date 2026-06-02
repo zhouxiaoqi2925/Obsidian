@@ -1,495 +1,1117 @@
----
-title: sveltekit
-type: web-framework
-lang: javascript
-stars: 19.6k
-date: 2026-06-02
-tags:
-  - 开源项目
-  - meta-framework
-  - svelte
-  - vite
-  - ssr
+# sveltekit - 编译时驱动框架
+
+**来源**：GitHub sveltejs/kit（v2.61.1，2026-06 解析）
+**创建时间**：2026-06-02
+
 ---
 
-# sveltekit · 项目深度解析
+## 一、核心机制
 
-> Svelte 官方 meta-framework：把 Svelte 组件变成"路由 + SSR + 构建 + 部署"的完整 Web 应用框架
-> 来源：G:\实战案例\GitHub顶尖项目\sveltekit\
+### 1. 编译时清单（Manifest SSOT）
 
-## 写在前面：解析哲学
+**问题场景**：
+SvelteKit 的路由表、节点、matcher、hooks、assets 是"从文件系统派生的元数据"——如果用运行时再扫文件，每次冷启都要扫 100ms；如果用代码生成但分散在多个文件，类型推导就脱节。需要一个"单一事实源"（SSOT）：扫文件 → 生成数据对象 → 烤成 .svelte-kit/generated/*。
 
-解析一个 meta-framework 跟解析一个 CLI 工具或库完全不同。库只要读核心 API；meta-framework 要看**编译时（sync/build）+ 运行时（respond/load）+ 部署时（adapter）**三个独立生命周期的衔接点。SvelteKit 的灵魂在 `sync.create` 把文件系统扫描成 `ManifestData`、再把 `ManifestData` 烤成 `.svelte-kit/generated/*` 这一步——所有路由、类型、客户端清单都从这里辐射出来。先骨架后血肉，先 What 后 Why，最后 How to steal。
+**解决方案**：
 
-## 0. 解析前的 5 个准备
-
-1. **克隆**：monorepo 结构（pnpm workspaces），主包 `packages/kit` 占 90% 代码量
-2. **分类**：Web 框架（Vite-based SSR + SPA 混合），MIT，Node ≥18.13
-3. **问题清单**：① 文件系统如何映射成路由？② SSR/CSR/SPA 三模式怎么共存？③ 部署到 Vercel/Cloudflare/Node 怎么抽象？④ 类型如何从文件系统推导？⑤ 2.27 引入的"remote functions"和传统 load 函数有何本质区别？
-4. **速查表**：`@sveltejs/kit` 是核心；6 个 adapter 是部署目标；`packages/enhanced-img` / `packages/package` 是生态工具
-5. **锁定 commit**：v2.61.1，2026-06 解析
-
-## 1. 开发计划书（Project Charter）
-
-| 项目 | 内容 |
-| --- | --- |
-| 项目名 | SvelteKit（@sveltejs/kit） |
-| 定位 | Svelte 官方全栈 Web 框架，编译 + 运行时 + 部署三合一 |
-| 核心问题 | 让 Svelte 组件在保持"零运行时编译"优势的同时，获得类 Next.js/Nuxt 的路由/SSR/构建能力 |
-| 目标用户 | Svelte 开发者、需要 SSR/SSG 但不想被 React 绑架的团队 |
-| 商业模式 | MIT 开源，Open Collective 捐赠，覆盖基础设施费用 |
-| 复刻难度 | ★★★★★（路由解析 + 编译时清单 + 多 adapter 部署 = 巨工程） |
-| 当前状态 | 活跃维护（v2.61.1），2026 持续迭代 |
-| 团队 | Svelte 核心团队（Rich Harris 等），Vercel 部分赞助 |
-| 里程碑 | v1.0 (2020) → v2.0 (2023 重写) → Remote Functions (v2.27, 2025) → Observability (v2.x) |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((sveltekit/))
-    packages/kit
-      src/core
-        adapt/ 构建后打包
-        sync/ 文件系统→清单
-        config/ 配置校验
-        generate_manifest/ 产物清单
-        postbuild/ HTML后处理
-      src/runtime
-        server/ SSR respond/endpoint
-        client/ 客户端导航/fetcher
-        app/ paths/state/forms
-        components/ svelte-4/5 fallback
-      src/exports
-        vite/ dev/preview/static_analysis
-        node/ Node入口
-        hooks/ sequence组合
-        internal/ 跨边界工具
-      src/utils 路由/url/routing
-    packages/adapter-auto
-    packages/adapter-node
-    packages/adapter-static
-    packages/adapter-cloudflare
-    packages/adapter-netlify
-    packages/adapter-vercel
-    packages/enhanced-img
-    packages/package
-    documentation 40+ md文档
-    .changeset 语义化发版
+```typescript
+// packages/kit/src/core/sync/sync.js
+export async function create(config: ValidatedConfig): Promise<ManifestData> {
+  // 1) 扫 src/routes/** 目录
+  const routes = await scan_routes(config.kit.files.routes);
+  // 2) 解析 [param]/[[opt]]/[...rest]/[name=matcher]
+  const nodes = parse_routes(routes);
+  // 3) 收集 hooks/matchers
+  const manifest_data = {
+    routes: nodes,
+    nodes,
+    matchers: config.kit.matchers,
+    hooks: config.kit.hooks,
+    assets: config.kit.files.assets
+  };
+  // 4) 烤到 .svelte-kit/generated/
+  await write_client_manifest(manifest_data);
+  await write_server(manifest_data);
+  await write_all_types(manifest_data);
+  return manifest_data;
+}
 ```
 
-**关键目录速记**：
-- `packages/kit/src/core/sync/` — **编译时心脏**：扫文件、生成 manifest、写类型
-- `packages/kit/src/runtime/server/respond.js` — **运行时入口**：每个 HTTP 请求的第一站
-- `packages/kit/src/runtime/server/page/server_routing.js` — `__data.json` 与 server-side route resolution
-- `packages/kit/src/exports/vite/dev/index.js` — Dev 模式 HMR + 监听
-- `packages/kit/src/utils/routing.js` — `[slug]` / `[[opt]]` / `[...rest]` 路由解析
-
-## 3. 项目画像（Profile）
-
-| 指标 | 值 |
-| --- | --- |
-| 总文件数 | ~2,630（仓库级），kit 单包 ~437 源文件 |
-| 主语言 | JavaScript (TypeScript 类型) |
-| 涉及语言 | JS、TS、Svelte、Shell、MD |
-| Star | ~19.6k |
-| License | MIT |
-| Node 版本 | ≥18.13 |
-| Peer 依赖 | Vite ^5/6/7/8，Svelte ^4/5，TypeScript ^5.3/6 |
-| CI | GitHub Actions（`ci.yml` + `platform-tests-{vercel,all}.yml`） |
-| 测试 | Vitest 单元 + Playwright 跨平台 E2E |
-| 部署目标 | Node / Vercel / Cloudflare Pages+Workers / Netlify / Static（社区还有 Deno/Bun） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-```mermaid
-flowchart LR
-  subgraph 编译时
-    A[src/routes/*.svelte] --> B[sync.create]
-    B --> C[ManifestData]
-    C --> D[.svelte-kit/generated/*]
-    D --> E[TypeScript 类型]
-    D --> F[client manifest]
-    D --> G[server entry]
-  end
-  subgraph 运行时-Dev
-    H[Vite HMR] --> I[dev/index.js]
-    I --> J[AsyncLocalStorage]
-  end
-  subgraph 运行时-SSR
-    K[HTTP Request] --> L[respond.js]
-    L --> M{类型判断}
-    M -->|GET 页面| N[render_page]
-    M -->|__data.json| O[render_data]
-    M -->|/__server.js| P[endpoint.js]
-    M -->|remote| Q[remote.js]
-    N --> R[Svelte 组件渲染]
-    R --> S[HTML stream]
-  end
-  subgraph 部署
-    T[adapter-X] --> U[平台产物]
-  end
+```
+src/routes/*.svelte
+       │
+       ▼
+sync.create(config)
+       │
+       ▼
+ManifestData { routes, nodes, matchers, hooks, assets }
+       │
+       ├──→ .svelte-kit/generated/client/app.js      (浏览器路由表)
+       ├──→ .svelte-kit/generated/server/internal.js (server 入口)
+       └──→ .svelte-kit/types/*  (自动类型)
 ```
 
-SvelteKit 的架构核心是**编译时-运行时-部署时三层分离**：
+**关键参数**：
 
-1. **编译时（sync）**：扫 `src/routes/**` 目录、解析 `[param]`/`[[opt]]`/`[...rest]`、生成 `ManifestData`（含 routes/nodes/matchers/hooks），再 `write_client_manifest`/`write_server`/`write_all_types` 烤到 `.svelte-kit/generated/`
-2. **运行时**：dev 走 Vite + `AsyncLocalStorage` 注入 `event`；SSR 走 `respond.js` 统一路由分发（页面 / 端点 / data 序列化 / remote 函数 / server-side route resolution）
-3. **部署时**：6 个 adapter 各自把构建产物 + 平台 shim 拼成最终制品
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `routes` | `src/routes` | 路由根 |
+| `matchers` | `paramMatchers: { slug: /.../ }` | 自定义匹配 |
+| `hooks` | `src/hooks.server.js` | 钩子 |
+| `nodes` | flat array | 平铺的路由节点 |
+| `ssr` | true | 服务端渲染 |
 
-### 核心架构看点
+**最佳实践**：
+1. ✅ ManifestData 是 SSOT——所有路由/类型/客户端清单从此派生
+2. ✅ 任何路由变更只需重跑 `sync.create()`——运行时不感知
+3. ✅ `.svelte-kit/generated/` 走 .gitignore——是产物
+4. ✅ 类型自动从 ManifestData 派生——`$types` 是魔法
+5. ✅ Dev 模式监听 `routes/` 文件变化——自动重跑
 
-1. **ManifestData 是单一事实源（SSOT）**：路由表、节点表、matcher、hooks、assets 全集中到 `sync.create_manifest_data` 产出的对象。后续类型生成、客户端清单、SSR 路由查找（`utils/routing.js:find_route`）全部消费这个对象。这意味着**任何路由相关变更只需要重跑 sync**，运行时不需感知
-2. **路由解析走正则而非 trie**：`utils/routing.js:parse_route_id` 把 `/blog/[slug]/+page.svelte` 编译成 `^/blog/([^/]+?)/?$`，每个 `[param]` 收集到 `params` 数组。简化实现，但失去了 Next.js App Router 那种 O(1) trie 匹配的性能优势——这是 SvelteKit 选择**小项目最优、大项目够用**的取舍
-3. **Adapter 抽象只暴露 `Builder` 接口**：`core/adapt/builder.js:create_builder` 接收 `route_data/prerendered/server_metadata/remotes` 等稳定字段，输出 `RouteDefinition` facade。**adapter 只关心"哪些路由 + 哪些预渲染 HTML + 哪些 server 文件"**，框架关心构建。`adapter-node` / `adapter-vercel` / `adapter-cloudflare` 都是同样 `Builder` 的不同实现——这是教科书级别的"平台无关核心 + 平台特定 shim"
+---
 
-## 5. 代码深度解析（带 WHY）⭐ 重点
+### 2. 路由解析正则（parse_route_id）
 
-### 5.1 找骨架代码
+**问题场景**：
+文件系统路由 `/blog/[slug]/+page.svelte` 要在运行时判断"哪个 URL 匹配"。Trie 树虽然 O(1)，但 90% 项目用不上——简单正则 `^/blog/([^/]+?)/?$` 性能足够，可读性高。
 
-SvelteKit 的骨架是 4 段连续调用：
-1. `vite dev` → `exports/vite/dev/index.js:dev()` 启动
-2. `sync.create(config)` → `core/sync/sync.js:create()` 扫文件
-3. 收到 HTTP 请求 → `runtime/server/respond.js:internal_respond()` 分发
-4. 部署构建 → `core/adapt/builder.js:create_builder()` 暴露给 adapter
+**解决方案**：
 
-### 5.2 单文件分析卡
+```javascript
+// packages/kit/src/utils/routing.js
+const param_pattern = /^\[(\.\.\.)?(\w+)(?:=(\w+))?\]$/;
 
-**文件 1: `packages/kit/src/runtime/server/respond.js` (780 行, 24KB)**
+export function parse_route_id(route_id) {
+  const params = [];
+  const pattern = route_id
+    .split('/')
+    .map((segment) => {
+      // 1) 切 [param] / [[opt]] / [...rest] / [name=matcher]
+      const parts = segment.split(/\[(.+?)\](?!\])/);
+      return parts
+        .map((part, i) => {
+          if (i % 2 === 0) return part; // 偶数索引是 literal
+          // 奇数索引是 param
+          const m = part.match(param_pattern);
+          if (!m) return part;
+          const [...rest, name, matcher] = m;
+          if (rest[0]) params.push({ name, rest: true });  // [...rest]
+          else if (part.startsWith('[[')) params.push({ name, optional: true });  // [[opt]]
+          else params.push({ name, matcher });  // [slug] / [slug=matcher]
+          return matcher ? `:${matcher}` : '[^/]+?';  // matcher 模式
+        })
+        .join('');
+    })
+    .join('/');
+  return {
+    pattern: new RegExp(`^${pattern}/?$`),
+    params
+  };
+}
 
-WHY 它是骨架的"中央调度"：
-- 第 56 行 `export const respond = propagate_context(internal_respond);` 用 `AsyncLocalStorage` 包裹，**让深层 `load` 函数无需传 `event` 参数就能拿到当前请求上下文**——这是 SvelteKit"看起来像同步代码、实际是请求隔离"的关键技巧
-- 第 73-100 行的 CSRF 防护：**只在 prod 模式启用**（`if (!DEV)`），dev 模式为了 HMR 便利不强制 origin 检查
-- 第 52-54 行 `page_methods = new Set(['GET', 'HEAD', 'POST'])` 把 GET/HEAD/POST 当作"页面"（可走 form action），其他方法走 endpoint——**用方法名做路由分发而不是 URL 路径**
-- 第 28-37 行的 `add_data_suffix` / `add_resolution_suffix`：客户端跳转时，URL 后面拼 `__data.json` 让客户端在导航时只取数据不取 HTML，是 SvelteKit 客户端导航的物理基础
-
-**文件 2: `packages/kit/src/core/sync/sync.js` (97 行)**
-
-为什么是"4 个导出函数"的极简结构：
-- `init()` — 只写 tsconfig + ambient（配置/模式决定，不依赖文件）
-- `create()` — **核心入口**：扫文件 → 写 client manifest → 写 server entry → 写所有 types → 写 non-ambient types → 返回 `manifest_data`
-- `update()` — 单文件改动时**增量**跑 `node_analyser` 重写 types（避免全量扫盘）
-- `all()` / `all_types()` — 串行包装
-
-WHY 拆这么细：Vite 的 watch 模式可能单文件改动，也可能整批改动，**4 个函数对应 4 种触发场景**，让 HMR 路径只跑必要的步骤。
-
-**文件 3: `packages/kit/src/utils/routing.js` (310 行)**
-
-`parse_route_id` 把路由字符串变成 RegExp + params 数组的解析器：
-- `param_pattern = /^(\[)?(\.\.\.)?(\w+)(?:=(\w+))?(\])?$/` — 用单个正则同时识别 `[name]` `[[name]]` `[...name]` `[name=matcher]`
-- 关键 hack：`segment.split(/\[(.+?)\](?!\])/)` 把 `[param]` 切出来，**奇数索引是参数**——这是用 split 当 tokenizer 的小聪明
-- 字符编码支持 `[x+22]` `[u+0041-005a]` 显式 URL 编码参数名——一个常被忽略但重要的国际化能力
-
-**文件 4: `packages/kit/src/exports/vite/dev/index.js` (685 行, 21KB)**
-
-dev 模式的入口。3 个关键设计：
-- 第 40 行 `AsyncLocalStorage` 用来注入 `event` / `config` / `prerender` 三元组
-- 第 42-52 行 `globalThis.__SVELTEKIT_TRACK__` 让用户代码里**任意位置**都能上报"用了某个 feature"——这是 SvelteKit 的 feature policy 检查机制，比 lint 严格但比 runtime 报错轻
-- 第 87-96 行的 `vite.ws.send({ type: 'error', err: ... })` 把 SSR 错误推给浏览器 HMR overlay——**dev 模式下的 SSR 错误需要可视化**，否则用户体验极差
-
-**文件 5: `packages/kit/src/runtime/app/server/remote/query.js` (675 行, 21KB)**
-
-v2.27 引入的"remote functions"是 SvelteKit 的新 RPC 范式——**比 `load` 更细粒度**：
-- 函数签名是 `query(fn)` 返回一个 `RemoteQueryFunction`，调用时**浏览器走 fetch，server 走直调**
-- 缓存粒度在 `bind(payload, validated_arg)` 阶段（第 78 行），参数化 + 校验 + 缓存一体化
-- 复用 `Standard Schema` 规范做参数校验（第 3 行 `import type StandardSchemaV1`），**与 Zod/Valibot/ArkType 互通**——避免绑架用户
-- 注释 `@since 2.27` 标识新增 API 稳定性版本，库作者必备
-
-### 5.3 设计模式
-
-- **Adapter 模式**：`Builder` 接口 + 6 个 adapter，平台无关 vs 平台特定的清晰分离
-- **Manifest + Code Gen**：文件系统 → ManifestData → 烤成代码 + 类型，**用编译时换运行时确定性**
-- **AsyncLocalStorage 做请求作用域**：替代显式传 `ctx`，让 Svelte 组件可以同步写法拿到请求数据
-- **Strategy**：`runtime/page/server_routing.js` 内嵌 JS 字符串拼接出 `route` 对象（`generate_route_object`），**为 server-side route resolution 服务**——浏览器发起导航时由 server 实时编译路由信息
-
-### 5.4 反模式 / 注意点
-
-- `routing.js:parse_route_id` 用 split+RegExp 而不是 AST——对深层嵌套路由会有 N² 复杂度（虽然实际项目不会触发）
-- `dev/index.js:685` 行单文件过大，dev 模式的所有逻辑（WebSocket、manifest、cookie、polyfill）都堆在一起——可拆 `loud_ssr_load_module` 到独立模块
-- `respond.js:780` 行同样庞大，但通过函数名分块（CSRF、redirect、render、error）保持了可读性
-
-### 5.5 独特看点
-
-- **svelte-4/5 双套 runtime 组件**：`runtime/components/{svelte-4,svelte-5}/`——**框架在编译时根据 Svelte 版本切换 fallback layout 组件**，优雅兼容 Svelte 4 → 5 升级
-- **OpenTelemetry 内置可选**：`runtime/telemetry/otel.js` 是 conditional import，**不强制依赖**——通过 `peerDependenciesMeta.optional` 体现
-- **Remote functions + Form actions + load 三件套**：v2.27 后 RPC 模型在 SvelteKit 已经齐备，挑战 Next.js Server Actions
-
-## 6. 运行机制（Bring It Up）
-
-```bash
-# 1. 装依赖（pnpm workspace）
-pnpm install
-
-# 2. 启动 dev 模式
-pnpm --filter @sveltejs/kit dev
-# 内部：vite dev + svelte-kit sync
-
-# 3. 跑测试
-pnpm --filter @sveltejs/kit test          # 单元 + 集成
-pnpm --filter @sveltejs/kit test:unit     # 仅 vitest
+// 使用
+const { pattern, params } = parse_route_id('/blog/[slug]');
+// pattern: /^\/blog\/([^/]+?)\/?$/
+// params: [{ name: 'slug', matcher: undefined }]
 ```
 
-**Smoke test**：
-```bash
-mkdir my-svelte-app && cd my-svelte-app
-npx sv create   # 官方脚手架（v2.16+）
-npm run dev     # localhost:5173
-```
+**关键参数**：
 
-**架构时序**：
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `[name]` | required | 必填参数 |
+| `[[name]]` | optional | 可选参数 |
+| `[...name]` | rest | 剩余参数 |
+| `[name=matcher]` | custom | 自定义匹配器 |
+| `[name+22]` | URL 编码 | 字符编码支持 |
 
-```mermaid
-sequenceDiagram
-  participant U as Browser
-  participant V as Vite Dev Server
-  participant D as dev/index.js
-  participant S as sync.create
-  participant A as AsyncLocalStorage
-  participant R as respond.js
+**最佳实践**：
+1. ✅ 用正则而非 trie——90% 项目性能够
+2. ✅ `params` 数组按顺序收集——render 时按名取
+3. ✅ 字符编码 `[name+22]` 支持国际化——常被忽略
+4. ✅ `matcher` 自定义函数——比如 `int`、`uuid`
+5. ✅ 大项目可改 trie——目前是 O(N) 顺序匹配
 
-  U->>V: GET /blog/hello
-  V->>D: 中间件拦截
-  D->>S: 首次启动时跑 sync
-  S-->>D: manifest_data
-  D->>A: 进入请求作用域
-  D->>R: 调 internal_respond
-  R->>R: find_route + load + render
-  R-->>U: HTML stream
-```
+---
 
-## 7. 演进历史（Time Travel）
+### 3. AsyncLocalStorage 请求作用域
 
-```mermaid
-gantt
-  title SvelteKit 演进时间线
-  dateFormat YYYY-MM
-  section 起源
-  Sapper时代            :done, 2017-01, 36M
-  SvelteKit 1.0         :done, 2020-10, 12M
-  section 重写
-  SvelteKit 2.0         :done, 2023-12, 18M
-  section 现代化
-  Remote Functions      :active, 2025-08, 10M
-  Observability         :2025-12, 6M
-  Shallow Routing       :2026-02, 4M
-```
+**问题场景**：
+SvelteKit 的 `load` 函数签名是 `async ({ params, fetch }) => data`——**没有 event 参数**。但深层 `load` 要能拿到 request 上下文（cookies、URL、headers）。如果显式传 `ctx`，每层都要传——啰嗦且破坏 Svelte 组件的同步写法。
 
-**关键里程碑**（基于 changeset 命名推断）：
-- 2020-10 SvelteKit 1.0：基于 Vite 的全新 SSR 框架
-- 2023-12 SvelteKit 2.0：Node 18+、Svelte 5 兼容、TypeScript strict
-- 2025-08 Remote Functions（v2.27）：替代传统 `load` 的细粒度 RPC
-- 2025-12 Observability（v2.x）：OpenTelemetry 内置
-- 2026-02 Shallow Routing（v2.x）：history API 不变、不刷 layout
+**解决方案**：
 
-## 8. 质量保障（How It Doesn't Break）
+```javascript
+// packages/kit/src/exports/vite/dev/index.js
+import { AsyncLocalStorage } from 'node:async_hooks';
 
-四道防线：
-
-1. **单元测试**：Vitest，`kit/src/**/*.spec.js`，覆盖 routing/utils/page_nodes 等纯函数
-2. **集成测试**：`packages/kit/test/types/` 用真实 svelte 项目验证类型推导
-3. **E2E 跨平台**：每个 adapter 一个 Playwright 测试（`packages/adapter-*/test/`），CI 跑 `platform-tests-all.yml` 在 5 个平台真机验证
-4. **Linting/类型**：`tsc && cd ./test/types && tsc` 在 `check:all` 里强约束类型
-
-```mermaid
-flowchart LR
-  A[git push] --> B[ci.yml]
-  B --> C[lint + typecheck]
-  C --> D[test:unit]
-  D --> E[platform-tests-vercel]
-  D --> F[platform-tests-node]
-  D --> G[platform-tests-cloudflare]
-  D --> H[platform-tests-netlify]
-  H --> I[release]
-```
-
-**质量哲学**：每个 adapter 必须在**真实云平台**跑过才能合并——`packages/adapter-vercel/test/` 用 `vercel deploy --prebuilt` 真部署。这是为什么"复刻"成本极高的原因。
-
-## 9. 生态依赖（Map of the World）
-
-```mermaid
-mindmap
-  root((SvelteKit 依赖图))
-    核心
-      vite ^5/6/7/8
-      svelte ^4/5
-      typescript ^5.3/6
-    功能库
-      devalue 跨边界序列化
-      cookie cookie 解析
-      kleur 终端颜色
-      magic-string 源码改写
-      mrmime MIME 推断
-      sirv 静态文件
-      set-cookie-parser
-      acorn-typescript
-    可选
-      opentelemetry/api
-      @standard-schema/spec
-    内部 monorepo
-      adapter-{auto,node,static,cloudflare,netlify,vercel}
-      enhanced-img
-      package
-```
-
-**合规清单**：
-- 零 runtime 依赖强加（OpenTelemetry 标 `optional`）
-- Vite peer 宽松到 ^5/6/7/8（5 个大版本并存）
-- Svelte 4/5 兼容通过 `runtime/components/{svelte-4,svelte-5}/` 切换
-
-## 10. 生产实践（Battle-Tested）
-
-| 维度 | 实现 |
-| --- | --- |
-| 配置热更新 | Vite HMR + `sync.update()` 增量 |
-| 优雅停服 | `adapter-node` 内置 `SIGTERM` 处理 |
-| 限流 | 框架不内置（社区 `@sveltejs/kit-rate-limiter`） |
-| 链路追踪 | `runtime/telemetry/otel.js` 条件注入 OpenTelemetry |
-| 健康检查 | 通过 `+server.js` 端点自定义 |
-| 结构化日志 | 框架层无（由 adapter / hooks 决定） |
-| CSRF | prod 强制同源检查（`respond.js:81-100`） |
-| Cookie 安全 | `cookie` 库 + SameSite 默认 lax |
-| CSP | `runtime/server/page/csp.js` 完整实现 |
-| 预渲染 | `core/adapt/builder.js:prerendered` 字段 + 平台缓存 |
-
-```mermaid
-flowchart TD
-  A[Request] --> B{dev or prod}
-  B -->|dev| C[Vite dev server<br/>无 CSRF/HTTPS 强制]
-  B -->|prod| D[adapter shim]
-  D --> E[respond.js]
-  E --> F{CSRF check}
-  F -->|fail| G[403]
-  F -->|pass| H{route type}
-  H -->|page| I[render_page + load]
-  H -->|endpoint| J[endpoint.js]
-  H -->|data suffix| K[render_data]
-  H -->|remote| L[remote.js RPC]
-  I --> M[CSP headers]
-  M --> N[HTML stream]
-```
-
-## 11. 社区文化（People & Process）
-
-- **治理**：Svelte 团队直接维护，Rich Harris（Vercel DX）主导
-- **RFC**：通过 `documentation/docs/` 增量更新，相当于公开 RFC
-- **沟通**：Discord `svelte.dev/chat`，GitHub Discussions
-- **议题活跃度**：高（v2.61.1 几乎每周发版）
-- **PR 模板**：`.github/PULL_REQUEST_TEMPLATE.md` + Copilot 指令（`.github/copilot-instructions.md`）
-- **Changesets**：`.changeset/` 用 changesets 工具管理 semver
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **Manifest + Code Gen 模式**：文件系统 → 数据结构 → 烤成代码 + 类型。**让运行时所见即编译时所产**，大幅提升调试体验（`.svelte-kit/generated/` 里的 .js 是真相之源）
-2. **AsyncLocalStorage 做请求作用域**：替代 ctx 显式传递，让 Svelte 组件能"看起来像同步"地拿到 event。**特别适合 SSR 框架、CLI 工具、消息队列消费者**
-3. **Adapter 接口最小化**：只暴露 `Builder` 给 6 个 adapter，每个 adapter 实现 200-500 行就够。**这是平台无关核心 + 平台特定 shim 的范本**
-
-### 12.2 必避 3 坑
-
-1. **不要在 monorepo 之外用 svelte-kit.js**：直接 `import { something } from '@sveltejs/kit'` 即可，bin 入口只用于 CLI
-2. **不要在 dev 模式依赖 CSRF**：dev 模式故意不强制，方便 HMR。但你**绝对不能在生产回退到 dev 行为**
-3. **不要跳过 `sync.create` 直接改文件**：HMR 不知道你改了文件，路由变化要触发 `sync.update()`
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-  title 7天复刻 SvelteKit 核心
-  dateFormat YYYY-MM-DD
-  section 阶段
-  Day1-2: 文件系统扫描 + ManifestData   :a1, 2026-06-01, 2d
-  Day3:   路由解析 + find_route          :a2, after a1, 1d
-  Day4-5: respond.js 调度 + 渲染        :a3, after a2, 2d
-  Day6:   Vite plugin dev 模式          :a4, after a3, 1d
-  Day7:   adapter-node + 真机测试       :a5, after a4, 1d
-```
-
-### 12.4 打分卡（满分 5）
-
-| 维度 | 评分 | 说明 |
-| --- | --- | --- |
-| 代码可读性 | 4.5 | 注释密，命名清晰 |
-| 架构合理性 | 5.0 | 编译/运行/部署三层分离 |
-| 测试覆盖 | 4.5 | 真机 E2E 是亮点 |
-| 文档质量 | 5.0 | documentation/ 40+ MD 极其详尽 |
-| 创新性 | 4.5 | Remote functions 是 2025 大创新 |
-| 生产就绪 | 5.0 | 多平台多年验证 |
-| **综合** | **4.75** | **meta-framework 标杆之一** |
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：SvelteKit 示范了"编译时清单 + 运行时调度 + 部署时 adapter"三层分离的元框架设计哲学，是 Vite 时代前端框架的范本。
-
-**3 个核心洞察**：
-1. ManifestData 是 SSOT：所有路由/类型/客户端清单从一个数据对象派生
-2. AsyncLocalStorage 解耦请求上下文：让 `load` 函数签名极简
-3. Adapter 模式做平台无关核心：6 个 adapter 各 ~300 行实现一整套部署
-
-**5 段必读代码**：
-1. `packages/kit/src/core/sync/sync.js` — 4 个导出函数（init/create/update/all）体现编译时分层
-2. `packages/kit/src/runtime/server/respond.js` — 780 行中央调度，所有 HTTP 请求第一站
-3. `packages/kit/src/utils/routing.js` — `[slug]` `[[opt]]` `[...rest]` 路由正则编译
-4. `packages/kit/src/exports/vite/dev/index.js` — dev 模式 HMR + WebSocket 错误推送
-5. `packages/kit/src/core/adapt/builder.js` — 6 个 adapter 共用的接口抽象
-
-**1 个反模式**：`utils/routing.js:parse_route_id` 用 `String.split` 当 tokenizer 解析 `[param]`——对深层嵌套有 N² 风险，**大项目应改用 AST**。
-
-**1 个可复用模式**：**"用编译时数据驱动类型生成"**——SvelteKit 在 `write_types/index.js` 用同一个 `ManifestData` 派生 `.d.ts`，让 `params` 类型、`PageData` 类型、`$types` 全自动。**任何用文件系统的框架都该抄这一招**。
-
-**3 个立刻能用的代码片段**：
-1. **AsyncLocalStorage 注入 event**：
-```js
 const als = new AsyncLocalStorage();
-als.run({ event, config }, () => loadData());
-```
-2. **路由正则编译**：
-```js
-parse_route_id('/blog/[slug]') // => { pattern: /^\/blog\/([^/]+?)\/?$/, params: [{ name: 'slug', ... }] }
-```
-3. **Builder 暴露给 adapter**：
-```js
-const builder = create_builder({ config, build_data, route_data, ... });
-builder.writeClient(dest); builder.writeServer(dest); builder.writePrerendered(dest);
-```
 
-## 14. 项目特点速查
+// 进入请求作用域
+function handle(request, response) {
+  const event = create_event(request, response);
+  // AsyncLocalStorage.run 把 event 注入整个调用链
+  als.run({ event, config, prerender }, async () => {
+    await internal_respond(request, response);
+  });
+}
 
-**独特看点**：
-- Svelte 4/5 双套 runtime fallback，**跨大版本兼容**
-- Remote Functions（v2.27）让 RPC 粒度比 `load` 更细
-- 内置 OpenTelemetry 可选，**不绑架**
-- 6 个官方 adapter + 社区 adapter，**平台覆盖最广的元框架之一**
-- ManifestData SSOT 派生一切
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-  title Meta-Framework 对比（学习曲线 vs 性能/灵活性）
-  x-axis 难学 --> 易学
-  y-axis 弱性能 --> 强性能
-  "SvelteKit": [0.85, 0.9]
-  "Next.js": [0.6, 0.85]
-  "Nuxt": [0.7, 0.8]
-  "Remix": [0.55, 0.85]
-  "Astro": [0.75, 0.7]
+// 任何位置（无 event 参数）都能拿
+function loadData() {
+  const { event } = als.getStore();
+  return event.fetch('/api/data');
+}
 ```
 
-SvelteKit 在"易学"和"高性能"两个维度都领先——核心原因是 Svelte 编译时优化 + Vite 极速 dev server + 简单清晰的 Manifest 模型。
+```javascript
+// packages/kit/src/runtime/server/respond.js
+// 把 internal_respond 用 propagate_context 包一层
+export const respond = propagate_context(internal_respond);
 
-## 附：仓库元信息
+function propagate_context(fn) {
+  return (event, ...args) => {
+    return als.run({ event, config: event.config }, () => fn(event, ...args));
+  };
+}
+```
 
-- **路径**：`G:\实战案例\GitHub顶尖项目\sveltekit\`
-- **大小**：~2,630 文件，单 kit 包 ~437 源文件
-- **总文件数**：2,630（仓库级）
-- **解析时间**：2026-06-02
-- **核心 commit**：v2.61.1
+**关键参数**：
 
-## 一句话总结
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `AsyncLocalStorage` | node:async_hooks | 异步作用域 |
+| `als.run(store, fn)` | 入口 | 注入 store |
+| `als.getStore()` | 子节点取 | 拿当前 store |
+| `event` | { request, url, cookies, params } | 请求上下文 |
+| `prerender` | bool | 预渲染标记 |
 
-**SvelteKit 是 2025 年最值得研究的 meta-framework**——编译时 Manifest SSOT、运行时 AsyncLocalStorage 调度、部署时 Adapter 抽象三个模式都做到了教科书级，**源码本身就是 Vite 时代前端框架的设计范本**。解析它 = 学会"如何把文件系统驱动变成生产可用的全栈框架"。
+**最佳实践**：
+1. ✅ `AsyncLocalStorage` 替代显式传 ctx——load 函数签名极简
+2. ✅ 整个调用链共享——任何位置都能拿 event
+3. ✅ SSR + dev 模式都用——prod 走相同路径
+4. ✅ 注意：不能跨请求 boundary（用 `getStore()` 检测）
+5. ✅ 标准库 `node:async_hooks`——无需 polyfill
 
 ---
 
-参考：https://svelte.dev/docs/kit
+### 4. 路由分发中央调度（respond.js）
+
+**问题场景**：
+SvelteKit 一个 HTTP 请求可能走 4 条路径：GET 页面、POST form action、/api 端点、/__data.json 取数据、/remote RPC。如果分散在各 handler 里，CSRF/cookie/redirect 逻辑要写 4 遍。需要一个中央调度 `respond.js`。
+
+**解决方案**：
+
+```javascript
+// packages/kit/src/runtime/server/respond.js
+export const respond = propagate_context(internal_respond);
+
+async function internal_respond(event) {
+  // 1) CSRF 防护（prod 模式）
+  if (!DEV) {
+    const csrf_ok = check_csrf(event);
+    if (!csrf_ok) return new Response('Forbidden', { status: 403 });
+  }
+
+  // 2) 路由类型分发
+  if (event.route.id === null) return handle_404(event);
+
+  // 3) /__data.json 客户端导航取数据
+  if (event.route.id.endsWith('/__data.json')) return render_data(event);
+
+  // 4) /__server.js 端点
+  if (event.is_endpoint) return handle_endpoint(event);
+
+  // 5) remote functions (v2.27+)
+  if (event.is_remote) return handle_remote(event);
+
+  // 6) 页面渲染
+  return render_page(event);
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `page_methods` | new Set(['GET', 'HEAD', 'POST']) | 页面方法 |
+| `__data.json` | suffix | 客户端导航数据 |
+| `__server.js` | suffix | 端点文件 |
+| `remote` | v2.27+ | RPC 函数 |
+| `event.route.id` | string | 匹配的路由 ID |
+
+**最佳实践**：
+1. ✅ 中央调度统一 CSRF/cookie/redirect——4 条路径共享
+2. ✅ `page_methods` 用方法名分发——简化逻辑
+3. ✅ `__data.json` 后缀让客户端导航只取数据
+4. ✅ 端点和页面分离——`+server.js` vs `+page.svelte`
+5. ✅ Dev 模式不强制 CSRF——HMR 友好
+
+---
+
+### 5. Vite Dev Plugin 集成
+
+**问题场景**：
+SvelteKit 是 Vite-based meta-framework——dev 模式要在 Vite 中间件链里加路由处理、SSR、HMR、错误推送。如果硬塞进 Vite 钩子，复杂度爆炸。需要一个"独立 dev plugin"。
+
+**解决方案**：
+
+```javascript
+// packages/kit/src/exports/vite/dev/index.js
+export function dev(config) {
+  // 1) 启动 sync.create
+  const manifest_data = await sync.create(config);
+
+  // 2) 注入 AsyncLocalStorage
+  const als = new AsyncLocalStorage();
+
+  // 3) Vite 中间件：拦截所有非 asset 请求
+  return {
+    name: 'svelte-kit-dev',
+    configureServer(server) {
+      server.middlewares.use(async (req, res) => {
+        // 只处理 SvelteKit 路由
+        if (req.url.startsWith('/@') || req.url.startsWith('/node_modules')) return;
+
+        // 进入 AsyncLocalStorage 作用域
+        await als.run({ event, config, manifest_data }, async () => {
+          await internal_respond(req, res);
+        });
+      });
+
+      // 4) HMR 错误推给浏览器
+      server.ws.on('error', (err) => {
+        server.ws.send({ type: 'error', err: { message, stack } });
+      });
+    }
+  };
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `configureServer` | Vite 钩子 | 注入中间件 |
+| `server.middlewares` | express-like | 路由拦截 |
+| `server.ws` | WebSocket | HMR 通信 |
+| `als.run` | AsyncLocalStorage | 请求作用域 |
+| `manifest_data` | sync 产物 | 路由表 |
+
+**最佳实践**：
+1. ✅ Vite plugin 独立文件——`exports/vite/dev/index.js`
+2. ✅ `server.middlewares.use` 拦截请求——非 asset 才走 SvelteKit
+3. ✅ WebSocket 推错误——SSR 错误可视化
+4. ✅ `globalThis.__SVELTEKIT_TRACK__` 记录 feature 使用——可观测
+5. ✅ 启动时调 `sync.create`——单次扫描
+
+---
+
+## 二、架构设计
+
+### 6. 编译/运行/部署三层分离
+
+**问题场景**：
+Meta-framework 同时管"怎么编译"（Vite plugin）、"怎么跑"（SSR/CSR）、"怎么部署"（adapter）——三者耦合在一起会变成"巨型框架"。需要清晰的"编译时-运行时-部署时"分离。
+
+**解决方案**：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  编译时 (packages/kit/src/core)                              │
+│  ─ sync/sync.js → ManifestData                              │
+│  ─ adapt/builder.js → Builder 接口                          │
+│  ─ generate_manifest/ → 烤代码                               │
+└─────────────────────────────────────────────────────────────┘
+                              ↓ .svelte-kit/generated/*
+┌─────────────────────────────────────────────────────────────┐
+│  运行时 (packages/kit/src/runtime)                           │
+│  ─ server/respond.js → 中央调度                              │
+│  ─ client/client.js → 客户端导航                             │
+│  ─ app/ → paths/state/forms                                 │
+└─────────────────────────────────────────────────────────────┘
+                              ↓ build output
+┌─────────────────────────────────────────────────────────────┐
+│  部署时 (packages/adapter-*)                                 │
+│  ─ adapter-node → Node server                              │
+│  ─ adapter-vercel → Vercel Functions                        │
+│  ─ adapter-cloudflare → Cloudflare Workers/Pages            │
+│  ─ adapter-netlify → Netlify Functions                     │
+│  ─ adapter-static → 纯静态                                  │
+│  ─ adapter-auto → 自动检测                                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `core/sync` | 编译时 | 文件系统扫 |
+| `core/adapt` | 构建时 | 平台无关产物 |
+| `runtime/server` | 运行时 | SSR |
+| `runtime/client` | 运行时 | 客户端导航 |
+| `adapter-X` | 部署时 | 平台特定 |
+
+**最佳实践**：
+1. ✅ 编译/运行/部署三层严格分开——各包独立可测
+2. ✅ core 不依赖任何 adapter——平台无关
+3. ✅ runtime 不依赖任何 Vite——prod 也用
+4. ✅ adapter 只依赖 core 的 Builder 接口——简单
+5. ✅ 跨包共享代码用 `exports/internal/`——避免循环依赖
+
+---
+
+### 7. Adapter 模式（Builder 接口）
+
+**问题场景**：
+SvelteKit 支持 6 个部署平台（Node / Vercel / Cloudflare / Netlify / Static / Auto）——如果每个 adapter 都自己实现构建逻辑，会有 6 份重复代码。需要一个"Builder 接口" + 6 个 adapter 实现。
+
+**解决方案**：
+
+```typescript
+// packages/kit/src/core/adapt/builder.js
+export function create_builder({
+  config, build_data, route_data, prerendered, server_metadata, remotes
+}) {
+  return {
+    writeClient(dest: string) { /* 写 client manifest */ },
+    writeServer(dest: string) { /* 写 server entry */ },
+    writePrerendered(dest: string) { /* 写预渲染 HTML */ },
+    writeRemotes(dest: string) { /* 写 remote functions */ },
+    log(msg: string) { /* adapter 自己的 logger */ }
+  };
+}
+
+// adapter-node 实现（~500 行）
+export default {
+  name: 'adapter-node',
+  async adapt(builder) {
+    // 1) 写客户端 + server entry
+    builder.writeClient('build/client');
+    builder.writeServer('build/server');
+    // 2) 写 Node 平台 shim
+    files.writeFile('build/handler.js', HANDLER_SOURCE);
+    files.writeFile('build/index.js', SERVER_SOURCE);
+  }
+};
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `Builder` | interface | adapter 接收 |
+| `route_data` | routes | 路由表 |
+| `prerendered` | pages | 预渲染 HTML |
+| `server_metadata` | assets | 服务端元数据 |
+| `remotes` | v2.27+ | remote functions |
+
+**最佳实践**：
+1. ✅ Builder 接口最小化——adapter 只关心"哪些文件 + 哪些 HTML"
+2. ✅ 6 个 adapter 各 200-500 行——不重复
+3. ✅ adapter-auto 自动检测——读环境变量
+4. ✅ 平台 shim 写在 adapter 里——handler.js / index.js
+5. ✅ 任何平台都可加 adapter——Deno/Bun 由社区提供
+
+---
+
+### 8. Remote Functions（v2.27+）
+
+**问题场景**：
+传统 `+page.server.js` 的 `load` 函数粒度粗——一个页面只能有一个 `load`，要么全取要么全不取。v2.27 引入 "remote functions" 提供更细粒度的 RPC：每个函数独立端点、独立缓存、独立校验。
+
+**解决方案**：
+
+```javascript
+// packages/kit/src/runtime/app/server/remote/query.js
+import { query } from '$app/server';
+import * as v from 'valibot';
+
+export const getArticle = query(
+  v.object({ id: v.string() }),
+  async ({ id }) => {
+    return db.articles.findUnique({ where: { id } });
+  }
+);
+
+// 浏览器端调用（自动走 fetch）
+const article = await getArticle({ id: '123' });
+
+// Server 端调用（自动直调）
+const article = await getArticle({ id: '123' }); // 同一份代码
+```
+
+```typescript
+// 缓存粒度在 bind(payload, validated_arg) 阶段
+export function bind<T, S extends StandardSchemaV1>(schema: S, fn: T): RemoteQueryFunction {
+  return {
+    async call(payload) {
+      // 1) 用 Standard Schema 校验
+      const validated = schema['~standard'].validate(payload);
+      // 2) 拿缓存
+      const cached = cache.get(validated);
+      if (cached) return cached;
+      // 3) 跑用户函数
+      const result = await fn(validated);
+      cache.set(validated, result);
+      return result;
+    }
+  };
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `query(fn)` | RPC | 浏览器走 fetch，server 走直调 |
+| `Standard Schema` | 通用 | Zod/Valibot/ArkType 互通 |
+| `bind(payload, arg)` | 缓存粒度 | 按参数缓存 |
+| `cacheKey` | JSON.stringify | 序列化参数 |
+| `cache TTL` | 默认 1min | 可配 |
+
+**最佳实践**：
+1. ✅ `query()` 替代粗粒度 `load`——每个函数独立
+2. ✅ Standard Schema 互通——不绑架用户
+3. ✅ 浏览器/server 同一份代码——自动适配
+4. ✅ bind 阶段校验 + 缓存——一次完成
+5. ✅ v2.27+ 才支持——老代码用 `load`
+
+---
+
+### 9. Svelte 4/5 双 Runtime 兼容
+
+**问题场景**：
+SvelteKit 2.0 支持 Svelte 4 和 Svelte 5 双版本——但 Svelte 4 是 Options API + `$:` reactivity，Svelte 5 是 Runes + `$state/$derived/$effect`。两套 runtime 的 fallback layout 组件不通用，需要根据 Svelte 版本切换。
+
+**解决方案**：
+
+```
+runtime/components/
+├── svelte-4/
+│   ├── error.svelte          # Svelte 4 写法
+│   ├── head.svelte
+│   └── ...
+└── svelte-5/
+    ├── error.svelte          # Svelte 5 Runes 写法
+    ├── head.svelte
+    └── ...
+```
+
+```javascript
+// packages/kit/src/exports/vite/index.js
+import svelte from 'vite-plugin-svelte';
+import { svelte_config } from '../utils/svelte-config.js';
+
+export function sveltekit(config) {
+  // 1) 读 svelte.config.js 拿 Svelte 版本
+  const version = await get_svelte_version();
+  // 2) 选 components 目录
+  const components_dir = version === 5 ? 'svelte-5' : 'svelte-4';
+  // 3) 配置 svelte plugin
+  return [
+    svelte({ ...svelte_config, components: path.join('runtime/components', components_dir) })
+  ];
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `svelte-4` | `<script>` Options API | 老写法 |
+| `svelte-5` | `<script>` Runes | 新写法 |
+| `components dir` | runtime/components/svelte-X | 按版本切换 |
+| `peer dep` | `svelte: ^4 \|\| ^5` | 兼容范围 |
+| `migration` | `npx sv migrate` | 工具 |
+
+**最佳实践**：
+1. ✅ 双 runtime fallback 优雅升级——不用等全员迁移
+2. ✅ `npx sv migrate` 一键升级脚本
+3. ✅ 跨大版本兼容通过文件目录切换——`components/svelte-X/`
+4. ✅ Svelte 5 编译产物 ≥ Svelte 4 性能
+5. ✅ 升级期间两版本共存——按项目粒度迁移
+
+---
+
+### 10. 客户端导航（client.js）
+
+**问题场景**：
+SvelteKit 的客户端导航需要在不刷新整个页面的情况下加载新页面——保持 Svelte 组件状态、动画连续、只取数据（`__data.json`）。这是一个 SPA-like 体验但要兼容 SSR。
+
+**解决方案**：
+
+```javascript
+// packages/kit/src/runtime/client/client.js
+export async function goto(url, { replaceState = false, noscroll = false, keepFocus = false } = {}) {
+  // 1) history API
+  const href = create_href(url);
+  history[replaceState ? 'replaceState' : 'pushState']({}, '', href);
+
+  // 2) 调 native_navigate
+  await native_navigate(href, { replaceState, noscroll, keepFocus });
+}
+
+async function native_navigate(href, opts) {
+  // 1) 走 router
+  const route = await router.resolve(href);
+  // 2) 拿 /__data.json
+  const data = await fetch(`${href}__data.json`).then((r) => r.json());
+  // 3) 更新 Svelte 组件状态（$app/stores）
+  navigating.set(null);
+  page.set({ url: href, params: route.params, route: route.id, status: 200, data, error: null });
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `goto(url)` | string | 编程式导航 |
+| `<a href="..." data-sveltekit-preload-data>` | hover 预取 | 鼠标悬停预取 |
+| `__data.json` | suffix | 数据端点 |
+| `replaceState` | bool | 替换 history |
+| `noscroll` | bool | 不滚顶 |
+
+**最佳实践**：
+1. ✅ `data-sveltekit-preload-data` 鼠标悬停预取——首屏体验
+2. ✅ `__data.json` 后缀让客户端只取数据——省 HTML
+3. ✅ history API 推进栈——后退按钮不刷新
+4. ✅ 路由参数 `$page.params` 自动更新
+5. ✅ `noscroll` 保留滚动位置——分页场景
+
+---
+
+## 三、性能优化
+
+### 11. 路由正则匹配（O(N) 顺序）
+
+**问题场景**：
+SvelteKit 每次请求都要"在路由表里找匹配"——如果用 trie 树，插入/构建都慢，N 数量级小。简单顺序正则匹配 `O(N × pattern.length)` 对 1000 个路由仍然 < 1ms。
+
+**解决方案**：
+
+```javascript
+// packages/kit/src/runtime/server/page/server_routing.js
+export function find_route(routes, url) {
+  for (const route of routes) {
+    const match = route.pattern.exec(url.pathname);
+    if (match) {
+      const params = {};
+      route.params.forEach((p, i) => {
+        params[p.name] = match[i + 1];
+      });
+      return { route, params };
+    }
+  }
+  return null;
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `routes` | 1000+ | 路由表 |
+| `pattern` | RegExp | 编译后的正则 |
+| `match[i+1]` | string | 捕获组 |
+| `params.name` | matcher 模式 | 自定义匹配 |
+| `rest` | 数组 | `[...rest]` |
+
+**最佳实践**：
+1. ✅ 顺序正则匹配性能够用——1000 路由 < 1ms
+2. ✅ 路由数 > 5000 才考虑 trie
+3. ✅ matcher 自定义函数——int/uuid 提前过滤
+4. ✅ `rest` 数组的捕获——`match.slice(1)` 取剩余
+5. ✅ 编译时把 `[name=matcher]` 编译到正则——避免运行时函数调用
+
+---
+
+### 12. 预渲染 + 流式 SSR
+
+**问题场景**：
+SvelteKit 既要支持"每次请求渲染"（SSR），又要支持"构建时渲染"（SSG）。如果用两套代码路径，复杂且不一致。需要"统一响应函数 + 不同入口"。
+
+**解决方案**：
+
+```javascript
+// packages/kit/src/core/adapt/builder.js
+async function prerender(routes) {
+  for (const route of routes) {
+    if (route.prerender) {
+      // 1) 构造 fake event
+      const event = create_event({ url: route.path, method: 'GET' });
+      // 2) 调 respond
+      const response = await respond(event);
+      // 3) 写 HTML 到 prerendered/ 目录
+      const html = await response.text();
+      writeFileSync(`build/prerendered${route.path}/index.html`, html);
+    }
+  }
+}
+```
+
+```javascript
+// packages/kit/src/runtime/server/respond.js
+// 流式 SSR
+return new Response(
+  new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      // 1) 写 head
+      controller.enqueue(encoder.encode('<!doctype html><html><head>...'));
+      // 2) 写 Svelte 组件
+      for await (const chunk of render_ssr(component)) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    }
+  }),
+  { headers: { 'Content-Type': 'text/html' } }
+);
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `prerender: true` | 路由级 | 构建时渲染 |
+| `entry: 'prerendered'` | adapter | 平台缓存 |
+| `stream` | ReadableStream | 流式 SSR |
+| `Content-Encoding: br` | adapter | Brotli 压缩 |
+| `Cache-Control` | s-maxage | CDN 缓存 |
+
+**最佳实践**：
+1. ✅ 预渲染走同一份 `respond.js`——保证 SSR/SSG 一致
+2. ✅ 流式 SSR 大页面首屏 < 200ms
+3. ✅ adapter 把预渲染产物当成静态文件——CDN 友好
+4. ✅ `prerender: true` 在路由文件里标记
+5. ✅ Brotli 压缩 HTML——再小 20%
+
+---
+
+### 13. Tree-Shaking 友好
+
+**问题场景**：
+SvelteKit 包 90% 用户只用了 30% 功能——如果 import 全量，bundle 涨 50KB。需要每个 helper 单文件、sideEffects: false 标记。
+
+**解决方案**：
+
+```json
+// packages/kit/package.json
+{
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./src/runtime/app/server/respond.js"
+    },
+    "./internal": "./src/runtime/internal/server.js"
+  }
+}
+```
+
+```javascript
+// 单文件 named export
+export { render } from './render';
+export { respond } from './respond';
+export { getRequestEvent } from './event';
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `sideEffects: false` | package.json | tree-shake 标记 |
+| `exports` | 单独路径 | 控制入口 |
+| `module` | ESM only | 静态分析 |
+| `external` | vite | 框架代码不打进 bundle |
+| `alias` | `$app/*` | 用户代码入口 |
+
+**最佳实践**：
+1. ✅ `sideEffects: false` 让打包器放心 tree-shake
+2. ✅ 每个 helper 单文件——编译产物按需 import
+3. ✅ `package.json#exports` 限定入口——避免深层路径
+4. ✅ Vite `ssr.noExternal` / `external` 控制是否打包
+5. ✅ 框架代码永远走 external——用户项目自己打包
+
+---
+
+### 14. HMR 增量更新（sync.update）
+
+**问题场景**：
+Vite HMR 在单文件改动时要重新跑 sync——但全量 `sync.create()` 要 100+ ms。Vite watch 模式有"单文件改动"vs"整批改动"两种触发，需要 4 个函数对应 4 种场景。
+
+**解决方案**：
+
+```javascript
+// packages/kit/src/core/sync/sync.js
+// 1) 启动时跑 init（写 tsconfig + ambient）
+export async function init() {
+  await write_tsconfig();
+  await write_ambient();
+}
+
+// 2) 全量 sync（启动时 + 整批改动时）
+export async function create() {
+  // 扫所有文件 → 写 client manifest + server + types
+}
+
+// 3) 增量 sync（单文件改动）
+export async function update(file_path) {
+  // 只分析受影响文件 → 增量重写 types
+  const affected = await node_analyser(file_path);
+  await write_types_for(affected);
+}
+
+// 4) all：全量 + types
+export async function all() {
+  await init();
+  await create();
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `init()` | 配置/模式变化 | 不依赖文件 |
+| `create()` | 启动/整批 | 全量 |
+| `update(file)` | 单文件 | 增量 |
+| `all()` | 串行包装 | 全量+types |
+| `node_analyser` | diff | 受影响节点 |
+
+**最佳实践**：
+1. ✅ 4 个函数对应 4 种触发场景——HMR 路径只跑必要步骤
+2. ✅ `node_analyser` 做 diff——只重写受影响 types
+3. ✅ Vite watch 模式触发 update——单文件 < 50ms
+4. ✅ 启动时跑 all——保证 SSOT
+5. ✅ 大项目 `update` 比 `create` 快 5-10x
+
+---
+
+### 15. Form Actions（不离开页面提交）
+
+**问题场景**：
+SvelteKit 的 Form Actions 让你"不离开页面就能提交表单"——比传统 form submit 体验好。背后是"标准 form + 增强脚本"双轨：JS 加载后拦截提交，JS 失败回退到标准 form。
+
+**解决方案**：
+
+```svelte
+<!-- +page.svelte -->
+<form method="POST" action="?/create" use:enhance>
+  <input name="title" />
+  <button>Create</button>
+</form>
+```
+
+```javascript
+// packages/kit/src/runtime/app/forms.js
+export function enhance(form_element, submit = () => {}) {
+  form_element.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    // 1) 拦截 + fetch
+    const form_data = new FormData(form_element);
+    const response = await fetch(form_element.action, {
+      method: 'POST',
+      body: form_data
+    });
+    // 2) 处理响应
+    if (response.ok) {
+      // invalidate() 触发 load 重新跑
+      await invalidateAll();
+    } else {
+      // 错误显示
+    }
+  });
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `method="POST"` | form | 提交方法 |
+| `action="?/create"` | URL | 路由 action |
+| `use:enhance` | Svelte action | 增强脚本 |
+| `invalidateAll()` | function | 重跑 load |
+| `formData` | FormData | 表单数据 |
+
+**最佳实践**：
+1. ✅ `use:enhance` 渐进增强——JS 失败回退到标准 form
+2. ✅ `?/create` URL 区分 action——同路由多 action
+3. ✅ `invalidateAll()` 触发 load 重跑——SPA 体验
+4. ✅ FormData 自动序列化——不用手写
+5. ✅ 服务端用 `actions = { create: async ({ request }) => {} }` 接收
+
+---
+
+## 四、工程实践
+
+### 16. 跨平台 E2E（每 adapter 真机）
+
+**问题场景**：
+SvelteKit 的 6 个 adapter 各自部署到不同平台——如果只在 CI 跑单测，会遗漏"只在 Vercel 出现的 SSR 函数超时"这种问题。需要每个 adapter 跑真机 E2E。
+
+**解决方案**：
+
+```yaml
+# .github/workflows/platform-tests-all.yml
+name: Platform Tests
+on: { pull_request: { paths: ['packages/kit/**', 'packages/adapter-*/**'] } }
+jobs:
+  vercel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pnpm install
+      - run: pnpm build
+      - name: Deploy to Vercel
+        run: vercel deploy --prebuilt
+        env: { VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }} }
+      - name: Run E2E
+        run: playwright test tests/e2e/vercel
+
+  cloudflare:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm install
+      - run: pnpm build
+      - name: Deploy to Cloudflare
+        run: wrangler pages deploy build
+      - run: playwright test tests/e2e/cloudflare
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `vercel deploy --prebuilt` | CLI | 真部署 |
+| `wrangler pages deploy` | Cloudflare | 真部署 |
+| `playwright test` | E2E | 跨平台验证 |
+| `secrets` | 加密 | 平台 token |
+| `timeout` | 30min | adapter 部署 |
+
+**最佳实践**：
+1. ✅ 每个 adapter 跑真机 E2E——CI 抓"平台特定 bug"
+2. ✅ 用平台 CLI 真部署——`vercel` / `wrangler` / `netlify`
+3. ✅ Playwright 跑跨平台浏览器——一致体验
+4. ✅ 平台 token 走 GitHub Secrets——加密
+5. ✅ 复刻成本高的原因——必须真机验证
+
+---
+
+### 17. OpenTelemetry 可选集成
+
+**问题场景**：
+SvelteKit 集成 OpenTelemetry 给可观测性——但 OpenTelemetry 是 10+ MB 的依赖，强加给用户不合理。需要"条件 import + 标记为 optional"。
+
+**解决方案**：
+
+```json
+// packages/kit/package.json
+{
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": { "optional": true }
+  }
+}
+```
+
+```javascript
+// packages/kit/src/runtime/telemetry/otel.js
+let otel_api = null;
+try {
+  otel_api = await import('@opentelemetry/api');
+} catch {
+  // OpenTelemetry 未安装——降级
+}
+
+export function getTracer(name) {
+  if (!otel_api) {
+    // 返回 noop tracer
+    return {
+      startSpan: () => ({
+        setAttribute: () => {},
+        end: () => {},
+        recordException: () => {}
+      })
+    };
+  }
+  return otel_api.trace.getTracer(name);
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `peerDependencies` | `@opentelemetry/api` | 软依赖 |
+| `optional: true` | peer dep | 不强加 |
+| `try/import` | 动态 | 降级 |
+| `noop tracer` | fallback | 不装不报错 |
+| `telemetry/otel.js` | conditional | 单独文件 |
+
+**最佳实践**：
+1. ✅ `peerDependenciesMeta.optional: true` 标记软依赖
+2. ✅ 动态 import——不装不报错
+3. ✅ 提供 noop fallback——无 OTel 也能跑
+4. ✅ 用户主动 `pnpm add @opentelemetry/api` 启用
+5. ✅ 不绑架用户——框架不该强制可观测方案
+
+---
+
+### 18. CSRF + CSP 防护
+
+**问题场景**：
+SvelteKit 默认安全：prod 模式强制 CSRF 同源检查、内置 CSP 头。但 dev 模式为了 HMR 便利不强制——开发期间允许跨源。需要在框架层把"安全策略"声明化。
+
+**解决方案**：
+
+```javascript
+// packages/kit/src/runtime/server/respond.js
+if (!DEV) {
+  // CSRF 防护：检查 Origin 头
+  const origin = request.headers.get('Origin');
+  const csrf_ok = origin === url.origin;
+  if (!csrf_ok) return new Response('Forbidden', { status: 403 });
+}
+
+// packages/kit/src/runtime/server/page/csp.js
+export function csp(config, request) {
+  const policy = {
+    'default-src': ["'self'"],
+    'script-src': ["'self'", "'unsafe-inline'"],
+    'style-src': ["'self'", "'unsafe-inline'"],
+    'img-src': ["'self'", 'data:', 'https:'],
+    'connect-src': ["'self'", 'https://api.example.com'],
+    'object-src': ["'none'"],
+    'base-uri': ["'self'"],
+    'frame-ancestors': ["'none'"]
+  };
+  return Object.entries(policy)
+    .map(([key, values]) => `${key} ${values.join(' ')}`)
+    .join('; ');
+}
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `Origin` | same as url.origin | CSRF 检查 |
+| `csp()` | function | CSP 策略 |
+| `frame-ancestors` | 'none' | 防 clickjacking |
+| `unsafe-inline` | 慎用 | Svelte 编译产物需要 |
+| `nonce` | per request | 严格 CSP |
+
+**最佳实践**：
+1. ✅ Prod 模式强制 CSRF——dev 模式不强制
+2. ✅ CSP 在 svelte.config.js 集中配置——不散在页面
+3. ✅ `frame-ancestors: 'none'` 防 clickjacking
+4. ✅ `connect-src` 显式列 API——不开放
+5. ✅ 严格 CSP 用 nonce——避免 `'unsafe-inline'`
+
+---
+
+### 19. Changesets 语义化发版
+
+**问题场景**：
+SvelteKit 是 monorepo，多包各自版本——手动维护 CHANGELOG 容易漏。Changesets 工具：开发者写 changeset → bot 自动开 PR → 合并自动发版。
+
+**解决方案**：
+
+```bash
+# 添加 changeset
+pnpm changeset
+
+# → 选择包
+#   @sveltejs/kit (2.61.0 → 2.61.1)
+# → bump 类型
+#   patch (2.61.0 → 2.61.1)
+# → 写 changelog
+```
+
+```markdown
+<!-- .changeset/cool-feature.md -->
+---
+'@sveltejs/kit': minor
+---
+
+Add `?/create` form action syntax
+```
+
+```bash
+# CI 跑
+pnpm changeset version   # 合并 PR 时：升 package.json + 生成 CHANGELOG
+pnpm changeset publish    # tag push 时：发 npm
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `.changeset/*.md` | 变更说明 | 临时 |
+| `pnpm changeset version` | 合并 PR 时 | 升版本 |
+| `pnpm changeset publish` | tag push 时 | 发版 |
+| `bump type` | patch/minor/major | 语义化 |
+| `GitHub Action` | changesets/action | 自动化 |
+
+**最佳实践**：
+1. ✅ 开发者写 changeset——bot 自动开 PR
+2. ✅ `pnpm changeset version` 合并 PR 时跑——升版本
+3. ✅ `pnpm changeset publish` tag push 时跑——发版
+4. ✅ changesets/action GitHub App——无需自建 CI
+5. ✅ patch/minor/major 严格——语义化版本
+
+---
+
+### 20. monorepo 工作区（pnpm）
+
+**问题场景**：
+SvelteKit monorepo 有 kit + 6 adapters + enhanced-img + package——共享 TypeScript 配置、test fixtures。pnpm 比 yarn/npm 节省 50% 磁盘，符号链接 store。
+
+**解决方案**：
+
+```json
+// package.json
+{
+  "private": true,
+  "packageManager": "pnpm@9.0.0",
+  "workspaces": [
+    "packages/*",
+    "documentation"
+  ]
+}
+```
+
+```bash
+# 常用命令
+pnpm install                          # 装所有包
+pnpm --filter @sveltejs/kit test     # 只跑 kit 包的测试
+pnpm --filter @sveltejs/kit build    # 只 build kit
+pnpm -r run test                      # 所有包跑测试
+```
+
+**关键参数**：
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `pnpm version` | 9.0.0 | 当前版本 |
+| `workspaces` | packages/* | monorepo 范围 |
+| `--filter` | package name | 只对某包 |
+| `-r` | recursive | 全部包 |
+| `pnpm test` | vitest | 测试入口 |
+
+**最佳实践**：
+1. ✅ pnpm 比 yarn/npm 节省 50% 磁盘——硬链接 store
+2. ✅ `--filter` 只跑某包——CI 提速
+3. ✅ `workspaces` 范围明确——避免扫到无关注目录
+4. ✅ `packageManager` 字段固定版本——团队一致
+5. ✅ 跨包依赖用 workspace: protocol——版本一致
+
+---
+
+**标签**：#sveltekit #meta-framework #vite #ssr #adapter
+**状态**：20/20 份详细内容
