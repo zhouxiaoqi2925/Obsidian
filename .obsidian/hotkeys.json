@@ -1,0 +1,12 @@
+{
+  "deepseek-plugin:deepseek-generate": "Ctrl+Shift+G",
+  "deepseek-plugin:deepseek-summarize": "Ctrl+Shift+D",
+  "deepseek-plugin:deepseek-improve": "Ctrl+Shift+R",
+  "deepseek-plugin:deepseek-organize": "Ctrl+Shift+O",
+  "deepseek-plugin:deepseek-wiki-create": "Ctrl+Shift+W",
+  "deepseek-plugin:deepseek-wiki-link": "Ctrl+Shift+L",
+  "deepseek-plugin:deepseek-wiki-categorize": "",
+  "deepseek-plugin:deepseek-wiki-index": "",
+  "deepseek-plugin:deepseek-mindmap-from-note": "Ctrl+Shift+M",
+  "obsidian-enhancing-mindmap:toggle": ""
+}

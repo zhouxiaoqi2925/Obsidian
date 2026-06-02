@@ -1,0 +1,10 @@
+{
+	"id": "deepseek-gen",
+	"name": "DeepSeek Generator",
+	"version": "1.0.0",
+	"minAppVersion": "1.0.0",
+	"description": "使用 DeepSeek AI 在 Obsidian 中生成和整理笔记内容",
+	"author": "Claude Code",
+	"authorUrl": "",
+	"isDesktopOnly": false
+}
