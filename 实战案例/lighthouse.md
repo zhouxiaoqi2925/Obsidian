@@ -1,4 +1,4 @@
-# lighthouse - 自动化 Web 质量审计
+# lighthouse - 自动化 Web 质量审计：Gather/Audit 两阶段 + log-normal 评分 + lhci 持续监控
 
 **GitHub**: GoogleChrome/lighthouse
 **Star**: 30k+
@@ -6,11 +6,18 @@
 **主题**: web-vitals / performance / accessibility / seo / auditing
 **适用场景**: Web 性能审计 / CI 质量门禁 / Core Web Vitals 监控 / SEO 检测 / 无障碍检查
 
----
+```
+core/gather/         # Gatherer 采集器
+core/audits/         # Audit 审计器
+core/computed/       # ComputedArtifact 派生缓存
+core/config/         # 默认 config + 维度配置
+core/runner.js       # 任务调度入口
+clients/             # CLI / Node API / Report
+```
 
 ## 第一段：基础范式
 
-### 模式 1 - Gather/Audit 两阶段
+### 模式 1：Gather/Audit 两阶段
 
 **问题场景**：单次浏览器跑几十种检查（性能/可访问性/SEO），如果每个检查都启一次浏览器太慢。
 
@@ -25,7 +32,9 @@
 
 **最佳实践**：自定义 gatherer 写 `class MyGatherer extends Gatherer` + `startInstrumentation / gather / stopInstrumentation` 三钩子；自定义 audit 走 `class MyAudit extends Audit` + `audit(artifacts)`；artifacts 通过 gatherer 收集统一消费。
 
-### 模式 2 - Puppeteer-Core Driver 浏览器
+---
+
+### 模式 2：Puppeteer-Core Driver 浏览器
 
 **问题场景**：Lighthouse 要驱动 Chrome 拿 trace + network + metrics，但 Chrome DevTools Protocol（CDP）调用复杂。
 
@@ -40,7 +49,9 @@
 
 **最佳实践**：Lighthouse CI 用 `chrome-launcher` 启 Chrome；自定义 driver 写 `ChromeProtocolSession` 包装；DevTools Protocol 协议升级 v1.3；`disableStorageReset: true` 保持登录态。
 
-### 模式 3 - ComputedArtifact 缓存
+---
+
+### 模式 3：ComputedArtifact 缓存
 
 **问题场景**：100 个 audit 都要算"页面所有 link 列表"，每个 audit 重算一次浪费。
 
@@ -55,7 +66,9 @@
 
 **最佳实践**：自定义 gatherer 收集原始数据；自定义 audit 走 `artifacts` 读 computed；computed 缓存走 module-level Map；调试时用 `lighthouse --view` 看 trace。
 
-### 模式 4 - Lighthouse Runner 任务调度
+---
+
+### 模式 4：Lighthouse Runner 任务调度
 
 **问题场景**：CI 跑 100 个 URL 审计，怎么调度并发 + 超时 + 错误恢复。
 
@@ -70,7 +83,9 @@
 
 **最佳实践**：CI 用 `lhci collect --url=...` 跑 + `lhci upload` 存 + `lhci assert` 门禁；并发 5 + 每 URL 60s 超时；错误 URL 重试 3 次；`chrome-flags="--headless"` 无头。
 
-### 模式 5 - 5 维度评分（Performance/A11y/SEO/BP/PWA）
+---
+
+### 模式 5：5 维度评分（Performance/A11y/SEO/BP/PWA）
 
 **问题场景**：用户要"页面质量分数"，单一指标难表达。
 
@@ -89,7 +104,7 @@
 
 ## 第二段：扩展范式
 
-### 模式 6 - Lighthouse Config 配置
+### 模式 6：Lighthouse Config 配置
 
 **问题场景**：业务要定制审计维度（只审计性能 + 特定规则集）。
 
@@ -104,7 +119,9 @@
 
 **最佳实践**：内部用 config 锁定审计集（CI 一致性）；`extends: 'lighthouse:default'` + `skipAudits` 微调；`lighthouse --config-path=custom.js url` 自定义；`desktop-config.js` vs `mobile-config.js` 切换设备。
 
-### 模式 7 - Lighthouse Plugin 插件
+---
+
+### 模式 7：Lighthouse Plugin 插件
 
 **问题场景**：业务要"审计内部框架特定问题"（React 性能、Vue 路由等）。
 
@@ -119,7 +136,9 @@
 
 **最佳实践**：内部审计写 `lighthouse-plugin-internal` 子包；插件配 `category: { id: 'lighthouse-internal', title: '内部审计' }`；`lighthouse --plugins` 加载多个；发布 npm 公开或内部 private。
 
-### 模式 8 - 移动 vs 桌面 模拟
+---
+
+### 模式 8：移动 vs 桌面 模拟
 
 **问题场景**：移动/桌面用户得分差异大（移动算力低），CI 跑哪个？
 
@@ -134,7 +153,9 @@
 
 **最佳实践**：CI **必**跑移动（Core Web Vitals 默认移动）；桌面 1 个 + 移动 3 个抽样 URL；`screenEmulation.disabled: false` 真实模拟视口；`throttling.cpuSlowdownMultiplier: 4` 模拟低端机。
 
-### 模式 9 - Trace + 性能分析
+---
+
+### 模式 9：Trace + 性能分析
 
 **问题场景**：Performance 分数低，要定位是 LCP 长 / TBT 高 / CLS 飘。
 
@@ -149,7 +170,9 @@
 
 **最佳实践**：分数低时**先**看 trace 定位；`lighthouse --view` 看完整报告；trace JSON 大（10MB+）存 S3；用 `speedline` 算 Speed Index；长任务 > 50ms 拆解。
 
-### 模式 10 - lighthouse-ci + 持续监控
+---
+
+### 模式 10：lighthouse-ci + 持续监控
 
 **问题场景**：上线后性能回归怎么监控？CI 怎么阻断 PR 引入低分？
 
@@ -168,7 +191,7 @@
 
 ## 第三段：进阶范式
 
-### 模式 11 - log-normal 评分（对数正态分布）
+### 模式 11：log-normal 评分（对数正态分布）
 
 **问题场景**：FCP 1.5s 和 3.0s 体验差 10 倍，但分数差异要"非线性"映射。
 
@@ -183,7 +206,9 @@
 
 **最佳实践**：理解 `metric.Score` 计算公式 = `logNormalCDF(value, median, p10ToP90Ratio)`；FCP P50=1.6s P10=0.8s；LCP P50=2.5s P10=1.2s；CLS P50=0.1 P10=0.01；TBT P50=200ms P10=100ms。
 
-### 模式 12 - 评分加权（Category Weights）
+---
+
+### 模式 12：评分加权（Category Weights）
 
 **问题场景**：5 维度等权不合理（性能应该更重要）。
 
@@ -198,7 +223,9 @@
 
 **最佳实践**：电商业务 Performance 权重提到 8；A11y 业务 Accessibility 权重 8；`PWA: 0` 不用 PWA 关掉；自定义 category 配 `weight: 2` 加分；权重之和**不必**等于 1（归一化在计算时除以权重总和）。
 
-### 模式 13 - Web Vitals 三件套
+---
+
+### 模式 13：Web Vitals 三件套
 
 **问题场景**：Google 2020+ 主推 Core Web Vitals（LCP/FID/CLS），FID 后被 INP 替代。
 
@@ -213,7 +240,9 @@
 
 **最佳实践**：监控 75 百分位数（P75）**不要**平均值；INP 替代 FID（Lighthouse 10+）；Web Vitals 上报到 GA4 / Sentry；LCP 元素配 `<link rel="preload">`；CLS 配 `width/height` 防图片位移。
 
-### 模式 14 - audit `details` + 优化建议
+---
+
+### 模式 14：audit `details` + 优化建议
 
 **问题场景**：分数低用户不知道怎么优化。
 
@@ -228,7 +257,9 @@
 
 **最佳实践**：自定义 audit **必**填 `details` 给可执行建议；`scoreDisplayMode: 'metricSavings'` 显示节省；`opportunity` 配 `displayValue` 用户友好；`displayValue: 'Potential savings of 1,200 ms'`。
 
-### 模式 15 - 完整 artifacts 协议
+---
+
+### 模式 15：完整 artifacts 协议
 
 **问题场景**：自定义 gatherer 收集什么数据？自定义 audit 怎么消费？
 
@@ -247,11 +278,22 @@
 
 ## 第四段：实战范式
 
-### 模式 16 - smoke test 10 行验证
+### 模式 16：smoke test 10 行验证
 
 **问题场景**：装好 lighthouse 验证能否跑通基础审计。
 
-**解决方案**：10 行 smoke test：```js const lighthouse = require('lighthouse').default; (async () => { const result = await lighthouse('https://example.com', { port: 9222, output: 'json', logLevel: 'error' }); console.log('Performance:', result.lhr.categories.performance.score * 100); console.log('LCP:', result.lhr.audits['largest-contentful-paint'].displayValue); })(); ``` 期望：example.com Performance 95+ / LCP 0.6s 左右。
+**解决方案**：10 行 smoke test：
+```js
+const lighthouse = require('lighthouse').default;
+(async () => {
+  const result = await lighthouse('https://example.com', {
+    port: 9222, output: 'json', logLevel: 'error'
+  });
+  console.log('Performance:', result.lhr.categories.performance.score * 100);
+  console.log('LCP:', result.lhr.audits['largest-contentful-paint'].displayValue);
+})();
+```
+期望：example.com Performance 95+ / LCP 0.6s 左右。
 
 **关键参数**：
 - 10 行核心验证
@@ -262,7 +304,9 @@
 
 **最佳实践**：新装 lighthouse 用 10 行 smoke test 验证"启动 Chrome + 跑 audit + 读 score"三件套；`logLevel: 'error'` 静默；测试本地 `http://localhost:3000`；CI 跑 example.com 校准。
 
-### 模式 17 - GitHub Actions 集成
+---
+
+### 模式 17：GitHub Actions 集成
 
 **问题场景**：PR 触发 Lighthouse 跑 + 阻断低分 + 上传报告。
 
@@ -277,7 +321,9 @@
 
 **最佳实践**：用 staging URL **不要**生产（避免 SEO 命中）；`assert.assertMatrix: 'lighthouse:default'` 跑默认；`budget.json` 配硬性指标；`if: github.event_name == 'pull_request'` 限定 PR；报告评论到 PR。
 
-### 模式 18 - 监控 + 趋势分析
+---
+
+### 模式 18：监控 + 趋势分析
 
 **问题场景**：性能随时间漂移（依赖升级、流量变化），单次分数不够。
 
@@ -292,7 +338,9 @@
 
 **最佳实践**：每日定时 cron 跑；分数趋势告警 7 天平均 < 阈值；CSV 入 BigQuery / ClickHouse；`@unlighthouse/cli` 整站扫描发现长尾问题；配合 Sentry 性能告警。
 
-### 模式 19 - vs WebPageTest / PageSpeed Insights 选型
+---
+
+### 模式 19：vs WebPageTest / PageSpeed Insights 选型
 
 **问题场景**：3 个 Web 性能工具（Lighthouse / WebPageTest / PageSpeed Insights）。
 
@@ -307,7 +355,9 @@
 
 **最佳实践**：CI 自动化**用** Lighthouse（API + 集成）；生产监控**用** PageSpeed Insights（CrUX 真实用户数据）；深度分析**用** WebPageTest（视频 + 多地点）；3 工具结合最全面。
 
-### 模式 20 - 7 天复刻 mini-lighthouse
+---
+
+### 模式 20：7 天复刻 mini-lighthouse
 
 **问题场景**：学习用，想搭一个简化版 Lighthouse 理解核心。
 
@@ -321,3 +371,48 @@
 - 7 天最小可用
 
 **最佳实践**：复刻 Lighthouse 先求"最小可跑内核"再迭代；7 天只够做 60% 场景的简化版；**完整 5 维度 + 100+ audits + log-normal + 报告需要 3 个月+**；适用任何"性能审计学习"。
+
+---
+
+## 关键代码段
+
+```js
+// 10 行 smoke test - 启动 Chrome + 跑 audit + 读 score
+const lighthouse = require('lighthouse').default;
+(async () => {
+  const result = await lighthouse('https://example.com', {
+    port: 9222, output: 'json', logLevel: 'error',
+    onlyCategories: ['performance']
+  });
+  const lhr = result.lhr;
+  console.log('Performance:', lhr.categories.performance.score * 100);
+  console.log('LCP:', lhr.audits['largest-contentful-paint'].displayValue);
+  console.log('CLS:', lhr.audits['cumulative-layout-shift'].displayValue);
+})();
+
+// lighthouserc.js - CI 门禁配置
+module.exports = {
+  ci: {
+    collect: { url: ['https://staging.example.com/'], numberOfRuns: 3 },
+    assert: {
+      assertions: {
+        'categories:performance': ['error', { minScore: 0.9 }],
+        'categories:accessibility': ['error', { minScore: 0.95 }]
+      }
+    },
+    upload: { target: 'lhci' }
+  }
+};
+```
+
+## 必偷 3 件
+
+1. **Gather/Audit 两阶段架构**：一采集多审计，速度快 10x；自定义 gatherer 3 钩子（`startInstrumentation / gather / stopInstrumentation`）；自定义 audit 走 `audit(artifacts)`。
+2. **log-normal 评分 + 维度加权**：`logNormalCDF(value, median, p10ToP90Ratio)` 非线性映射；自定义权重覆盖默认；P75 而非平均值监控。
+3. **lighthouse-ci 三件套**：`lhci collect/upload/assert` + `treosh/lighthouse-ci-action@v10` + staging URL 防 SEO 命中；`assertions` 比 `minScore` 更细。
+
+## 必避 3 坑
+
+1. **不要在生产环境跑 Lighthouse CI**——会被 Google 索引；用 staging URL；`temporaryPublicStorage: true` 临时公开报告。
+2. **不要在自定义 audit 里用 `driver`**——审计阶段浏览器已断；走 `artifacts` 读 compute 后的数据；`@getArtifact` 缓存。
+3. **不要监控分数平均值**——平均被极端值拉偏；用 P75 百分位；INP 已替代 FID（Lighthouse 10+）；7 天平均告警比单次阈值稳定。

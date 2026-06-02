@@ -1,4 +1,4 @@
-# linux - 通用 Linux 命令手册
+# linux - 通用 Linux 命令手册：FD 一切皆文件 + fork/exec 进程模型 + systemd 服务管理
 
 **GitHub**: torvalds/linux
 **Star**: 185k+
@@ -6,11 +6,17 @@
 **主题**: 操作系统 / 命令行 / Shell / 工具生态
 **适用场景**: Linux 系统运维 / 服务器管理 / DevOps / 嵌入式开发 / 云原生
 
----
+```
+/usr/bin/         # 用户命令（ls/cd/cp/mv/grep）
+/etc/             # 系统配置（systemd/network/sudoers）
+/proc/<pid>/      # 进程信息（fd/status/maps）
+/var/log/         # 日志（syslog/auth.log/journal）
+/lib/systemd/     # systemd 单元（PID 1 总管）
+```
 
 ## 第一段：基础范式
 
-### 模式 1 - 文件描述符 + 一切皆文件
+### 模式 1：文件描述符 + 一切皆文件
 
 **问题场景**：进程要读写文件、socket、pipe、device，传统 API 每种资源一套接口。
 
@@ -25,7 +31,9 @@
 
 **最佳实践**：进程 FD 泄漏 `lsof -p PID | wc -l` 监控；`ulimit -n 65535` 提高 FD 上限；网络服务用 `epoll` 而**不是** `select`；`strace -p PID -e trace=open,close` 跟踪 FD 操作。
 
-### 模式 2 - 进程模型 fork + exec
+---
+
+### 模式 2：进程模型 fork + exec
 
 **问题场景**：进程要"启动新程序"或者"复制自己"做并发，传统单进程难扩展。
 
@@ -40,7 +48,9 @@
 
 **最佳实践**：进程创建**总是** `fork+exec`；用 `posix_spawn` 替代 `fork+exec`（更安全）；`waitpid` 防僵尸；`prctl(PR_SET_PDEATHSIG)` 父死通知；线程用 `pthread_create` 而**不是** `clone`。
 
-### 模式 3 - 信号机制（kill -9 的原理）
+---
+
+### 模式 3：信号机制（kill -9 的原理）
 
 **问题场景**：进程要"通知其他进程"做某事（reload / 退出 / 调试）。
 
@@ -55,7 +65,9 @@
 
 **最佳实践**：优雅退出**用** SIGTERM（让进程清理）**不要** SIGKILL（强杀丢数据）；reload 走 SIGUSR1（Nginx/Apache 标准）；子进程退出发 SIGCHLD；`trap '...' SIGTERM` 在 Shell 脚本里注册清理；调试用 `gdb handle SIGUSR1 nostop noprint`。
 
-### 模式 4 - 管道 + 重定向（Pipe / Redirection）
+---
+
+### 模式 4：管道 + 重定向（Pipe / Redirection）
 
 **问题场景**：命令要"前一个输出给后一个输入"或者"输出到文件"。
 
@@ -70,7 +82,9 @@
 
 **最佳实践**：`cmd 2>&1 | tee log.txt` 同时看 + 存；`xargs -I{} cmd {}` 占位符；`mkfifo` 命名管道；`/dev/stdin` / `/dev/stdout` 显式；Shell 脚本**总是** `set -euo pipefail` 严格模式。
 
-### 模式 5 - 文件权限 + 用户组（rwx + chmod）
+---
+
+### 模式 5：文件权限 + 用户组（rwx + chmod）
 
 **问题场景**：多用户系统要"谁能读/写/执行"哪个文件。
 
@@ -89,7 +103,7 @@
 
 ## 第二段：扩展范式
 
-### 模式 6 - 包管理（apt / yum / dnf / pacman）
+### 模式 6：包管理（apt / yum / dnf / pacman）
 
 **问题场景**：Linux 装软件要从源码 make install，依赖地狱难维护。
 
@@ -104,7 +118,9 @@
 
 **最佳实践**：装软件**总是**走包管理**不要**源码编译（升级难）；`apt update` 必在 install 前；`apt-mark hold package` 锁版本不升级；`/etc/apt/sources.list` 配清华/阿里源加速；容器用 `apk add --no-cache` 减小镜像。
 
-### 模式 7 - systemd 服务管理
+---
+
+### 模式 7：systemd 服务管理
 
 **问题场景**：服务器要"开机自启 + 失败重启 + 日志收集 + 进程管理"。
 
@@ -119,7 +135,9 @@
 
 **最佳实践**：自写服务放 `/etc/systemd/system/myapp.service` + `systemctl daemon-reload` 重新加载；`Restart=always` 自动重启；`User=nobody` 不用 root；`EnvironmentFile=/etc/myapp.env` 配环境变量；`journalctl -u myapp -f` 跟日志。
 
-### 模式 8 - iptables / nftables 防火墙
+---
+
+### 模式 8：iptables / nftables 防火墙
 
 **问题场景**：服务器要"允许 SSH / 拒绝其他 / 转发 80 到后端"。
 
@@ -134,7 +152,9 @@
 
 **最佳实践**：服务器先 `ufw default deny incoming` + `ufw allow ssh/http/https` 显式开放；生产用 `nftables` 而**不是** `iptables`（更现代）；`iptables -L -n -v` 看规则命中数；`iptables-save > /etc/iptables.rules` 持久化；容器用 `iptables -t nat` 配端口映射。
 
-### 模式 9 - cron / systemd-timer 定时任务
+---
+
+### 模式 9：cron / systemd-timer 定时任务
 
 **问题场景**：业务要"每天 3 点备份 / 每 5 分钟同步 / 每月清理日志"。
 
@@ -149,7 +169,9 @@
 
 **最佳实践**：脚本**总是** `set -euo pipefail` + 显式路径 `/usr/bin/python3`；`MAILTO=""` 不发邮件；`flock` 防并发；任务重于 1 分钟用 `systemd-timer`；`run-parts /etc/cron.daily` 跑目录脚本。
 
-### 模式 10 - SSH 远程登录 + 密钥认证
+---
+
+### 模式 10：SSH 远程登录 + 密钥认证
 
 **问题场景**：服务器运维要"远程登录 + 执行命令 + 传文件"。
 
@@ -168,7 +190,7 @@
 
 ## 第三段：进阶范式
 
-### 模式 11 - 进程监控 + 性能分析（top / htop / perf）
+### 模式 11：进程监控 + 性能分析（top / htop / perf）
 
 **问题场景**：CPU 飙高 / 内存泄漏 / IO 抖动，要定位是哪个进程 / 哪个函数。
 
@@ -183,7 +205,9 @@
 
 **最佳实践**：CPU 高 `perf top` 抓函数；IO 慢 `iotop` 看进程；内存泄漏 `ps -o rss` 趋势；`htop` 比 top 直观；`pidstat -p PID 1` 周期采样；`perf record -g -F 99` + `perf report` 全栈火焰图。
 
-### 模式 12 - 文件系统 + mount
+---
+
+### 模式 12：文件系统 + mount
 
 **问题场景**：硬盘 / U 盘 / NFS / iSCSI 怎么挂载到目录使用。
 
@@ -198,7 +222,9 @@
 
 **最佳实践**：`/etc/fstab` 用 UUID 而**不是** `/dev/sda1`（设备名会变）；`mount -o noexec,nosuid` 不可执行 U 盘；`/mnt` / `/media` 临时挂；`mount --bind` 目录挂目录；`umount -l` 懒卸载；`fstrim` SSD 性能。
 
-### 模式 13 - 网络配置（ip / ss / tcpdump）
+---
+
+### 模式 13：网络配置（ip / ss / tcpdump）
 
 **问题场景**：服务器要"配 IP / 路由 / DNS / 防火墙"和"诊断网络问题"。
 
@@ -213,7 +239,9 @@
 
 **最佳实践**：**用** `ip` 而**不是** `ifconfig`（已废弃）；`ss -tunap` 看连接更全；`tcpdump -w file.pcap` 存包给 Wireshark 离线分析；`mtr` 替代 `traceroute`；`netplan` YAML 配 Ubuntu；DNS 配 `/etc/resolv.conf nameserver 8.8.8.8`。
 
-### 模式 14 - 用户管理 + sudo
+---
+
+### 模式 14：用户管理 + sudo
 
 **问题场景**：多用户系统要"权限隔离 + 受控提权"。
 
@@ -228,7 +256,9 @@
 
 **最佳实践**：**不要**直接用 root，创建普通用户 + sudo 提权；`/etc/sudoers` 配 `user ALL=(ALL) NOPASSWD: ALL`；`visudo` 改 sudoers 防配置错；`sudo -l` 看权限；`chattr +i /etc/passwd` 防改；`fail2ban` 防 SSH 爆破。
 
-### 模式 15 - 日志系统（journald / rsyslog / logrotate）
+---
+
+### 模式 15：日志系统（journald / rsyslog / logrotate）
 
 **问题场景**：业务要"日志收集 + 持久化 + 轮转 + 集中查询"。
 
@@ -247,11 +277,17 @@
 
 ## 第四段：实战范式
 
-### 模式 16 - smoke test 10 行验证
+### 模式 16：smoke test 10 行验证
 
 **问题场景**：新装 Linux 服务器验证环境是否就位。
 
-**解决方案**：10 行 smoke test 验证 5 件套：```bash uname -a && cat /etc/os-release && df -h | head -3 && free -h && nproc && ip addr | grep "inet " | head -3 && ss -tunap | head -3 && which curl git python3 && date ``` 期望：内核版本、发行版、磁盘、内存、CPU 核数、IP、监听端口、命令、时区。
+**解决方案**：10 行 smoke test 验证 5 件套：
+```bash
+uname -a && cat /etc/os-release && df -h | head -3 && \
+free -h && nproc && ip addr | grep "inet " | head -3 && \
+ss -tunap | head -3 && which curl git python3 && date
+```
+期望：内核版本、发行版、磁盘、内存、CPU 核数、IP、监听端口、命令、时区。
 
 **关键参数**：
 - 10 行核心验证
@@ -262,7 +298,9 @@
 
 **最佳实践**：新机器**总是** 5-10 行 smoke test 验证"内核 + 发行版 + 资源 + 网络 + 工具"五件套；远程机器先 `ping` 再 `ssh`；CI 容器跑 smoke test 验环境；配 `MOTD` 登录显示。
 
-### 模式 17 - 故障排查 Runbook
+---
+
+### 模式 17：故障排查 Runbook
 
 **问题场景**：线上服务挂了，运维要按步骤排查。
 
@@ -277,7 +315,9 @@
 
 **最佳实践**：Runbook 文档化放 wiki；告警触发**先**看监控指标（CPU/内存/IO/网络）；`journalctl -p err` 看错误日志；`strace -p PID` 跟踪卡住的进程；`perf record` 抓热点；`tcpdump -w` 抓包给 Wireshark 分析。
 
-### 模式 18 - 加固 + CIS Benchmark
+---
+
+### 模式 18：加固 + CIS Benchmark
 
 **问题场景**：服务器要过安全合规检查（金融/政府/医疗）。
 
@@ -292,7 +332,9 @@
 
 **最佳实践**：用 `lynis audit system` 自动审计；`fail2ban` 防爆破；`aide` 入侵检测；`/etc/ssh/sshd_config` 配 `PermitRootLogin no`；`/etc/pam.d/common-password` 配密码强度；`sysctl -p /etc/sysctl.conf` 加载内核加固。
 
-### 模式 19 - vs FreeBSD / macOS / WSL 选型
+---
+
+### 模式 19：vs FreeBSD / macOS / WSL 选型
 
 **问题场景**：4 个 Unix-like 系统（Linux / FreeBSD / macOS / WSL）选哪个。
 
@@ -307,7 +349,9 @@
 
 **最佳实践**：服务器/容器/嵌入式**用** Linux（Ubuntu LTS / CentOS / RHEL）；macOS 适合开发者本地；FreeBSD 适合网络设备 + 学术；WSL 适合 Windows 用户过渡到 Linux；**不要**生产用桌面系统。
 
-### 模式 20 - 7 天 Linux 基础学习
+---
+
+### 模式 20：7 天 Linux 基础学习
 
 **问题场景**：开发者零基础想入门 Linux 命令行。
 
@@ -321,3 +365,50 @@
 - 7 天基础
 
 **最佳实践**：用 `man <cmd>` 看手册；装一台 Linux 虚拟机（VirtualBox）或 WSL；`oh-my-zsh` 配 Shell 美化；**每天**实操 2 小时；目标是能 SSH + 装包 + 写脚本 + 排查故障；适用任何"Linux 入门"。
+
+---
+
+## 关键代码段
+
+```bash
+# smoke test 10 行 - 验证 5 件套
+uname -a && cat /etc/os-release && df -h | head -3 && \
+free -h && nproc && ip addr | grep "inet " | head -3 && \
+ss -tunap | head -3 && which curl git python3 && date
+
+# systemd 自定义 service
+# /etc/systemd/system/myapp.service
+[Unit]
+Description=MyApp
+After=network.target
+
+[Service]
+Type=simple
+User=nobody
+EnvironmentFile=/etc/myapp.env
+ExecStart=/usr/bin/python3 /opt/myapp/server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+
+# 防火墙默认 deny + 显式开放
+ufw default deny incoming
+ufw allow ssh
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw enable
+```
+
+## 必偷 3 件
+
+1. **FD 一切皆文件 + fork/exec 进程模型**：5 种 FD 统一 socket/pipe/device；`fork+exec` 是 Unix 标准进程创建；`posix_spawn` 替代（更安全）；`epoll` 而**不是** `select`。
+2. **systemd + journalctl + logrotate 三件套**：`.service` 单元文件配 `Restart=always` + `User=nobody`；`journalctl -u myapp -f` 跟日志；`logrotate daily rotate 7 compress` 自动切。
+3. **信号机制 + SSH ed25519 密钥**：优雅退出**用** SIGTERM **不要** SIGKILL；reload 走 SIGUSR1；**永远**用 ed25519 而**不是** RSA；`~/.ssh/config` 配别名 + 跳板机。
+
+## 必避 3 坑
+
+1. **不要直接用 root 登录 SSH**——安全大忌；创建普通用户 + `sudo` 提权；`/etc/ssh/sshd_config` 配 `PermitRootLogin no`；`fail2ban` 防爆破。
+2. **不要源码 make install 装软件**——升级难 + 依赖地狱；走包管理（apt/dnf/pacman）；`apt-mark hold package` 锁版本；容器用 `apk add --no-cache` 减体积。
+3. **不要用 `ifconfig` / `netstat`**——已废弃；用 `ip addr / ip route` + `ss -tunap`；`tcpdump -w file.pcap` 存包给 Wireshark 离线分析。
