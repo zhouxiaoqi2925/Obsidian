@@ -1,533 +1,301 @@
----
-title: elasticsearch-new
-type: search-engine
-lang: Java
-stars: 72000+
-date: 2026-06-02
-tags:
-  - 开源项目
-  - 搜索引擎
-  - 分布式系统
-  - Java
+# elasticsearch-new - 分布式搜索与分析引擎
+
+**GitHub**: elastic/elasticsearch
+**Star**: 72000+
+**语言**: Java
+**主题**: 搜索引擎 / 分布式系统
+**适用场景**: 全文搜索 / 聚合分析 / 向量检索 / 时序数据 / RAG 检索层
+
 ---
 
-# elasticsearch-new · 项目深度解析
-
-> 全球最流行的分布式搜索与分析引擎：把 Lucene 的全文检索能力 + 分布式协调 + REST API + 向量检索打包成一个"开箱即用"的近实时数据平台；**Stateless 模式**（把 shard 数据存到 S3/GCS 等对象存储）让 ES 迈入云原生时代。
-> 来源：G:\实战案例\GitHub顶尖项目\elasticsearch-new\
-
-## 写在前面：解析哲学
-
-**先骨架后血肉，先 What 后 Why，最后 How to steal。** Elasticsearch 是少数能"在 GitHub 公开完整构建系统、连内部打包脚本都开源"的企业级项目——这意味着你可以**完整地** build 出一个 72000+ Star 的搜索引擎。
-
-本文的特殊情况：本地仓库是**部分克隆**，缺少 `server/` / `libs/` / `modules/` / `x-pack/` / `plugins/` / `qa/` 等核心源码目录，仅有 `client/` / `distribution/` / `docs/` / `build-tools/` / `benchmarks/` 等支撑目录。我将**基于可见的 build 系统 + 文档**做一次**架构层 V3 解析**——重点是它的"构建系统三件套"和"Stateless 架构设计"。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone https://github.com/elastic/elasticsearch.git`（注意：仓库大，pack size 数百 MB）
-2. **分类**：search-engine / Java 17+ / Gradle composite build
-3. **问题清单**：
-   - 怎么用 Gradle composite build 协调 `build-conventions` / `build-tools` / `build-tools-internal`？
-   - 怎么从 `AGENTS.md` 看一个 10 万行 Java 项目的"目录契约"？
-   - **Stateless 模式**怎么把 shard 数据从本地磁盘迁到对象存储？
-4. **速查表**：源码主目录 `server/src/main/java/org/elasticsearch/`；测试主目录 `server/src/test/java/`；REST API 测试 `rest-api-spec/`
-5. **锁定 commit**：解析时使用 main 分支最新一次稳定提交（**注意**：本仓库本次为部分克隆，无法读到 server/）
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-| :--- | :--- |
-| **项目名** | Elasticsearch (v8.x/v9.x) |
-| **定位** | 分布式搜索 + 分析引擎 + 向量数据库，RAG/全文/日志/指标/APM 通用底座 |
-| **核心问题** | 用一个 API 同时支持"全文搜索 + 聚合分析 + 向量检索 + 时序数据"四类典型场景 |
-| **目标用户** | 大型企业搜索团队、SaaS 厂商、可观测性平台、AI 应用的 RAG 检索层 |
-| **商业模式** | SSPL + Elastic License 2.0（**禁止 SaaS 转售**）+ Elastic Cloud 订阅 + Platinum/Enterprise 功能商业化 |
-| **复刻难度** | 极高（10 年积累 + 数千 PR 难追 + 强商业绑定） |
-| **状态** | 活跃开发（v8/v9 双轨，月度 minor 版） |
-| **团队** | Elastic 公司 100+ 工程师全时投入 + 全球社区贡献 |
-| **里程碑** | 2010 起源于 Shay Banon 的 Compass 项目 → 2012 改名 Elasticsearch → 2015 v2.0 → 2018 v6.0 (序列 ID bug) → 2020 v7.0 (基本类型) → 2022 v8.0 (安全默认) → 2024 v8.10+ 引入 **Stateless** 模式 → 2025 v9.0 |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-ES 仓库把"构建系统当主程序"做——`build.gradle` 26KB 远超普通 Java 项目，因为它要协调 7+ 子项目 + 3 个 composite build。
-
-**点状解析**（基于 AGENTS.md 第 18-27 行的"目录契约"）：
-- `server/`：**核心 ES 服务**（~10 万行 Java，本地缺失）
-- `modules/`：默认装载的功能模块（reindex、lang-expression、analysis-* 等）
-- `plugins/`：官方支持的插件（analysis-icu、repository-s3、discovery-azure 等）
-- `libs/`：内部库（core、geo、tdigest、topo 等）
-- `qa/`：多版本兼容测试（`os`、`mixed-version`、`remote-clusters`）
-- `docs/`：Asciidoc 文档
-- `distribution/`：打包逻辑（DEB/RPM/Docker/IronBank/Cloud-ESS）
-- `x-pack/`：商业功能（ML、Security、SQL、ES|QL、Stateless）
-- `build-conventions` / `build-tools` / `build-tools-internal`：**三层 Gradle composite build**
-
-**思维导图**：
-
-```mermaid
-mindmap
-  root((Elasticsearch))
-    9 大子项目
-      server 核心服务
-      modules 默认模块
-      plugins 官方插件
-      libs 内部库
-      qa 多版本测试
-      docs Asciidoc
-      distribution 打包
-      x-pack 商业功能
-      client 客户端
-    3 层 build 系统
-      build-conventions 共享规约
-      build-tools 第三方插件
-      build-tools-internal 内部插件
-    8+ 客户端
-      Java High Level
-      Java Low Level REST
-      .NET
-      Python
-      Go
-      Ruby
-      PHP
-      JavaScript
-    Stateless 模式
-      objectstore
-      cache
-      engine
-      allocation
-      recovery
-```
-
-**配置入口**：`build.gradle`（根）、`settings.gradle`（子项目 include）、`gradle/build.versions.toml`（版本目录）
-**代码入口**：应为 `server/src/main/java/org/elasticsearch/node/Node.java`（**本地缺失**）
-
-## 3. 项目画像（Profile）
-
-| 字段 | 数值/描述 |
-| :--- | :--- |
-| **总文件数** | ~30000（含测试 + docs） |
-| **主语言** | Java（占 70%+，本仓库缺失） |
-| **涉及语言** | Groovy（Gradle DSL）、Asciidoc（docs）、Kotlin（少量）、Python（test scripts） |
-| **Star** | 72k+ |
-| **License** | **双协议**：Elastic License 2.0 + Server Side Public License (SSPL) + AGPL-3.0 only |
-| **Docker** | 完整（`distribution/docker/` 6 个 variant：standard、ubi、ubi-minimal、ironbank、cloud-ess、fips） |
-| **K8s** | 完整（ECK operator + Helm chart + Stateless 模式） |
-| **CI** | Buildkite（自建）+ Gradle Enterprise（`gradle-enterprise.elastic.co`）+ Spotless + Apache RAT + Forbidden APIs |
-| **有测试** | 极完整（ESTestCase/ESSingleNodeTestCase/ESIntegTestCase/ESRestTestCase/YamlRestTest/CsvIT/Unit Test 7 套） |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-ES 的架构哲学：**"Lucene + 分布式 + 插件化 + 安全默认"**——而 v8.10+ 的 **Stateless** 是近 5 年最大架构变化。
-
-**点状解析**（基于 AGENTS.md 描述）：
-- **核心子系统**（`server/src/main/java/org/elasticsearch/`）：
-  - `node/`：Node 生命周期（启动、关闭、ZenDiscovery → Coordination）
-  - `cluster/`：集群状态、元数据、master 选举（Raft 协议）
-  - `index/`：索引、shard、segment、mapping
-  - `search/`：query DSL → Lucene query、aggregations
-  - `ingest/`：ingest pipeline、simulate API
-  - `gateway/`：cluster state recovery
-  - `action/`：REST → Action → Transport → Node 4 层调用
-  - `common/`：Settings、BytesReference、ParseField 等基础设施
-  - `transport/`：节点间通信（Netty 4）
-  - `http/`：HTTP server（Netty 4 + REST API）
-- **Stateless 新子系统**（`x-pack/plugin/stateless/`）：
-  - `objectstore/`：S3/GCS/Azure 适配
-  - `cache/`：`StatelessSharedBlobCacheService` + 预热
-  - `engine/`：`IndexEngine`（写）+ `SearchEngine`（只读）+ `TranslogReplicator`
-  - `allocation/`：`StatelessExistingShardsAllocator`（按 heap 使用率分配）
-  - `recovery/`：自定义主分片迁移协议
-- **协议**：
-  - 节点间：自研 binary protocol over TCP（基于 Netty）
-  - 客户端：HTTP/JSON（REST API）+ Java Transport Client（已弃用）
-
-**思维导图**：
-
-```mermaid
-mindmap
-  root((ES 架构))
-    请求处理
-      REST
-        Netty HTTP
-        Action 路由
-        Transport
-        Node 执行
-    集群协调
-      ZenDiscovery
-      Coordination
-        Raft
-      Cluster State
-    索引层
-      Shard 路由
-      Lucene Segment
-      Translog
-      Merge
-    Stateless
-      Object Store S3
-      Blob Cache
-      Indexing Nodes
-      Search Nodes
-    插件体系
-      ActionPlugin
-      NetworkPlugin
-      ClusterPlugin
-      RepositoryPlugin
-      AnalysisPlugin
-```
-
-**核心架构看点（3 条具体设计决策）**：
-
-1. **三层 Gradle composite build 解耦"内部"与"第三方"插件**（BUILDING.md 第 12-32 行）：
-   - `build-conventions`：所有子项目**强制**遵守的规约（Spotless、Apache RAT、test logging）
-   - `build-tools`：**发布给第三方插件作者**的公共 Gradle 插件（`elasticsearch.esplugin` / `elasticsearch.testclusters`）
-   - `build-tools-internal`：**仅 ES 自己**用的内部插件（`elasticsearch.docker-support` / `elasticsearch.jdk-download` / `elasticsearch.fips`）
-   - 这套设计让 ES 在不破坏外部插件生态的前提下灵活演进内部构建
-
-2. **"目录契约"写在 AGENTS.md 而非 Wiki**（AGENTS.md 第 18-27 行）：用 7 行 Markdown 描述 `server` / `modules` / `plugins` / `libs` / `qa` / `docs` / `distribution` / `x-pack` 各自职责，**AI Agent 和新人都靠这一段 onboarding**——比传统 Confluence 更可审计、可版本化
-
-3. **Stateless 模式把"状态"完全外移到对象存储**（AGENTS.md 第 30-56 行）：
-   - 节点**不再持有持久化数据**，只跑 translog 复制到 S3/GCS/Azure
-   - `DiscoveryNode.STATELESS_ENABLED_SETTING` 运行时开关，**老客户端可零修改接入**
-   - 引入 `deploymentTarget` Gradle 属性（`STATEFUL_ONLY` / `STATELESS_ONLY` / `ALL`），插件按目标决定是否装载
-   - `StatelessExistingShardsAllocator` 用 heap 使用率做分配决策，区别于传统磁盘空间分配
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-由于本地仓库缺失 `server/` 等核心源码，本节基于 `build.gradle` + `distribution/` + `BUILDING.md` + `AGENTS.md` 做"构建系统层 + 文档驱动架构"的代码 WHY 分析。
-
-### 5.1 找骨架代码
-
-最值得读 5 个**能读到的**关键文件：
-- `build.gradle`（26KB，根 Gradle）
-- `BUILDING.md`（24KB，build 指南）
-- `AGENTS.md`（12KB，目录契约 + 测试 cheat sheet）
-- `distribution/docker/`（6 个 Docker variant 配置）
-- `distribution/tools/`（10 个 CLI launcher）
-
-### 5.2 单文件分析卡
-
-#### 代码 1：`build.gradle` 根 Gradle 文件（plugins 块）
-
-```groovy
-plugins {
-  id 'lifecycle-base'
-  id 'elasticsearch.docker-support'
-  id 'elasticsearch.internal-distribution-download'
-  id 'elasticsearch.jdk-download'
-  id 'elasticsearch.global-build-info'
-  id 'elasticsearch.build-complete'
-  id 'elasticsearch.build-scan'
-  id 'elasticsearch.runtime-jdk-provision'
-  id 'elasticsearch.ide'
-  id 'elasticsearch.forbidden-dependencies'
-  id 'elasticsearch.local-distribution'
-  id 'elasticsearch.fips'
-}
-```
-
-**为什么这样写？WHY 分析**：
-- **`lifecycle-base`**：声明打包/QA 任务的生命周期
-- **`elasticsearch.docker-support`** + **`elasticsearch.internal-distribution-download`**：Docker 镜像构建支持 + 内部 distribution 下载
-- **`elasticsearch.jdk-download`**：**关键**——强制项目用自带 JDK，不依赖系统 Java
-- **`elasticsearch.fips`**：FIPS 140-2 合规模式（美联邦客户必需）
-- **`elasticsearch.build-scan`**：每次 build 推 Gradle Enterprise 做性能分析
-
-**作者注释里反复强调的 WHY**（BUILDING.md 第 36 行）：
-> "All versions are centralized in `/gradle/build.versions.toml` (version catalog)." —— **强制版本目录**，避免不同子项目用不同 Gradle 插件版本
-
-#### 代码 2：`distribution/tools/server-launcher/`（启动器）
-
-ES 启动流程：`bin/elasticsearch` → `server-launcher` → `server-cli` → JVM main `org.elasticsearch.bootstrap.Elasticsearch`
-
-**为什么这样分层？**：
-- `server-launcher`：只负责"以正确身份（root/非 root）启动 JVM"
-- `server-cli`：CLI 解析（`-d` daemon、`-p` pidfile、`-E` 配置）
-- `Elasticsearch.java`：真正启动 ES 节点
-
-这种**多层 launcher** 设计是为了让"如何在容器/无 root 环境启动"与"ES 业务逻辑"解耦——是 Linux 容器时代工程化的标志
-
-#### 代码 3：`AGENTS.md` 测试 cheat sheet（7 种测试类型）
-
-```markdown
-- Unit Tests: Preferred. Extend `ESTestCase`.
-- Single Node: Extend `ESSingleNodeTestCase` (lighter than full integ test).
-- Integration: Extend `ESIntegTestCase`.
-- REST API: Extend `ESRestTestCase` or `ESClientYamlSuiteTestCase`.
-  **YAML based REST tests are preferred** for integration/API testing.
-```
-
-**为什么这样分层？WHY 分析**：
-- **测试金字塔 7 层**：从 `ESTestCase`（毫秒级）→ `ESSingleNodeTestCase`（秒级，启 ES 进程）→ `ESIntegTestCase`（多节点集群）→ `ESClientYamlTestCase`（YAML spec）→ `CsvIT`（CSV 驱动 ES|QL 测试）
-- **优先顺序**写死在 AGENTS.md："Unit Tests: Preferred"——**任何** PR review 都要先问"能不能用 unit test 替代 integ"
-- **YAML REST 测试**：**所有** API 都必须有对应 YAML spec，跨客户端一致性自动验证
-
-### 5.3 设计模式
-
-1. **"目录即文档"模式**：用 `AGENTS.md` 9 行写清 8 个子项目职责，**比 Onboarding Wiki 更可审计**
-2. **"Build 三件套"分层模式**：conventions / tools / internal 三层 composite build，把"内部"和"外部"插件严格隔离
-3. **"Stateless 是状态机开关"模式**：用 `DiscoveryNode.STATELESS_ENABLED_SETTING` 运行时切换，**老客户端零修改接入**
-
-### 5.4 反模式
-
-- **构建系统过重**：26KB `build.gradle` + 3 层 composite build，新人**第一天基本无法跑通 build**——必须先 `./gradlew help` 看 100+ 任务
-- **多协议并存**：HTTP/JSON + 自研 TCP protocol + Java Transport Client，**客户端碎片化**（v8.0 后 Transport Client 弃用）
-
-### 5.5 独特看点
-
-ES 的 AGENTS.md 12KB 含**完整 testing cheat sheet**（含具体命令、调试参数、CI 复制方法），**等于把 runbook 写进仓库**——AI Agent 时代这种"机器可读的工程文档"价值连城
-
-## 6. 运行机制（Bring It Up）
-
-**启动脚本**（缺失 server/ 时仅能看到的部分）：
-```bash
-# 1. 完整 build
-./gradlew assemble
-
-# 2. 仅 Docker 镜像
-./gradlew :distribution:docker:assemble
-
-# 3. 启动单节点（需 server/）
-./gradlew :run
-```
-
-**本地起服务**（基于 AGENTS.md 第 50-60 行）：
-```bash
-# 启动 dev 集群
-./gradlew run --debug-jvm
-
-# 测试命令
-./gradlew :server:test
-./gradlew :server:test --tests org.elasticsearch.search.SearchService.testQuery
-```
-
-**Smoke test**：
-1. `./gradlew tasks` 输出 100+ 任务（确认 build 系统加载成功）
-2. `./gradlew :distribution:docker:assemble` 产出 6 个 Docker 镜像
-3. `curl https://localhost:9200/` 返回 ES 版本（需先启 node）
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-    title Elasticsearch 演进
-    dateFormat YYYY-MM
-    section 起步
-    Compass 改名为 ES :a1, 2010-01, 24M
-    section 早期
-    v1.0 1.4 发布    :a2, 2014-01, 12M
-    section 成熟
-    v2.0 (mapping)   :a3, 2015-10, 12M
-    v5.0 (sequences) :a4, 2016-10, 12M
-    v6.0 (single type):a5, 2017-11, 12M
-    v7.0 (basic type):a6, 2019-04, 18M
-    v8.0 (security)  :a7, 2022-02, 24M
-    section Stateless
-    v8.10 Stateless :a8, 2024-04, 12M
-    v9.0 GA         :a9, 2025-04, 12M
-```
-
-**关键事件**：
-- 2010：Shay Banon 公开 Compass 改名为 ES
-- 2014：v1.0 发布，企业级可用
-- 2015：v2.0 引入 strict mapping（拒绝动态类型 bug）
-- 2017：v6.0 强制单 type（_doc）
-- 2019：v7.0 弃用 mapping types
-- 2022：v8.0 安全默认开启（TLS + 密码）
-- 2024：v8.10 引入 Stateless 模式
-- 2025：v9.0 GA，Stateless 模式进入生产推荐
-
-## 8. 质量保障（How It Doesn't Break）
-
-ES 的质量保障是企业级**教科书**的 5 道防线（基于 AGENTS.md 推断）：
-
-1. **7 层测试金字塔**：从 `ESTestCase` → `ESSingleNodeTestCase` → `ESIntegTestCase` → `ESRestTestCase` → `ESClientYamlSuiteTestCase` → `CsvIT` → YamlRestTest
-2. **Buildkite CI**：自建 + Gradle Enterprise（`gradle-enterprise.elastic.co`）做 build 性能分析
-3. **Spotless + Apache RAT**：Java 代码格式 + 协议头强制
-4. **Forbidden APIs**：禁止使用 `sun.misc.Unsafe` 等 JDK 内部 API
-5. **复现种子机制**：CI 失败时给 `REPRODUCE WITH` 行（含 project path、seed、JVM flags），本地可精确重放
-
-```mermaid
-flowchart TD
-    A[新 PR] --> B[Spotless 格式检查]
-    B --> C[Apache RAT 协议头]
-    C --> D[Unit Test ESTestCase]
-    D --> E[Single Node ESSingleNodeTestCase]
-    E --> F[Integ ESIntegTestCase]
-    F --> G[YAML REST YamlRestTest]
-    G --> H{CsvIT?}
-    H -->|ES|QL 改动| I[CsvIT]
-    H -->|非 ES|QL 改动| J[skip]
-    I --> K[Buildkite 报告]
-    J --> K
-    K --> L[Gradle Enterprise 性能]
-    L --> M[合并]
-```
-
-## 9. 生态依赖（Map of the World）
-
-**上游核心**：
-- **Apache Lucene**：全文检索核心（`server/src/main/java/org/elasticsearch/lucene/`）
-- **Netty 4**：HTTP + 节点间通信
-- **Apache Lucene Codec**：segment 编码
-- **JNA / Native libs**：vector similarity 加速（来自 Lucene）
-
-**下游被依赖**（间接，ES 自身不开箱即用）：
-- **Kibana**：可视化（同一公司，姊妹项目）
-- **Logstash** / **Beats**：数据采集（同一生态）
-- **Elasticsearch SQL JDBC**：BI 工具连接
-- **LangChain Elasticsearch Retriever**：RAG
-- **OpenSearch**（fork）：AWS 维护的分支
-
-**合规检查清单**：
-- 双协议：**Elastic License 2.0**（禁止托管转售） + **SSPL**（要求衍生作品开源）
-- Apache RAT 检查所有源码有 license header
-- Elasticsearch 商标条款（不能直接叫"elastic-search-compatible" 营销）
-
-## 10. 生产实践（Battle-Tested）
-
-| 实践 | ES 做法 |
-| :--- | :--- |
-| **配置/版本管理** | `gradle/build.versions.toml` 版本目录 + `branches.json` 管理维护分支 |
-| **优雅停服** | `Stateless-sigterm` 插件（K8s SIGTERM 干净关闭） |
-| **零停机升级** | rolling restart + 蓝绿 cluster（Stateless 模式天然支持） |
-| **限流** | `circuit_breakers` 配置（`indices.breaker.*`） |
-| **链路追踪** | OpenTelemetry Java agent 集成（`TRACING.md` 24KB 文档） |
-| **结构化日志** | JSON log + `DeprecationLogger` |
-| **健康检查** | `/_health`, `/_cluster/health`, `/_nodes/stats` |
-
-```mermaid
-sequenceDiagram
-    participant K as Kibana
-    participant E as ES Node
-    participant L as Lucene
-    participant S3 as S3 (Stateless)
-    K->>E: POST /_search
-    E->>L: Lucene Query
-    L-->>E: Hits
-    E-->>K: JSON 结果
-    Note over E,S3: 写路径：<br/>E->>S3 translog 复制
-```
-
-## 11. 社区文化（People & Process）
-
-- **公司驱动**：Elastic NV 100+ 工程师全时投入，**不接受"无 Elastic 员工 review"的 PR**
-- **分支策略**：`branches.json` 维护当前活跃分支清单
-- **RFC 流程**：GitHub Issues `>` 标签
-- **沟通渠道**：Discuss 论坛 + Slack + GitHub
-- **2021 危机**：Elastic 改 SSPL 协议 → AWS 维护 OpenSearch 分支 → **项目分裂**，但 ES 仍占主流
-- **2024 转向**：AGPL 路径 vs SSPL 路径争议，最终维持 SSPL + Elastic License 2.0 双协议
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **"AGENTS.md 写目录契约"**：用 10 行 Markdown 描述所有子项目职责，**比 Wiki 更可审计**
-2. **三层 Gradle composite build**：conventions / tools / internal 严格分层，**"内部演进不影响第三方插件"**
-3. **"DiscoveryNode 开关 + deploymentTarget 插件过滤"**：让新功能（Stateless）**老客户端零修改接入**
-
-### 12.2 必避 3 坑
-
-1. **不要追求 7 层测试金字塔**：大多数项目只需要 3 层（unit/integ/e2e），ES 是搜索引擎才需要这么多
-2. **不要把"build 系统"做得太重**：26KB build.gradle + 3 层 composite build，**新人 onboarding 地狱**
-3. **不要在协议上"既要又要"**：双协议（Elastic + SSPL）反而把社区推到 OpenSearch fork
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7天复刻 mini-elasticsearch
-    dateFormat YYYY-MM-DD
-    section 骨架
-    monorepo + settings.gradle :a1, 2026-06-01, 1d
-    section build
-    3 层 composite build    :a2, after a1, 2d
-    section 核心
-    node 启动 + Lucene 包装 :a3, after a2, 2d
-    section 测试
-    7 层测试金字塔          :a4, after a3, 1d
-    section 文档
-    AGENTS.md 写目录契约    :a5, after a4, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数（10 分制） | 评语 |
-| :--- | :---: | :--- |
-| 架构清晰度 | 9 | 9 大子项目分工明确 |
-| 代码质量 | 8 | 极完整测试，10 年打磨 |
-| 可维护性 | 7 | 巨型代码库，任何改动都牵动全身 |
-| 测试完整度 | 10 | 7 层测试金字塔 |
-| 文档 | 8 | AGENTS.md + BUILDING.md + REST_API_COMPATIBILITY.md |
-| 商业化 | 8 | 双协议 + Elastic Cloud 商业化清晰 |
-| 复刻难度 | 1 | 几乎不可能（10 年 + 100+ 工程师） |
-
-## 13. 学习萃取（Cheat Sheet）
-
-**一句话价值**：ES 证明**"巨型 Java 项目也能用 Gradle composite build + 7 层测试金字塔 + AGENTS.md 文档驱动"管理到 10 万行级别。
-
-**3 个核心洞察**：
-1. **三层 composite build** = 把"内部"和"第三方"插件严格分层
-2. **AGENTS.md 写目录契约** = 机器可读的 onboarding 文档
-3. **DiscoveryNode 运行时开关** = 新功能（Stateless）老客户端零修改接入
-
-**5 段必读代码**：
-1. `build.gradle` 第 17-30 行 `plugins {}` 块（13 个内部插件一次声明）
-2. `BUILDING.md` 第 10-32 行 3 层 composite build 设计
-3. `AGENTS.md` 第 18-27 行 8 大子项目目录契约
-4. `AGENTS.md` 第 30-56 行 Stateless 模式设计
-5. `AGENTS.md` 第 58-72 行 7 层测试 cheat sheet
-
-**1 个反模式**：build.gradle 26KB + 3 层 composite build——**新人 onboarding 地狱**。
-
-**1 个可复用模式**：`AGENTS.md` 12KB 写清"目录 + 构建 + 测试 + 调试"，**任何 5 万行以上项目可套**。
-
-**3 个立刻能用的动作**：
-1. 给项目加 `AGENTS.md`（或 `CLAUDE.md`）写 8-10 行目录契约
-2. 用 Gradle version catalog 强制版本统一
-3. 把"测试 cheat sheet"放仓库根，CI 失败给"REPRODUCE WITH" 行
-
-## 14. 项目特点速查
-
-**独特看点**：
-- **唯一**把"目录契约"写进 `AGENTS.md` 而非 Wiki 的巨型 Java 项目
-- **唯一**同时维护 Elasticsearch（商业） + Elastic Cloud（云） + Kibana（可视化） + Beats（采集）的"一站式可观测性栈"
-- 3 层 Gradle composite build 教科书级实践
-- Stateless 模式重新定义"云原生 ES"
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title 搜索引擎对比
-    x-axis 单机 --> 分布式
-    y-axis 通用 --> 专用
-    "Elasticsearch": [0.95, 0.4]
-    "OpenSearch": [0.95, 0.4]
-    "Solr": [0.7, 0.3]
-    "Meilisearch": [0.4, 0.8]
-    "Typesense": [0.4, 0.8]
-    "Algolia (SaaS)": [0.9, 0.7]
-```
-
-| 项目 | 协议 | 分布式 | 商业化 | 性能 |
-| :--- | :--- | :--- | :--- | :--- |
-| **Elasticsearch** | Elastic + SSPL | 强 | 双协议 | 极高 |
-| OpenSearch | Apache 2.0 | 强 | 纯开源 | 同 ES（fork） |
-| Apache Solr | Apache 2.0 | 中 | 纯开源 | 中 |
-| Meilisearch | MIT | 弱 | 简单 | 极高（专用） |
-| Algolia | 专有 SaaS | 强 | SaaS | 极高 |
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-| :--- | :--- |
-| 路径 | `G:\实战案例\GitHub顶尖项目\elasticsearch-new\` |
-| 状态 | **部分克隆**：缺 `server/` / `libs/` / `modules/` / `plugins/` / `qa/` / `x-pack/` |
-| 可见目录 | `client/` / `distribution/` / `docs/` / `build-conventions/` / `build-tools/` / `build-tools-internal/` / `benchmarks/` |
-| build.gradle 大小 | 26KB（核心配置） |
-| AGENTS.md 大小 | 12KB（机器可读文档典范） |
-| 解析时间 | 2026-06-02 |
-
-## 一句话总结
-
-**Elasticsearch = 10 万行 Java + 3 层 Gradle composite build + 7 层测试金字塔 + AGENTS.md 目录契约 + Stateless 云原生模式 = 全球最流行的分布式搜索引擎。**
+## 第一段：基础范式（模式 1-5）
+
+### 模式 1：Lucene 内核封装
+
+**问题场景**：需要快速全文检索但不想自己实现倒排索引、分词、评分，Lucene 直接用门槛太高。
+
+**解决方案**：ES 把 Lucene 包装成分布式近实时（NRT）引擎，屏蔽 Segment/Merge/Commit 细节，对外暴露 REST/JSON API。底层 Lucene 的近实时搜索依赖 IndexWriter 的 in-memory buffer + translog 持久化机制。
+
+**关键参数**：
+- `refresh_interval` 控制 segment 可见延迟（默认 1s）
+- `translog.durability=request|async` 控制写入风险
+- `number_of_shards` 决定数据分片规模
+- 单分片建议 10-50GB，超大需 routing 或 split
+
+**最佳实践**：高写入场景把 `refresh_interval` 调到 30s 提升吞吐；近实时需求保留 1s 默认。
+
+### 模式 2：REST + JSON 协议
+
+**问题场景**：多语言客户端集成复杂，原生 Java 客户端难以被 Python/JS/Go 团队使用。
+
+**解决方案**：用 HTTP + JSON 做协议层，所有功能等同 curl 调用。多语言官方客户端（go-elasticsearch、elasticsearch-js）都基于 REST 包一层。`Content-Type: application/json` 强制；批量操作用 `_bulk` 端点。
+
+**关键参数**：
+- `_bulk` 端点单次 100-1000 文档
+- `_cat` API 做运维探针
+- `_search` 支持 scroll/search_after 分页
+- `_mget` / `_msearch` 减少 RTT
+
+**最佳实践**：永远不要在循环里发单文档请求，攒批用 `_bulk` 能提升 10x 吞吐。
+
+### 模式 3：分片（Shard）与副本（Replica）
+
+**问题场景**：单机装不下索引 + 写吞吐成瓶颈 + 节点故障数据丢失。
+
+**解决方案**：索引分水平分片（primary shard），每个分片有 0-N 个副本。写入走 primary，读取可走 replica 提升并发。Shard 是 ES 最小的"数据移动单位"，跨节点 rebalance 也按 shard 走。
+
+**关键参数**：
+- 分片数索引创建时固定，事后只能 split 不能合并
+- `index.number_of_replicas` 决定高可用等级
+- 单分片 JVM 堆建议 < 32GB（指针压缩边界）
+- 副本数 = 节点数 -1 可满配
+
+**最佳实践**：分片数宁少勿多（过度分片爆炸），按 1 分片 = 10-30GB 数据规划。
+
+### 模式 4：Mapping 模式
+
+**问题场景**：动态 mapping 推断错类型，字段被自动识别成 text/keyword 双字段但浪费空间。
+
+**解决方案**：显式 mapping 控制字段类型与分词器。Text 走分词做全文，keyword 走精确匹配/聚合，date/numeric 走范围查询。
+
+**关键参数**：
+- `dynamic: strict|true|false` 三档
+- `index: false` 关闭索引节省空间
+- `doc_values: false` 关闭列存（聚合会失效）
+- 嵌套用 `nested` 类型，不用 object 数组
+
+**最佳实践**：生产必显式 mapping；用 `index_template` 批量应用；新字段先在 `dynamic: false` 模式观察。
+
+### 模式 5：查询 DSL
+
+**问题场景**：业务查询既有全文 + 过滤 + 聚合 + 排序 + 分页，全部硬编码成简单 match 性能差。
+
+**解决方案**：用 bool query 把 `must` / `should` / `filter` / `must_not` 组合，`filter` 走 cache 不算分。聚合用 `aggs` 嵌套 bucket + metric。
+
+**关键参数**：
+- `filter` context 不算相关性分、自动 cache
+- `term` 不分词，`match` 分词
+- `range` 查询走 BKD 树
+- `function_score` 改写打分
+
+**最佳实践**：filter 上下文能复用 query cache，非 score 查询必走 filter；避免深 wildcard + 前缀。
+
+---
+
+## 第二段：扩展范式（模式 6-10）
+
+### 模式 6：分布式协调（Zen2/Coordination）
+
+**问题场景**：集群 master 选举脑裂 + 节点发现 + 集群状态广播。
+
+**解决方案**：基于 Raft 的 Coordination 层（v7+）替代旧 Zen，发现靠 unicast + 种子节点。Voting configuration 控制哪些 master-eligible 节点可投。
+
+**关键参数**：
+- `discovery.seed_providers` 配置种子
+- `cluster.initial_master_nodes` 首次启动
+- `discovery.zen.minimum_master_nodes` 防脑裂
+- `cluster.fault_detection.*` 故障检测间隔
+
+**最佳实践**：master 节点数 = 3 或 5 奇数；专用 master 节点（小堆 + 强 CPU）与数据节点分离。
+
+### 模式 7：分片分配策略
+
+**问题场景**：新增节点数据不均衡 / 磁盘快满但分片不迁出 / 冷热分层。
+
+**解决方案**：`cluster.routing.allocation` 配 disk threshold / awareness / require/balance。Hot-Warm 架构用 shard allocation filtering 把冷数据挪到大容量节点。
+
+**关键参数**：
+- `cluster.routing.allocation.disk.threshold_enabled=true`
+- `index.routing.allocation.require._tier_preference= data_hot`
+- 节点属性 `node.attr.rack=r1` 做 rack awareness
+- `total_shards_per_node` 限流
+
+**最佳实践**：生产开 watermark 防磁盘写满；快照保留至少 2 副本防勒索。
+
+### 模式 8：聚合分析（Aggregation）
+
+**问题场景**：实时统计 PV/UV/转化漏斗 / 销售排行 / 区间分布。
+
+**解决方案**：Aggregation 走列存（doc_values），metric 算 sum/avg/cardinality，bucket 按 terms/date_histogram/histogram 分组。Cardinality 用 HyperLogLog++ 近似去重。
+
+**关键参数**：
+- `size: 0` 关闭 hit 输出提性能
+- `cardinality.precision_threshold` 调精度
+- `composite` aggregation 做深度分页
+- `aggs` 嵌套多层 bucket
+
+**最佳实践**：高基数字段用 `cardinality` 近似，精确去重走 `script` 或 ClickHouse；聚合前 filter 缩范围。
+
+### 模式 9：Pipeline 聚合与时序数据
+
+**问题场景**：监控指标 5 分钟一个点存 30 天，做 derivative/moving_avg 趋势分析。
+
+**解决方案**：Date histogram + sub aggregation + pipeline aggregation（derivative/moving_avg/bucket_script）。新建项目推 ES|QL（v8.14+）做向量化执行。
+
+**关键参数**：
+- `fixed_interval: 1m|1h|1d`
+- `time_zone` 防时区漂移
+- `min_doc_count: 0` 补零
+- `extended_bounds` 强制边界
+
+**最佳实践**：监控场景用 ILM + downsampling 把秒级降到小时级；高频聚合用 `_rollup` API。
+
+### 模式 10：Ingest Pipeline
+
+**问题场景**：写入时数据清洗（grok 解析日志、HTML 提取、字段裁剪、geoip 解析）耗时大。
+
+**解决方案**：Ingest Node 在 indexing 之前跑 processor 链（grok/rename/set/append/geoip/circle）。模拟 ETL 在 ES 内完成。
+
+**关键参数**：
+- `pipeline` 在 bulk 请求指定
+- `on_failure` 定义降级
+- 模拟字段用 `if ctx.xxx != null` 守卫
+- `enrich` processor 联表
+
+**最佳实践**：高频清洗用 simulate API 调试；processor 失败不能阻塞，写 `on_failure` 兜底。
+
+---
+
+## 第三段：进阶范式（模式 11-15）
+
+### 模式 11：跨集群复制（CCR）
+
+**问题场景**：多机房灾备 / 读写分离 / 区域就近访问。
+
+**解决方案**：CCR 把 leader 索引的变更流复制到 follower（基于 translog-based 复制）。Cross-cluster search 走 CCS 跨集群查询。
+
+**关键参数**：
+- `remote_cluster` 配种子节点
+- leader/follower 索引名映射
+- 软删除保留期控制
+- `ccr.auto_follow` 自动跟
+
+**最佳实践**：灾备场景 follower 可关 read-only 验数据；CCR 走异步有秒级延迟。
+
+### 模式 12：跨集群搜索（CCS）
+
+**问题场景**：数据按地域分布但查询要全网汇总（跨国电商订单搜）。
+
+**解决方案**：CCS 在查询时 `cluster_one:index,cluster_two:index` 联合，local-coordinator 聚合。给业务一个统一查询入口。
+
+**关键参数**：
+- `cluster.remote.connect=true`
+- `skip_unavailable=true` 容忍单集群故障
+- `pre_filter_shards` 减少拉取量
+
+**最佳实践**：跨集群查询前在 coordinate 节点做预过滤；超时时间分层设置。
+
+### 模式 13：向量检索与 kNN
+
+**问题场景**：AI 时代 RAG 检索 + 语义搜索 + 推荐相似商品，纯文本倒排索引搞不定。
+
+**解决方案**：kNN search 走 HNSW 近似最近邻，向量字段类型 `dense_vector`。hybrid 检索（BM25 + 向量）用 RRF（Reciprocal Rank Fusion，v8.8+）。
+
+**关键参数**：
+- `dims` 维度（768/1024/1536/3072）
+- `index: true` 启 HNSW
+- `ef_construction` / `m` 控制精度
+- `num_candidates: 100` 召回候选
+
+**最佳实践**：向量字段要量化（int8/bfloat16）省 4x 空间；hybrid 用 RRF 比线性加权更稳。
+
+### 模式 14：ILM（Index Lifecycle Management）
+
+**问题场景**：时序数据按天/周增长，无限膨胀；冷数据要降本。
+
+**解决方案**：ILM 配 hot-warm-cold-delete 四阶段，按 rollover/snapshot/forcemerge/delete 策略自动迁移。
+
+**关键参数**：
+- `data_stream` + `index.lifecycle.name`
+- 触发条件 `max_age`/`max_size`/`max_docs`
+- 阶段间 rollover alias
+
+**最佳实践**：日志场景直接上 Data Stream + ILM；冷数据 force merge 到 1 segment 提压缩比。
+
+### 模式 15：Stateless 模式（云原生）
+
+**问题场景**：传统 ES 节点强耦合本地磁盘，扩容慢、恢复久、节点故障影响大。
+
+**解决方案**：v8.10+ 引入 Stateless 模式，把 shard 数据存到 S3/GCS/Azure Blob，本地只缓存。本地磁盘变 cache，节点可快速重建。
+
+**关键参数**：
+- `xpack.stateless.enabled=true`
+- 对象存储 `repository` 配置
+- `cache_size` 决定本地热点缓存
+- `partial_shard` 失败容忍
+
+**最佳实践**：云上 ES 走 Managed / Serverless 体验最佳；自建需评估 S3 成本与 RTT。
+
+---
+
+## 第四段：实战范式（模式 16-20）
+
+### 模式 16：JVM 调优
+
+**问题场景**：ES 跑在默认 JVM 参数下 GC 抖动、Full GC 频繁、查询延迟 P99 飙升。
+
+**解决方案**：专用 JDK（Elastic 推荐 Azul Zulu / Amazon Corretto），G1GC 配 50% 堆，swapoff 禁用。GC 阈值设 `InitiatingHeapOccupancyPercent=75`。
+
+**关键参数**：
+- `-Xms` = `-Xmx` 避免动态扩堆
+- 单节点堆 ≤ 32GB（指针压缩边界）
+- 关闭 `bootstrap.memory_lock`
+- `thread_pool.write` 队列配 monitoring
+
+**最佳实践**：堆超过 32GB 用 G1GB；监控 `jvm.mem.heap_used_percent` 超 75% 立刻扩容。
+
+### 模式 17：监控与告警
+
+**问题场景**：ES 集群出问题难发现，JVM 老年代满了 / 分片 unassigned 默默堆积。
+
+**解决方案**：用 Elastic Stack 自监控（metricbeat → ES + Watcher 告警），关键指标 `cluster.health` / `jvm.mem.heap_used_percent` / `indices.search.query_time` / `pending_tasks`。
+
+**关键参数**：
+- `/_cluster/health?wait_for_status=yellow&timeout=50s`
+- `_cat/pending_tasks?v` 队列阻塞检测
+- Watcher 配 webhook/邮件
+- Slow log 阈值 `index.search.slowlog.threshold.query.warn: 10s`
+
+**最佳实践**：所有查询强制 slow log 阈值；cat API 进自监控 dashboard。
+
+### 模式 18：安全（Security / RBAC）
+
+**问题场景**：多团队共用集群，权限混乱；公网暴露被脱裤。
+
+**解决方案**：v8 默认开 Security（X-Pack），RBAC 按角色控制 `indices:read/write/admin`，TLS 加密节点通信 + HTTPS API。
+
+**关键参数**：
+- `xpack.security.enabled=true`
+- `xpack.security.transport.ssl.enabled=true`
+- `xpack.security.http.ssl.enabled=true`
+- API key / Bearer token 替代密码
+
+**最佳实践**：生产必须开 TLS；最小权限原则，按 index pattern 分；定期轮换 service account token。
+
+### 模式 19：备份恢复（Snapshot/Restore）
+
+**问题场景**：误删索引 / 集群整体故障 / 跨环境迁移。
+
+**解决方案**：Snapshot 存到 S3/HDFS/NFS 共享存储，Restore 选索引/集群级。跨集群复制靠 snapshot 或 CCR。
+
+**关键参数**：
+- `fs`/`s3`/`azure`/`gcs` repository
+- `partial` 容忍部分失败
+- `wait_for_completion=false` 异步
+- `rename_pattern`/`rename_replacement` 重命名恢复
+
+**最佳实践**：每日全量 + 每小时增量；保留 7/30/365 多档；定期做 restore 演练防 silent corruption。
+
+### 模式 20：性能与容量规划
+
+**问题场景**：双 11 大促 / 索引爆量，集群扛不住；CPU/内存/磁盘瓶颈难定位。
+
+**解决方案**：性能走分阶段压测（rally 工具），按"目标 QPS + 索引大小 + 保留期"反推节点数。一般 1 节点 = 1TB 索引 + 1k QPS。
+
+**关键参数**：
+- 单分片 ≤ 50GB / 单分片 ≤ 30GB heap
+- JVM heap 不超节点 RAM 一半
+- shard 数 = 数据节点数 × 2
+- 大查询并发限 `_search` 线程池
+
+**最佳实践**：压测用 elastic/rally 模拟真实 query；预留 50% 容量抗突发；混合 hot-warm 架构降本 30%+。

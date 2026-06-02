@@ -1,777 +1,598 @@
----
-title: ansible
-type: devops-automation
-lang: python
-stars: 66000+
-date: 2026-06-02
-tags:
-  - 开源项目
-  - devops-automation
-  - python
-  - configuration-management
-  - agentless
----
+# ansible - 无代理 SSH 自动化的四级调度与声明式幂等引擎
 
-# ansible · 项目深度解析
+**GitHub**: ansible/ansible
+**Star**: 66k+
+**语言**: Python
+**主题**: 配置管理 / 编排 / IT 自动化 / 声明式
+**适用场景**: 多机部署、配置漂移修复、应用发布、网络设备管理
 
-> 一句话：基于 SSH 的无代理 IT 自动化引擎,用声明式 YAML 把多台机器上的"配置管理 / 应用部署 / 命令编排"统一写成可幂等执行的剧本。
-> 来源：`G:\实战案例\GitHub顶尖项目\ansible\`
+## 第一段：基础范式
 
-## 写在前面:解析哲学
+### 模式 1：TaskQueueManager + Strategy 的"四级调度"
 
-这份文档不重复 README,也不照搬官方文档。我按"先骨架后血肉,先 What 后 Why,最后 How to steal"的顺序拆 ansible:
-1. 先把目录、类、关键文件摊在桌面上,搞清楚"它长什么样"
-2. 再深入关键代码,问"作者为什么这么写",而不只是"它做什么"
-3. 最后抽出可复用的设计决策,告诉你"哪些坑别踩,哪些好东西直接搬"
+**问题场景**：playbook 里的 task 顺序固定，但真实环境下"host A 卡住"不应阻塞"host B"；"host 失败"不应终止整批；"中途新增 host"应能合并入队。简单串行 for 循环无法满足这种 host × task 二维矩阵的灵活调度。
 
-ansible 的"无代理 + 推送式 + 幂等性"是它从 Puppet/Chef/SaltStack 围剿中杀出来的根本理由,理解了这三点,后面所有诡异设计都能秒懂。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆/确认**:本机已存在 `G:\实战案例\GitHub顶尖项目\ansible\`,无需重新 clone
-2. **分类**:运维自动化 / Python 工业级 CLI / 多进程架构 / 插件化框架
-3. **问题清单**:
-   - 为什么没有常驻 agent?为什么 SSH 能扛得住?
-   - 几千台机器怎么并发?多进程还是多线程?
-   - 任务顺序怎么定?为什么有 strategy 这个抽象?
-   - 模块怎么"打包"传到远端?ansiballz 黑魔法是什么?
-   - 怎么处理"长任务 + 短任务"共存?async/poll 是什么?
-4. **速查表**:`lib/ansible/executor/*` 决定执行模型,`lib/ansible/plugins/*` 决定能力边界
-5. **锁定 commit**:本解析基于 `devel` 分支(2026-06-01 拉取),版本号见 `lib/ansible/release.py`
-
-## 1. 开发计划书(Project Charter)
-
-| 字段 | 内容 |
-|---|---|
-| 项目名 | ansible (核心包 `ansible-core`) |
-| 定位 | 无代理 IT 自动化平台:配置管理、应用部署、ad-hoc 命令、网络设备编排 |
-| 核心问题 | 在不安装 agent 的前提下,把异构机器(Servers/Network/Cloud)统一编排;让运维脚本可读、可审计、可幂等 |
-| 目标用户 | 系统管理员、SRE、DevOps 工程师、网络工程师 |
-| 商业模式 | 上游开源 (GPL-3.0) + 下游 Red Hat Ansible Automation Platform 商业版(控制平面 + AAP 网关) |
-| 复刻难度 | 极高(8/10):SSH 通道、ansiballz 模块打包、strategy 抽象、collection 解析四块都是深水区 |
-| 当前状态 | 生产级稳定,版本节奏 6 个月一次 minor,devel 持续滚动 |
-| 团队 | Red Hat 员工 + 5000+ 社区贡献者(README 原文) |
-| 里程碑 | 1.x(Python 2)→ 2.0(strategy 插件)→ 2.10(community 拆出)→ ansible-core 独立包 → 持续 |
-
-## 2. 项目框架(Repo Skeleton Map)
-
-### 2.1 顶层目录
-
-| 目录/文件 | 角色 | 一句话 |
-|---|---|---|
-| `bin/ansible*` | CLI 入口 | 9 个 shell 脚本转发到 `lib/ansible/cli/*.py` |
-| `lib/ansible/` | 核心库 | 所有 Python 代码 |
-| `lib/ansible/executor/` | 执行层 | playbook → strategy → task → worker 四级调度 |
-| `lib/ansible/playbook/` | 领域对象 | Play/Block/Task/Role 全部是带 `__init__` 校验的 Base 子类 |
-| `lib/ansible/plugins/` | 能力扩展点 | 7 大类插件(connection/action/lookup/filter/test/strategy/...) |
-| `lib/ansible/inventory/` | 主机清单 | 数据 + 解析器(支持 ini/yaml/toml/dynamic) |
-| `lib/ansible/modules/` | 内置模块 | 70+ 个开箱即用模块(command/copy/file/apt/yum/...) |
-| `lib/ansible/cli/` | CLI 框架 | argparse 封装 + 各子命令 |
-| `lib/ansible/parsing/` | 解析器 | YAML/Vault 加密/quoting |
-| `lib/ansible/template/` | 模板引擎 | 包装 Jinja2,加 unsafe_proxy 防泄露 |
-| `test/` | 测试套件 | units + integration,unittest 风格 |
-| `changelogs/fragments/` | 增量 changelog | 每个 PR 一份 yaml,合并时聚合 |
-| `pyproject.toml` | 构建配置 | setuptools 后端,name 是 `ansible-core` |
-
-### 2.2 框架思维导图
-
-```mermaid
-mindmap
-  root((ansible-core))
-    入口
-      bin/ansible
-      bin/ansible-playbook
-      lib/ansible/cli
-    执行层 executor
-      PlaybookExecutor
-      TaskQueueManager
-      StrategyBase / linear
-      TaskExecutor
-      WorkerProcess
-    领域对象 playbook
-      Play
-      Block / Task / Handler
-      Role / RoleInclude
-    插件 plugins
-      connection ssh/winrm/local
-      action normal/copy/template
-      lookup file/template/vars
-      filter core/mathstuff
-      test core/files
-      strategy linear/free/debug
-    解析 parsing
-      DataLoader
-      YAML Loader 加固
-      VaultLib
-    模板 template
-      TemplateEngine
-      UnsafeProxy
-    主机清单 inventory
-      InventoryManager
-      InventoryData
-      hosts/groups
-    内置模块 modules
-      command/copy/file
-      apt/yum/dnf
-      service/systemd
-      uri/get_url
-```
-
-### 2.3 实际目录树(节选关键)
-
-```
-ansible/
-├── bin/
-│   ├── ansible-playbook          # CLI 入口
-│   ├── ansible                   # ad-hoc
-│   └── ansible-vault             # 加密
-├── lib/ansible/
-│   ├── __main__.py               # 启动器
-│   ├── context.py                # 全局 CLIARGS
-│   ├── constants.py              # 默认配置
-│   ├── release.py                # 版本号
-│   ├── cli/                      # argparse 封装
-│   ├── executor/
-│   │   ├── playbook_executor.py  # 顶层入口
-│   │   ├── task_queue_manager.py # 进程池 + 队列
-│   │   ├── task_executor.py      # 单任务执行
-│   │   ├── play_iterator.py      # Play/Block 状态机
-│   │   ├── stats.py              # 聚合统计
-│   │   ├── module_common.py      # 模块打包(ansiballz)
-│   │   └── process/worker.py     # 子进程封装
-│   ├── playbook/                 # 领域对象
-│   ├── plugins/
-│   │   ├── loader.py             # 插件加载器
-│   │   ├── connection/           # ssh/winrm/local/psrp
-│   │   ├── action/               # normal/copy/template
-│   │   ├── strategy/             # linear/free
-│   │   ├── lookup/ filter/ test/ # jinja 扩展
-│   │   └── become/               # sudo/su/runas
-│   ├── inventory/manager.py      # 清单管理
-│   ├── vars/manager.py           # 变量合并
-│   ├── template/__init__.py      # 模板
-│   └── parsing/dataloader.py     # YAML/Vault
-├── test/                         # 单元 + 集成
-├── changelogs/fragments/         # PR changelog
-├── pyproject.toml                # name=ansible-core
-└── requirements.txt
-```
-
-### 2.4 配置入口
-
-- `lib/ansible/config/base.yml` — 500+ 个默认值(连接/超时/路径/插件配置)
-- `lib/ansible/parsing/dataloader.py` — 加载 YAML/Vault 文本
-- `lib/ansible/inventory/manager.py:147` — 解析 inventory 文件
-
-### 2.5 代码入口
-
-- `bin/ansible-playbook` → `lib/ansible/cli/playbook.py:PlaybookCLI.run()` → `PlaybookExecutor.run()`
-
-## 3. 项目画像(Profile)
-
-| 维度 | 数值 |
-|---|---|
-| 总文件数 | 5,713(含 changelogs、test、doc) |
-| 主语言 | Python(>= 3.12) |
-| 涉及语言 | Python + YAML + PowerShell(Windows 远程) +少量 C#(PS module utils) |
-| 关键运行时 | multiprocessing(默认 fork)+ threading(callback 调度) |
-| 协议 | GPL-3.0-or-later |
-| 依赖 | 极少:`packaging`,`jinja2`,`PyYAML`,`cryptography`,`resolvelib` |
-| Docker | 无(纯 CLI);Azure Pipelines 多镜像 CI |
-| K8s | 不直接相关,但 `k8s` 是官方 collection 之一 |
-| CI | Azure Pipelines + codecov + sanity 黑盒测试 |
-| 测试 | units + integration + functional,unittest 风格 |
-| 主要发布形态 | PyPI `ansible-core` + 操作系统包 |
-
-## 4. 架构设计(Architecture Deep Dive)
-
-### 4.1 整体分层
-
-ansible 的执行管线可以用"五级瀑布"理解:
-
-1. **CLI 层** (`cli/playbook.py`):解析参数,组装依赖,调用下一层
-2. **PlaybookExecutor** (`executor/playbook_executor.py`):加载 playbook,逐个 play 跑,处理 `serial` 分批
-3. **TaskQueueManager** (`executor/task_queue_manager.py`):创建 worker 进程池 + 共享队列,作为进程间通信中枢
-4. **StrategyBase / linear** (`plugins/strategy/`):编排"下一个任务"和"任务分配给哪些主机",实现并发模型
-5. **TaskExecutor** (`executor/task_executor.py`):在单进程内完成"加载 action 插件 → 连主机 → 传模块 → 收结果"
-
-### 4.2 核心架构思维导图
-
-```mermaid
-mindmap
-  root((ansible 架构))
-    执行流水线
-      CLI 解析
-      PlaybookExecutor 加载
-      TQM 进程池
-      Strategy 任务编排
-      TaskExecutor 单任务
-      Action 插件
-      Connection 插件
-      模块代码
-    状态机
-      PlayIterator
-        SETUP/TASKS/RESCUE/ALWAYS/HANDLERS
-        每主机独立 HostState
-    进程模型
-      主进程 TQM
-      N 个 worker 子进程(fork)
-      FinalQueue SimpleQueue
-      WorkerQueue 每子进程独立
-    数据流
-      Playbook.yml
-      DataLoader
-      Play/Block/Task 对象
-      Strategy.get_next_task
-      WorkerPool 派发
-      结果回调
-    扩展点
-      connection ssh/winrm
-      action normal/template
-      lookup file/template
-      filter jinja 增强
-      strategy linear/free
-      become sudo/su
-      callback 默认/json/junit
-```
-
-### 4.3 核心架构看点
-
-#### ADR-1:无代理(Agentless)+ 推送式 = SSH 即总线
-- **决策**:不维护常驻 agent,直接复用目标机的 SSH daemon
-- **WHY**:
-  1. 零部署成本:新机器改 SSH 端口就完事
-  2. 复用企业现有安全审计/堡垒机
-  3. 简化模型:控制节点=权威,被控节点=被动
-- **代价**:SSH 握手延迟、连接数受限、首次接触要认证;这导致必须支持 pipelining(把多个命令打到一条 SSH 会话)
-- **代码位置**:`lib/ansible/plugins/connection/ssh.py:96` 默认参数 `ssh_args = '-C -o ControlMaster=auto -o ControlPersist=60s'`,直接拼 SSH ControlMaster 实现连接复用
-
-#### ADR-2:进程级隔离 = fork + multiprocessing
-- **决策**:每个 worker 是独立子进程,主进程通过 `multiprocessing.SimpleQueue` 收结果
-- **WHY**:
-  1. 任务可能 hang(SSH 卡住)、可能泄漏 fd;fork 隔离避免污染主进程
-  2. Python GIL 让多线程并发收益有限,多进程更直接
-  3. 主进程需要存活以便响应 Ctrl-C;子进程死了不影响总调度
-- **代价**:
-  1. fork 后 loader 缓存的 tempfile 集合是 per-process(`worker.py:97` `self._loader._tempfiles = set()`),每个 worker 自己清理
-  2. 子进程内 Python 解释器初始化开销(几百 ms)
-  3. 跨平台:Windows 改用 spawn,启动更慢
-- **代码位置**:`lib/ansible/executor/task_queue_manager.py:91` 定义 `FinalQueue` 继承 `multiprocessing.queues.SimpleQueue`;`worker.py:62` 继承 `multiprocessing_context.Process`
-
-#### ADR-3:Strategy 抽象 = 把"并发模型"做成可插拔插件
-- **决策**:把"决定下一个任务是啥 + 分给哪些主机"抽成 `StrategyBase` 基类,内置 `linear`(默认)/`free`(自由)/`host_pinned`(粘性)/`debug`
-- **WHY**:
-  1. linear 是经典模式:每台机器跑完 task1 再集体跑 task2,看日志最直观
-  2. free 模式可以一台机器快也跑得快,不等人
-  3. 如果哪天想加"滚动升级"或"金丝雀",改 strategy 就行,不碰 executor
-- **代价**:第一次看 `_get_next_task_lockstep` 会很懵,因为它要把"逻辑上每个 host 自己的状态"和"全局任务游标"对齐
-- **代码位置**:`lib/ansible/plugins/strategy/linear.py:52-96` 关键算法——`task_uuids` 集合比对 + `iterator.all_tasks[iterator.cur_task]` 滑动指针
-
-### 4.4 关键架构时序图
-
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant CLI as ansible-playbook
-    participant PBE as PlaybookExecutor
-    participant TQM as TaskQueueManager
-    participant STR as Strategy(linear)
-    participant W as WorkerProcess
-    participant CON as Connection(ssh)
-    participant H as 目标主机
-
-    U->>CLI: ansible-playbook site.yml
-    CLI->>PBE: PlaybookExecutor(playbooks, inventory, ...)
-    PBE->>PBE: Playbook.load() 解析 YAML
-    loop 每个 play
-        PBE->>TQM: tqm.run(play)
-        TQM->>STR: strategy.run(iterator, play_context)
-        loop 每个 task
-            STR->>STR: _get_next_task_lockstep()
-            STR->>TQM: queue 每个 (host, task) 到 worker
-            TQM->>W: WorkerProcess.start()
-            W->>W: TaskExecutor.__init__
-            W->>STR: enqueue 到 FinalQueue
-        end
-        W->>CON: connection_loader.get('ssh')
-        CON->>H: ssh user@host command
-        H-->>CON: stdout/stderr/rc
-        CON-->>W: result dict
-        W-->>TQM: FinalQueue.send_task_result
-        TQM->>U: callback('v2_runner_item_on_ok', ...)
-    end
-    U-->>U: stats: ok=10 changed=3 failed=0
-```
-
-## 5. 代码深度解析(带 WHY)⭐ 重点
-
-### 5.1 骨架代码定位
-
-读 ansible 第一条铁律:从 `executor/playbook_executor.py` 开始,因为它就是"5 步跑一个 playbook"的全部真相。
-
+**解决方案**：引入 `TaskQueueManager` + `StrategyBase` 把调度拆成四层：`Playbook → Play → Strategy → Worker`。Strategy 决定"先 host 后 task"还是"先 task 后 host"，把 host×task 矩阵的迭代顺序策略化；WorkerProcess 是 fork 出来的子进程，通过 `queue.Queue` 抢活执行。
 ```python
-# lib/ansible/executor/playbook_executor.py:40-65
-class PlaybookExecutor:
-    def __init__(self, playbooks, inventory, variable_manager, loader, passwords):
-        self._playbooks = playbooks
-        ...
-        # WHY: 如果只是 --list-tasks / --syntax-check,根本不需要 TQM 进程池
-        if context.CLIARGS.get('listhosts') or context.CLIARGS.get('listtasks') or \
-                context.CLIARGS.get('listtags') or context.CLIARGS.get('syntax'):
-            self._tqm = None
-        else:
-            self._tqm = TaskQueueManager(...)
+class TaskQueueManager:
+    def __init__(self, inventory, variable_manager, loader, hosts, ...):
+        self._strategy = strategy_loader.get(...)
+        self._queue = queue.Queue()
+        for i in range(forks):
+            wp = WorkerProcess(self._queue, ...)
+            self._workers.append(wp)
+            wp.start()
 ```
 
-**WHY 分析**:`self._tqm = None` 是一个重要信号——它揭示 ansible 的"读模式"和"执行模式"共用一条解析管线。`--list-tasks` 不需要 fork 任何子进程,不需要 ssh 任何机器,只需要"解析 YAML + 渲染 Jinja + 排序"。所以"只列不跑"复用同一份执行器,只把 TQM 短路掉。这比"另写一个 list 模式"省一半代码,但代价是所有 list 路径都得 `if self._tqm is None` 判空(你会在 100+ 处看到)。
+**关键参数**：
+- `PlaybookExecutor` 编排整本 playbook
+- `TaskQueueManager` 管理单个 play 的 host/task 队列
+- `StrategyBase` 子类决定 host × task 的迭代策略
+- `WorkerProcess` fork 出的子进程，真正执行 module
+- `forks` 默认 5——并行执行 5 个 host
 
+**最佳实践**：用 Strategy 模式把"调度"与"执行"解耦——可独立扩展；WorkerProcess 用 `multiprocessing` 而非 `threading`——避开 GIL；失败隔离：单个 host 失败不影响其他 host。
+
+---
+
+### 模式 2：linear / free / host_pinned 三种 Strategy
+
+**问题场景**：不同 playbook 想要的"任务执行策略"不同：默认按 host 串行（保证一致性）；紧急修复用 free 策略（不串行）；网络设备用 host_pinned（同一连接复用）。把策略写死在调度器里会丧失灵活性。
+
+**解决方案**：把"host × task 矩阵的迭代顺序"抽成 `StrategyBase` 抽象类，提供三个内置实现。`linear` 按 host 串行（host-major），`free` 按 task 并行（task-major），`host_pinned` 复用同一 host 的 connection。Strategy 是插件——用户可写自定义 Strategy。
 ```python
-# lib/ansible/executor/playbook_executor.py:170-200 关键循环
-batches = self._get_serialized_batches(play)
-for batch in batches:
-    self._inventory.restrict_to_hosts(batch)  # 把清单限到当前 batch
-    try:
-        result = self._tqm.run(play=play)
-    except AnsibleEndPlay as e:
-        result = e.result
-        break
-    # 整批全失败才退出,而非一个失败就退
-    if len(batch) == failed_hosts_count:
-        break_play = True
-        break
+class StrategyModule(StrategyBase):
+    def _execute_meta(self, task, play_context, iterator, ...):
+        for host in self._inventory.get_hosts(play.hosts):
+            for task in play.tasks:
+                self._queue.put((host, task))
 ```
 
-**WHY 分析**:这是 `serial: 30%` 这种滚动升级语义的实现核心。每轮跑 N 台,全失败就 break,否则继续 batch。如果你写 `serial: 1` 那就是逐台金丝雀,失败立刻停;写 `serial: 100%` 就是一把梭。
+**关键参数**：
+- `linear`：host-major（按 host 串行），默认；强一致
+- `free`：task-major（按 task 并行），紧急 fix、读多写少
+- `host_pinned`：host-major + 复用连接，网络设备、低带宽
+- `debug`：单步执行，调试专用
+- `strategy: free` 在 playbook 顶部声明——per-playbook 切换
 
-### 5.2 单文件分析卡
+**最佳实践**：`linear` 是默认——新手用就够；`host_pinned` 是网络设备场景的杀手锏——复用 SSH 连接减少握手；选错策略会引发"host 间状态不一致"——业务层要清楚。
 
-#### 文件 1:`lib/ansible/executor/play_iterator.py`(677 行)
-- **作用**:用状态机模拟"playbook 语义"——setup → tasks → rescue → always → handlers
-- **关键抽象**:
-  - `IteratingStates` 枚举:`SETUP=0, TASKS=1, RESCUE=2, ALWAYS=3, HANDLERS=4, COMPLETE=5, VALIDATE=6`
-  - `FailedStates` 位标志:`SETUP=1, TASKS=2, RESCUE=4, ALWAYS=8, HANDLERS=16, VALIDATE=32`(用 IntFlag 可以位或,一次表达"哪些阶段挂过")
-  - `HostState` 每主机一份,记录当前游标 `cur_block` / `cur_regular_task` / `cur_rescue_task` / `cur_always_task`
-- **WHY 用两个状态(run_state + fail_state)**:
-  ```python
-  # line 70-71
-  self.run_state = IteratingStates.SETUP
-  self.fail_state = FailedStates.NONE
-  ```
-  正常情况下,run_state 决定下一步;但 tasks 阶段挂掉时,run_state 还能往前走,只是要切到 RESCUE 段;用位标志 `fail_state |= FailedStates.TASKS` 就能记住"我曾在 TASKS 阶段挂过",决定是否触发 handler
-- **必看段**:`play_iterator.py:38-56`(枚举定义) + `play_iterator.py:144-150`(PlayIterator 入口)
+---
 
-#### 文件 2:`lib/ansible/executor/task_queue_manager.py`(525 行)
-- **作用**:进程池、队列、回调总线
-- **关键设计**:`FinalQueue` 继承 `multiprocessing.queues.SimpleQueue`,提供 `send_callback` / `send_task_result` / `send_display` / `send_prompt` 四个语义化方法
-- **WHY dataclass 化消息**:
-  ```python
-  # line 68-72
-  @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
-  class CallbackSend:
-      method_name: str
-      wire_task_result: WireTaskResult
-  ```
-  `frozen + slots` 防止子进程意外改消息;`kw_only` 让字段名强制写出,避免位置参数错位。这种设计在 Py3.10+ 是惯例,ansible 在 2.18+ 全面铺开
-- **必看段**:`task_queue_manager.py:128-200`(TQM 构造) + `task_queue_manager.py:91-110`(FinalQueue 协议)
+### 模式 3：fork 多进程 + 队列的 Producer-Consumer
 
-#### 文件 3:`lib/ansible/executor/task_executor.py`(1075 行)
-- **作用**:在 worker 进程内,完成"加载 action → 连主机 → 传模块 → 收结果 → 处理 loop"
-- **loop 处理**(`_get_loop_items`):
-  ```python
-  # line 142-193
-  if self._task.loop_with:
-      terms = self._task.loop
-      if isinstance(terms, str):
-          terms = task_ctx.task_templar.resolve_to_container(...)
-      @_DirectCall.mark
-      def invoke_lookup() -> t.Any:
-          return _invoke_lookup(plugin_name=self._task.loop_with, lookup_terms=terms, lookup_kwargs=dict(wantlist=True), invoked_as_with=True)
-      items = task_ctx.task_templar.evaluate_expression(
-          expression=TrustedAsTemplate().tag("invoke_lookup()"),
-          local_variables=dict(invoke_lookup=invoke_lookup),
-      )
-  ```
-  **WHY**:旧式 `with_items: fileglob/*` 是个 lookup 插件,但用户写的是 Jinja 模板。ansible 把 `invoke_lookup()` 注入到当前模板的局部变量,模板渲染到这一步时调用 lookup 拿回结果。这种"局部变量 + TrustedAsTemplate 标签"的套路,既保证 lookup 是用户授权调用,又让宿主变量不污染
-- **必看段**:`task_executor.py:95-140`(run 入口 + 三段 try/except/finally) + `task_executor.py:142-193`(loop 处理)
+**问题场景**：Python GIL 让多线程无法利用多核；几千台机器的并发不能阻塞主进程。线程模型在 CPU 密集型 module 执行下完全失效。
 
-#### 文件 4:`lib/ansible/plugins/strategy/linear.py`(395 行)
-- **作用**:默认 strategy,实现"等所有 host 跑完当前 task 才进下一个"
-- **关键算法** `_get_next_task_lockstep`:
-  ```python
-  # line 52-96
-  for host in hosts:
-      state, task = iterator.get_next_task_for_host(host, peek=True)
-      ...
-  task_uuids = {t._uuid for s, t in state_task_per_host.values()}
-  # 从全局游标往前走,直到找到这些 host 共同的 task
-  while _loop_cnt <= 1:
-      try:
-          cur_task = iterator.all_tasks[iterator.cur_task]
-      except IndexError:
-          iterator.cur_task = 0
-          _loop_cnt += 1
-      else:
-          iterator.cur_task += 1
-          if cur_task._uuid in task_uuids:
-              break
-  ```
-  **WHY**:每个 host 自己的 state 可能是"我已经过了这个 task"(比如前面失败跳到了 rescue),所以不能简单"取 all_tasks[0]"。"peek + uuid 对齐"算法保证:这个 task 在所有还活着的 host 那里都是"下一个该跑"。`while _loop_cnt <= 1` 是个保险,防止游标越过界后无限循环
-- **必看段**:`linear.py:50-96`(lockstep 算法) + `linear.py:98-180`(主 run 循环)
-
-#### 文件 5:`lib/ansible/plugins/loader.py`(1906 行,86KB)
-- **作用**:全项目最复杂的文件之一,统一加载所有插件类型
-- **关键设计**:
-  - `@functools.cache` 装饰 `get_all_plugin_loaders`,把"枚举 globals 里所有 PluginLoader 实例"做一次性缓存
-  - 插件目录支持:内置 → 用户的 `~/.ansible/plugins/<type>/` → collection 里的 plugins/<type>/
-- **必看段**:`loader.py:73-96`(`get_all_plugin_loaders` 反射机制) + `loader.py:99-129`(`get_shell_plugin` 解析 shell 类型)
-
-### 5.3 设计模式
-
-| 模式 | 体现 | 收益 |
-|---|---|---|
-| 模板方法(Template Method) | `ActionBase._execute_module` 留 `def run` 给子类覆盖 | 70+ 模块共享 connection/结果处理,只重写 run |
-| 策略模式(Strategy) | `StrategyBase` / linear / free / debug | 切换并发模型不动 executor |
-| 工厂 + 反射 | `PluginLoader.get()` 找类、构造、缓存 | 插件 = 文件即注册 |
-| 数据传输对象(DTO) | `UnifiedTaskResult` / `WireTaskResult` / `CallbackSend` | 子进程 → 主进程消息协议 |
-| 状态机(State Machine) | `IteratingStates` + `FailedStates` | 表达 rescue/always/handler 触发 |
-| 装饰器 | `@_DirectCall.mark`、`@lock_decorator` | 标记 lookup 行为、文件锁 |
-| ContextVar | `TaskContext` 跨函数传当前 task | 替代显式参数 |
-
-### 5.4 反模式 / 坑
-
-- **过度反射**:`loader.py:73` `get_all_plugin_loaders()` 用 `globals()` 反射找 `PluginLoader` 实例,任何 typo 都不会被静态检查抓到
-- **隐式全局状态**:`from ansible import context` 之后 `context.CLIARGS['forks']` 满天飞,调试时不知道谁改的
-- **Base+NonInheritableFieldAttribute 元类**:Play/Block/Task 全靠元类自动注册字段,错误信息极难读
-- **fork + tempfile**:`worker.py:97` 重置 `_tempfiles` set 是必须的,但哪天换成 spawn 模型这个 hack 会失效
-- **YAML 即一切**:`block:` `rescue:` `always:` 用缩进表达控制流,IDE 支持差,大 playbook 排错痛苦
-
-### 5.5 独特看点
-
-- **ansiballz 模块打包**(`executor/module_common.py`):把模块代码 + 它依赖的 `module_utils/*` 一起 zip + base64 打成单文件,再 ssh 推到目标;目标端反序列化加载。**WHY**:目标机器可能没装 ansible、Python 版本可能不同、需要避开"远程 import"的网络依赖。这是 ansible 在异构环境里能跑的核心魔法
-- **Vault 加密串**:`EncryptedString` 类型让字符串在内存里也是加密的,只有渲染时才解密,大幅减少误日志泄露
-- **FQCN 解析**:`collection_loader._collection_finder` 支持 `community.general.apt` 这种完全限定名,目录扫描时反向构造 collection 路径
-- **2.0 引入的 strategy 抽象**:这是 ansible 演进的"换挡"时刻,从单一执行模型变成可插拔;`free` 模式让"我跑得快的机器不等我"成为可能,大幅节省批量执行时间
-
-## 6. 运行机制(Bring It Up)
-
-### 6.1 启动脚本
-
-```bash
-# 装本体
-pip install ansible-core
-
-# 或者源码装
-cd ansible-core/
-pip install -e .
-
-# 看版本
-ansible --version
-# ansible [core 2.20.x]
-#   config file = None
-#   configured module search path = [...]
-#   ansible python module location = ...
-#   executable location = ...
-#   python version = 3.12.x
+**解决方案**：用 `multiprocessing` + `queue.Queue` 跑经典 Producer-Consumer：主进程（Producer）枚举 host×task 投递进队列，子进程（Consumer）抢活执行。每个 Worker 是独立 Python 进程，吃满多核。
+```python
+def _start_workers(self):
+    for i in range(self._forks):
+        wp = WorkerProcess(
+            self._queue, self._loader,
+            self._variable_manager, self._hostvars, ...
+        )
+        self._workers.append(wp)
+        wp.start()
 ```
 
-### 6.2 本地起一个 smoke test
+**关键参数**：
+- `forks` 默认 5，`-f 10` 提高并行度
+- `timeout` 默认 30s——单 task 超时
+- `connect_timeout` 默认 10s——SSH 连接超时
+- `pipelining: True`——减少 SSH 握手 50%+ 时间
+- `pipelining` 需要目标机支持 `ControlPersist`
 
-最小 play:
+**最佳实践**：`forks` 不要超过 CPU 核数 × 2——子进程也是 Python 进程，吃 CPU；加大 forks 不一定加速——被控机 CPU/带宽可能先到瓶颈；调试时把 forks 设 1——单步走查。
 
+---
+
+### 模式 4：WorkerProcess 子进程隔离
+
+**问题场景**：某个 module 崩溃（segfault / OOM）不能拖垮整个 playbook；某个 module 内存泄漏不能积累；Python 全局状态（如 signal handler）需要每个子进程独立。同进程多线程做不到这种"硬隔离"。
+
+**解决方案**：`WorkerProcess` 是 `multiprocessing.Process` 子类，fork 出来的子进程完全独立——崩溃不传染、内存不共享、信号独立处理。用 `queue.put(None)` 哨兵优雅停止。
+```python
+class WorkerProcess(multiprocessing.Process):
+    def run(self):
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        while True:
+            try:
+                work_item = self._queue.get(block=True, timeout=1.0)
+                if work_item is None: break
+                result = self._execute(work_item)
+            except queue.Empty:
+                continue
+```
+
+**关键参数**：
+- 进程隔离：`multiprocessing.Process`，避开 GIL、隔离崩溃
+- 临时目录：`rsync_tmpdir` per-worker，module 产物临时存放
+- 信号处理：子进程独立 `SIGTERM`，不互相干扰
+- 哨兵退出：`queue.put(None)` 触发优雅停止
+- `block=True, timeout=1.0` 让子进程能响应 SIGTERM
+
+**最佳实践**：子进程完全独立——一个崩了不影响其他；临时目录用 `mkdtemp` + `finally cleanup`——避免残留；子进程退出时主动 flush 输出缓冲区。
+
+---
+
+### 模式 5：async / poll 长任务支持
+
+**问题场景**：部署一个 10GB 数据库需要 30 分钟，但 ansible 默认 task timeout 30 秒。短超时无法处理"启动后要跑几小时"的场景。
+
+**解决方案**：用 `async` + `poll` 拆解"启动"与"轮询"两步：`async: 1800` 让 task 跑在后台最多 30 分钟，`poll: 0` 启动后立即返回不阻塞 playbook，后续 task 用 `async_status` 显式轮询 jid 状态。
 ```yaml
-# smoke.yml
-- name: local smoke
-  hosts: localhost
-  gather_facts: false
-  tasks:
-    - name: ping
-      ansible.builtin.ping:
-    - name: echo
-      ansible.builtin.debug:
-        msg: hello from ansible
+- name: 启动数据库迁移
+  command: /opt/migrate.sh
+  async: 1800
+  poll: 0
+- name: 等待所有迁移完成
+  async_status:
+    jid: "{{ item.ansible_job_id }}"
+  register: job_result
+  until: job_result.finished
+  retries: 300
+  delay: 6
 ```
 
-跑:
+**关键参数**：
+- `async`：task 最大运行秒数
+- `poll`：主进程轮询间隔（默认 10s）
+- `poll: 0`：启动后立即返回，不轮询
+- `async_status`：显式轮询另一个 jid
+- `retries` + `delay` + `until` 经典"轮询直到完成"
 
+**最佳实践**：`async` > 0 让 task 跑在后台——不被 timeout 杀；`poll: 0` 启动后立即返回——不阻塞 playbook 流程；长任务 + 短任务不要混——放不同 play。
+
+---
+
+## 第二段：扩展范式
+
+### 模式 6：SSH connection 插件的"无代理"哲学
+
+**问题场景**：Puppet/Chef 都需要在被控机装 agent——但"装"本身就是鸡生蛋问题：装之前怎么管？firewall 怎么开？agent 升级怎么推？任何需要"先装"的方案都有"冷启动空窗"。
+
+**解决方案**：ansible 走"无代理"路线——只靠 SSH，一个**所有** Linux 都有的东西。`Connection` 插件只负责"如何到达远端"，不依赖任何被控机上的额外软件。Windows 用 WinRM 等价替换。
+```python
+class Connection(ConnectionBase):
+    def _connect(self):
+        ssh_cmd = ['ssh', '-o', 'ControlMaster=auto', ...]
+        self.ssh = subprocess.Popen(ssh_cmd, ...)
+    def exec_command(self, cmd, in_data=None, sudoable=True):
+        # 在远端执行命令
+        # 读 stdout/stderr/returncode
+        ...
+```
+
+**关键参数**：
+- 通道：SSH（默认）/ WinRM / Paramiko / Local
+- 认证：密码 / 公私钥 / Kerberos / 证书
+- 持久连接：`ControlMaster=auto` 复用
+- 文件传输：SFTP / SCP / pipe
+- WinRM 是 Windows 机器的 SSH 等价
+
+**最佳实践**：`pipelining: True` 启用 SSH 长连接——减少 50%+ SSH 握手时间；优先用公私钥 + `ssh-agent`——避免明文密码；Local connection 给本机自调用——跳过 SSH。
+
+---
+
+### 模式 7：ansiballz 黑魔法——把 module 打成 base64 字符串
+
+**问题场景**：module 是 Python 代码，但远端机器可能没装 ansible。如何让远端机器"零安装"也能跑 ansible module？
+
+**解决方案**：ansiballz 把 module 源码 + 依赖（module_utils）打成 zip → base64 字符串，通过 SSH `python -c "exec(base64.b64decode(...))"` 在远端执行。远端机器只需要 Python，连 ansible 都不用装。
+```python
+def _get_shebang_payload(module_path, arg_paths, task_vars, ...):
+    # 1. 读 module 源码
+    # 2. 收集所有 module_utils 依赖
+    # 3. 注入 ANSIBLE_* 参数
+    # 4. zip + base64 打包
+    # 5. 构造 wrapper：#!/usr/bin/python ... exec(_ANSIBLE_CODE)
+```
+
+**关键参数**：
+- 主进程打包：module + module_utils → zip（100KB-2MB）
+- base64 编码：zip → ASCII（× 1.37）
+- SSH 传输：scp 或 sftp
+- 远端执行：`python <module> <args>`，落地临时文件
+- 结果回传：JSON stdout（< 10KB）
+
+**最佳实践**：ansiballz 让 module 看起来"自带依赖"——远端不需要装 ansible；临时落地 `/root/.ansible/tmp/...`——远端不留痕；自定义 module 不用 ansiballz——直接 `command: python /path/to/module.py`。
+
+---
+
+### 模式 8：JSONArgs 协议——主进程与远端 module 的接口
+
+**问题场景**：主进程要在远端 module 上调用 `module(arg1=..., arg2=...)`——但 Python pickle 跨进程不安全，跨机器更不安全。需要一个稳定、跨语言、跨版本的 IPC 协议。
+
+**解决方案**：ansiballz 用**纯 JSON**做 IPC：参数序列化为 JSON 通过 stdin 传入，远端 module 反序列化执行，结果用 JSON 写到 stdout。`ANSIBLE_MODULE_ARGS` 是唯一业务入参通道，元数据走其他字段。
+```python
+# 主进程：构造 module 入参
+args = json.dumps({
+    'ANSIBLE_MODULE_ARGS': {
+        'path': '/etc/nginx/nginx.conf',
+        'state': 'present',
+    },
+    'ANSIBLE_HOST': 'web01.example.com',
+})
+# 远端 module 入口
+def main():
+    args = json.loads(sys.stdin.readline())
+    result = {'changed': True, 'path': args['ANSIBLE_MODULE_ARGS']['path']}
+    print(json.dumps(result))  # stdout 输出结果
+```
+
+**关键参数**：
+- `ANSIBLE_MODULE_ARGS`：主 → 远端，JSON 业务入参
+- `ANSIBLE_HOST` 等元数据：主 → 远端，JSON 环境
+- 结果：远端 → 主，JSON stdout
+- 错误：远端 → 主，JSON `{"failed": true, "msg": "..."}`
+- 调试：远端 → 主，stderr（非结构化）
+
+**最佳实践**：JSON 协议不依赖 Python pickle——跨语言、跨版本安全；任何非 JSON 字段用 `no_log: True` 标记——防泄露；`result['failed']` / `result['changed']` 是约定字段。
+
+---
+
+### 模式 9：module_utils 共享代码库
+
+**问题场景**：100+ module 之间要共享"参数校验"、"文件操作"、"包管理"等工具。每 module 重复写 `if arg is None` 校验是巨大浪费。
+
+**解决方案**：ansiballz 打包时**自动**收集所有 `from ansible.module_utils.xxx import *` 的依赖，把共享代码内联到 module payload 里。`AnsibleModule` 入口类是 80%+ module 的基类，提供参数校验、exit_json/fail_json 等统一接口。
+```python
+class AnsibleModule:
+    def __init__(self, argument_spec, ...):
+        self.params = self._load_params()
+        self._check_argument_spec()
+    def exit_json(self, **kwargs):
+        print(json.dumps(kwargs))
+        sys.exit(0)
+    def fail_json(self, **kwargs):
+        kwargs['failed'] = True
+        print(json.dumps(kwargs))
+        sys.exit(1)
+```
+
+**关键参数**：
+- `basic.py`：入口类 `AnsibleModule`，被 80%+ module 引用
+- `apt.py` / `yum.py`：包管理器抽象
+- `urls.py`：HTTP 请求工具
+- `files.py`：文件属性操作
+- `argument_spec`：集中参数校验入口
+
+**最佳实践**：任何 module 必须从 `ansible.module_utils.basic` import `AnsibleModule`；`argument_spec` 走集中校验——避免重复 `if` 判断；`exit_json` / `fail_json` 是约定——确保主进程能解析；module_utils 改动要谨慎——影响所有 module。
+
+---
+
+### 模式 10：become（sudo）权限提升的 connection 钩子
+
+**问题场景**：很多操作需要 root，但 SSH 登录的是普通用户。如何在不污染 module 代码的前提下注入提权？
+
+**解决方案**：把"提权"实现成 connection 插件的钩子——`become: yes` 让 `exec_command` 在远端命令前注入 `sudo`。`become` 是在 connection 层实现的，**不**污染 module 代码——module 只关心参数。
+```python
+def exec_command(self, cmd, in_data=None, sudoable=True):
+    if sudoable and self._play_context.become:
+        cmd = self._play_context.become_method + ' ' + cmd
+    return self._run(cmd, in_data)
+```
+
+**关键参数**：
+- `sudo`：Linux 默认，`sudo -E -u root -H`
+- `su`：老 Linux，`su - root -c '...'`
+- `pbrun`：PowerBroker 商业版
+- `runas`：Windows 走 WinRM
+- `doas`：OpenBSD 的轻量提权
+- `become_user: postgres` 可指定非 root
+
+**最佳实践**：`become: yes` + `become_method: sudo` 是默认——90% 场景；SSH 登录用户需要在 sudoers——`NOPASSWD` 或 `visudo` 配置；提权是 connection 钩子——不污染 module 代码。
+
+---
+
+## 第三段：进阶范式
+
+### 模式 11：Playbook YAML 解析与 DataLoader
+
+**问题场景**：YAML 解析容易踩坑（缩进、类型转换、重复键）。直接 `yaml.load()` 接受任意 Python 对象，有 RCE 风险。还要支持 Vault 透明解密。
+
+**解决方案**：用 `DataLoader` 统一加载所有 YAML——`safe_load` 拒绝任意 Python 对象、`_FILE_CACHE` 内存缓存避免重复读、`_decrypt_vault` 透明解密 Vault 加密的 YAML。所有加载（playbook/role/inventory）都走同一个入口。
+```python
+class DataLoader:
+    def load_from_file(self, path, ...):
+        if path in self._FILE_CACHE:
+            return self._FILE_CACHE[path]
+        with open(path, 'r') as f:
+            data = f.read()
+        data = self._decrypt_vault(data, path)
+        parsed = yaml.safe_load(data)
+        self._FILE_CACHE[path] = parsed
+        return parsed
+```
+
+**关键参数**：
+- YAML parser：`PyYAML`（成熟）
+- 缓存：内存 dict，重复 import 加速
+- Vault：ansible-vault 原生支持
+- `safe_load`：防任意 Python 对象 RCE
+- `DataLoader` 注入到 Strategy / Task——所有加载都走它
+
+**最佳实践**：所有 YAML 走 `DataLoader`——统一缓存 + Vault；`safe_load` 拒绝任意 Python 对象——防 RCE；重复 import 同一个文件不会重读——缓存命中；Vault 加密的 YAML 透明解密——用户无感。
+
+---
+
+### 模式 12：Jinja2 模板引擎 + unsafe_proxy 防泄露
+
+**问题场景**：配置文件中要嵌入变量（`{{ port }}`），且密码字段**不能**打到日志。直接 Jinja2 渲染会把密码原文显示在 debug 输出里。
+
+**解决方案**：用 Jinja2 渲染，包装 `unsafe_proxy` 标记敏感字段——`__repr__` 拦截后只显示 `VALUE_DISPLAYED_TO_USER_TRACEBACK`。`no_log: True` 在 task 级别禁止打印敏感字段。
+```python
+class Templar:
+    def template(self, variable):
+        if self._is_unsafe(variable):
+            return self._wrap_unsafe(variable)
+        return self._environment.from_string(variable).render(self._available_variables)
+    def _wrap_unsafe(self, value):
+        return wrap_var(value)  # repr 时只显示 VALUE_DISPLAYED_TO_USER_TRACEBACK
+```
+
+**关键参数**：
+- `{{ var }}`：Jinja2 变量替换
+- `{{ var | filter }}`：Jinja2 filter 链
+- `{{ var | default('x') }}`：默认值 filter
+- `no_log: True`：task 敏感字段不打印
+- `unsafe_proxy`：标记密码字段，避免日志泄露
+
+**最佳实践**：密码字段必须用 `no_log: True`——防 `ansible-playbook` 输出；`{{ var | default('x') }}` 比 `if-else` 简洁；Jinja2 支持 `{% if %}` / `{% for %}`——但 playbook 里不建议复杂逻辑。
+
+---
+
+### 模式 13：Ansible Vault 加密
+
+**问题场景**：playbook 里有密码/API key——直接 commit 到 git 不安全。需要"加密后可审计"+"运行时透明解密"的存储方案。
+
+**解决方案**：Ansible Vault 用 AES-256-CTR 加密整个 YAML 文件，PBKDF2 + 10000 轮做 KDF 抗暴力破解。Header `$ANSIBLE_VAULT;1.1;AES256` 标识文件类型。`DataLoader` 钩子在加载时透明解密——用户无感。
 ```bash
-ANSIBLE_STDOUT_CALLBACK=default ansible-playbook -i 'localhost,' -c local smoke.yml
+# 创建 / 编辑 / 加密 / 解密
+ansible-vault create secret.yml
+ansible-vault edit secret.yml
+ansible-vault encrypt vars.yml
+ansible-vault decrypt vars.yml
+# 运行时提供密码
+ansible-playbook site.yml --ask-vault-pass
+ansible-playbook site.yml --vault-password-file ~/.vault_pass
 ```
 
-预期输出:
-- `PLAY [local smoke]`
-- `TASK [ping]` ok
-- `TASK [echo]` ok: `hello from ansible`
-- `PLAY RECAP` `localhost: ok=2 changed=0 unreachable=0 failed=0`
+**关键参数**：
+- 算法：AES-256-CTR，工业级
+- KDF：PBKDF2 + 10000 轮，抗暴力
+- Header：`$ANSIBLE_VAULT;1.1;AES256`
+- 多密码：`--vault-id label@path` 支持多 vault
+- 透明解密：DataLoader 钩子自动处理
 
-### 6.3 三种跑法对比
+**最佳实践**：密码文件 `chmod 600`——严禁进 git；不同环境用不同 vault（dev/staging/prod）——`--vault-id` 隔离；`ansible-vault rekey` 定期换密码；vault 文件可纳入 git——加密后可审计 diff。
 
-```mermaid
-flowchart TD
-    A[ansible-playbook site.yml] --> B{清单来源}
-    B -->|文件| C[inventory.ini]
-    B -->|动态| D[aws_ec2.py]
-    B -->|临时| E[-i 'host1,host2,']
-    A --> F{连接方式}
-    F -->|默认 ssh| G[Connection=ssh]
-    F -->|本地| H[Connection=local -c local]
-    F -->|Windows| I[Connection=winrm]
-    A --> J{并发度}
-    J --> K[forks=5 默认]
-    J --> L[forks=50 提速]
-    J --> M[serial 30% 滚动]
+---
+
+### 模式 14：变量优先级链的 22 个 source
+
+**问题场景**：同一个变量可能在 22 个地方定义，优先级必须明确。CI 注入的环境变量、playbook 里的 vars、host facts 冲突时，ansible 必须给出"谁覆盖谁"的铁律。
+
+**解决方案**：ansible 的变量优先级是"显式大于隐式"——`command-line > playbook vars > host facts > role defaults > ...`。22 个 source 排成一条链，命中即用。
+```
+优先级从高到低：
+1. -e command line        # 全局最强
+2. role params             # role 传参
+3. play vars               # play 内 vars
+4. vars_files              # play 外部 vars
+5. role vars               # role 内 vars
+6. host facts              # setup 模块采集
+7. play defaults           # play 默认
+8. role defaults           # role 默认
+9. group_vars / host_vars  # 主机清单分组
+10. inventory vars         # 清单内置
 ```
 
-## 7. 演进历史(Time Travel)
+**关键参数**：
+- `-e` command line：全局最强，CI/CD 注入环境变量用
+- `defaults/`：role 的"安全默认值"——可被覆盖
+- `host_vars/<hostname>.yml`：单 host 配置
+- `group_vars/<group>.yml`：组级配置
+- `debug: var=foo` 看实际生效值——不要猜
 
-ansible 的 changelog 在 `changelogs/fragments/`,每个 PR 一份 yaml(如 `77691-git-track-submodules-branch.yml`),合并时由 `changelogs/changelog.yaml` 聚合。这是 LFD(Lightweight Fragment Documentation) 模式,跟 k8s 的 `kep-xxx/` 异曲同工。
+**最佳实践**：不要在 5 个地方定义同一个变量——难调试；显式 `-e` 是"压倒性"——CI/CD 注入用；用 `debug: var=foo` 看实际生效值——不要凭直觉猜；把可变配置（端口、路径）放在 `-e`，把不可变默认值放在 `defaults/`。
 
-```mermaid
-gantt
-    title ansible 关键里程碑
-    dateFormat YYYY-MM
-    section 起步
-    1.0 发布(Python 2)        :done, 2013-01, 6M
-    section 2.x 重塑
-    2.0 strategy 抽象           :done, 2016-01, 12M
-    2.10 community 拆出          :done, 2019-10, 3M
-    section 现代化
-    ansible-core 独立包         :done, 2020-12, 6M
-    Python 3.12+ 强约束          :done, 2024-11, 3M
-    dataclass/slots 全面铺开     :active, 2025-01, 18M
-    section 未来
-    RPC host 替换 FinalQueue    :2026-06, 12M
-    移除 INJECT_FACTS_AS_VARS    :2026-12, 6M
+---
+
+### 模式 15：Handlers 与 notify 的"事件驱动"
+
+**问题场景**：nginx 配置改了，要 reload；服务首次安装要启动；配置文件变了**只**触发**一次**。在每个 task 后写"reload if changed"会让代码膨胀。
+
+**解决方案**：Handler 是"只在 notify 时执行"的 task，**且**整个 play 结束才跑。`notify` 在 task `changed: true` 时触发，handler 在 play 末尾**每个 handler 只跑 1 次**——天然去重。
+```yaml
+- name: 部署 nginx 配置
+  template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+  notify: reload nginx
+handlers:
+  - name: reload nginx
+    service:
+      name: nginx
+      state: reloaded
 ```
 
-**关键设计转折点**:
-- 2012:Michael DeHaan 从 Puppet/Cobbler 经验出发,写下第一行
-- 2016:2.0 引入 strategy,把"linear 唯一"打开成可插拔
-- 2019:2.10 把 `community.general` 等拆成独立 collection,核心包瘦身
-- 2020:`ansible-core` 拆出来,做小而稳的"kernel"
-- 2025:全面采用 dataclass/frozen/slots 做跨进程消息
-- 2026(计划):RPC host 模型替换 multiprocessing SimpleQueue
+**关键参数**：
+- `notify`：task `changed: true` 时触发
+- `handler`：被 notify 后排队，play 末尾跑，每个只跑 1 次
+- `force_handlers`：play 失败时也跑
+- `flush_handlers`：task 主动调用立即跑
+- 失败时 handler 默认不跑——`force_handlers: yes` 改
 
-## 8. 质量保障(How It Doesn't Break)
+**最佳实践**：handler 不是"修复"——是"事件响应"；整个 play 结束才跑——避免 reload 多次；同名 handler 在 play 末尾只跑 1 次——天然去重；`flush_handlers` 提前刷新——中间有"必须等 handler 跑完"的 task。
 
-ansible 的质量保障是 4 道防线:
+---
 
-```mermaid
-flowchart LR
-    A[PR 提交] --> B[sanity 黑盒]
-    B --> C[units 单元测试]
-    C --> D[integration 集成测试]
-    D --> E[functional 功能测试]
-    E --> F[codecov 覆盖率]
-    F --> G[Azure Pipelines 多平台]
+## 第四段：实战范式
+
+### 模式 16：7 大类插件的能力扩展点
+
+**问题场景**：ansible 不可能内置所有"连接方式"（SSH/WinRM/Local）、所有"模块"（apt/yum/docker）、所有"过滤"（upper/lower/json_query）——必须有插件机制。
+
+**解决方案**：定义 7 大类插件作为 ansible 的所有扩展点：`connection`（通道）、`action`（任务动作）、`lookup`（数据查找）、`filter`（数据转换）、`test`（条件判断）、`strategy`（执行策略）、`callback`（输出回调）。每类插件都是 `BasePlugin` 子类，独立分发与加载。
+```python
+PLUGIN_TYPES = [
+    'connection',   # ssh / winrm / local / docker
+    'action',       # normal / copy / template
+    'lookup',       # file / template / env / pipe
+    'filter',       # upper / lower / json_query
+    'test',         # defined / file_exists / version
+    'strategy',     # linear / free / host_pinned
+    'callback',     # json / yaml / junit
+]
 ```
 
-1. **单元测试** `test/units/`:Python unittest,2500+ 文件
-2. **集成测试** `test/integration/`:跑真实 SSH 容器,验证 ssh/winrm
-3. **功能测试** `test/integration/`:针对每个模块(apt/copy/service)的完整场景
-4. **Sanity 测试** `test/sanity/`:YAML 风格、import 顺序、文档格式、字符编码
+**关键参数**：
+- `connection`：远端通道，`ssh.py` / `winrm.py` / `local.py`
+- `action`：任务动作，`copy.py` / `template.py`
+- `lookup`：数据查找，`file.py` / `env.py` / `pipe.py`
+- `filter`：数据转换，`upper.py` / `json_query.py`
+- `test`：条件判断，`defined.py` / `version.py`
+- `strategy`：执行策略，`linear.py` / `free.py`
+- `callback`：输出回调，`json.py` / `junit.py`
 
-CI 入口:`.azure-pipelines/azure-pipelines.yml` 通过模板拉 `.azure-pipelines/templates/matrix.yml` 多平台矩阵(Linux/Mac/Windows 各 distro)、多 Python 版本(3.12/3.13/3.14)。
+**最佳实践**：7 大类覆盖了 ansible 所有扩展点；自定义插件放 `~/.ansible/plugins/<type>/<name>.py` 或 role 内；Collection 是插件的"分发单位"——多个插件打包；插件必须继承 `BasePlugin`——统一接口。
 
-Linting:ansible 自带 `hacking/` 目录(不是 hacking 工具),里面是 `test-*.py` 各种 sanity 检查脚本。
+---
 
-性能基准:`test/performance/` 不在主仓,但 `time-command.py` 在 `.azure-pipelines/scripts/` 提供命令级计时。
+### 模式 17：Collection 仓库的"分发单位"
 
-## 9. 生态依赖(Map of the World)
+**问题场景**：plugin 散落各仓库——用户安装/升级混乱。一个 collection 想用另一个 collection 的 lookup，但没声明依赖——运行时找不到。
 
-```mermaid
-flowchart TD
-    A[ansible-core] --> B[PyYAML]
-    A --> C[jinja2]
-    A --> D[cryptography]
-    A --> E[packaging]
-    A --> F[resolvelib]
-    A --> G[ansible.builtin collection]
-    G --> H[community.general]
-    G --> I[community.aws]
-    G --> J[community.kubernetes]
-    G --> K[community.docker]
-    A --> L[paramiko 可选]
-    A --> M[mitogen 第三方]
-    A --> N[awx 商业控制平面]
+**解决方案**：ansible 2.10 引入 **Collection** 概念：一个 collection 是一个**版本化的命名空间**，里面是一组相关插件/角色/模块/playbook。命名空间强制——避免冲突。`galaxy.yml` 声明 `dependencies`——自动安装依赖。
+```bash
+# 安装 collection
+ansible-galaxy collection install community.general
+# 安装特定版本
+ansible-galaxy collection install community.general:5.0.0
+# 从本地 tarball 安装
+ansible-galaxy collection install my_ns-my_coll-1.0.0.tar.gz
 ```
 
-依赖极少是 ansible 故意为之——只有 5 个必需 + 几个可选。`requirements.txt`:
+**关键参数**：
+- 命名空间：`<namespace>.<collection>`（如 `community.general`）
+- 仓库：`github.com/ansible-collections/<namespace>.<collection>`
+- 版本：SemVer 2.0 严格
+- 依赖：`galaxy.yml` 声明 `dependencies:`
+- 安装路径：`~/.ansible/collections/ansible_collections/<namespace>/<collection>/`
 
-```
-packaging
-jinja2
-PyYAML
-cryptography
-resolvelib
-# optional: paramiko, pypsrp, mitogen
-```
+**最佳实践**：Collection 取代了旧的 `roles/` 单体分发；`requirements.yml` 锁定 collection 版本——CI 一致；写自定义 collection——`ansible-galaxy collection init my_ns.my_coll`；Collection 内部版本独立于 ansible-core——升级节奏解耦。
 
-**合规检查清单**:
-- GPL-3.0-or-later 强 copyleft:任何衍生作品必须开源
-- CII Best Practices certification(README badge):过审的供应链安全认证
-- SECURITY.md 漏洞披露流程
-- SBOM 由 `pyproject.toml` 的 `[project.license-files]` 提供
+---
 
-## 10. 生产实践(Battle-Tested)
+### 模式 18：dynamic inventory 脚本化主机清单
 
-| 能力 | ansible 实现 | 代码位置 |
-|---|---|---|
-| 配置热更新 | `ansible --check --diff` dry-run + callback 二次确认 | `lib/ansible/cli/playbook.py` |
-| 优雅停服 | Ctrl-C → TQM `_terminated=True` → worker 收 sentinel 退出 | `task_queue_manager.py:182` |
-| 限流 | `forks=N` 进程池上限 + `serial: N%` 主机分批 | `task_queue_manager.py:168` |
-| 链路追踪 | 没有内置;靠 callback 插 OpenTelemetry | 社区 plugin |
-| 健康检查 | N/A(CLI 无服务端);`ansible --check` 做 dry run | CLI |
-| 结构化日志 | 默认 callback 输出人类可读;`json` callback 输出 JSON;`junit` 输出测试报告 | `lib/ansible/plugins/callback/` |
-| 失败回滚 | `block` + `rescue` + `always` | `lib/ansible/playbook/block.py` |
-| 灰度发布 | `serial: 10%` + `throttle: 1` + `delegate_to` | playbook 语法 |
-| Secret 管理 | `ansible-vault` 加密文件 + HashiCorp Vault lookup 插件 | `lib/ansible/parsing/vault/` |
-| 审计 | callback `log_plays` 写 syslog;`json` callback 写 ELK | `lib/ansible/plugins/callback/` |
+**问题场景**：1000+ 台机器的主机清单**不可能**手写 ini/yaml。云上 EC2 每天有实例启停——手写清单永远追不上。
 
-## 11. 社区文化(People & Process)
-
-ansible 的社区是"开源运维工具里最像 Linux 基金会"的那种:
-
-- **治理**:`community-of-interest`(COI)分组,如 `Ansible Core`,`Ansible AWS`,`Ansible Network`。每个 collection 都有 maintainer
-- **维护者**:Red Hat 员工占大头(Ansible 是 2015 年 RH 收购的项目),社区 maintainer 补位
-- **RFC**:走 GitHub PR,标题前缀 `[RFC]`;大特性先在 forum.ansible.com 讨论
-- **沟通渠道**:Matrix 实时聊天 + 论坛 forum.ansible.com(取代了原来的 google groups)+ Bullhorn 邮件 newsletter
-- **议题活跃度**:devel 分支 24h 内必有回复;forum 日均 100+ 新帖;每 6 个月发一个 minor 版本
-- **Code of Conduct**:`CODE_OF_CONDUCT.md` 明确;SIG-IR 应急响应小组
-- **贡献门槛**:新模块走 community.general;想进 ansible-core 需要 maintainer 提名 + 共识
-
-## 12. 教训总结(What To Steal / What To Avoid)
-
-### 12.1 必偷 3 件
-
-1. **DSL 用 YAML + 缩进表达控制流(block/rescue/always)**——好读、好 diff、好审计。代价是 IDE 智能差,但运维场景里可读 > 智能
-2. **Strategy 抽象让"并发模型"成为可插拔点**——任何"任务调度"系统(workflow engine、batch job、CI runner)都该学;不写死 linear,先抽出 base + 1 个内置实现
-3. **依赖极少 + GPL-v3**——少依赖是长寿的根因;GPL-v3 强 copyleft 保护企业生态
-
-### 12.2 必避 3 坑
-
-1. **不要 fork-based 并发做轻量任务**——ansible 的 fork 模型启动开销大(每个 worker 几百 ms),如果你的"任务"只是几行 Python,改用 asyncio 或线程池;fork 是给"重任务"用的
-2. **不要把"读模式"和"执行模式"强行合并**——ansible 用 `if self._tqm is None` 满天飞,代码可读性下降;现代项目应从一开始把"解析/校验"和"执行"切成两个不同入口
-3. **不要用元类自动注册字段**——Play/Task 的元类是新贡献者最大的心智障碍;用 dataclass + 显式 `Field()` 更友好
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7 天复刻 mini-ansible
-    dateFormat YYYY-MM-DD
-    section Day 1-2
-    CLI argparse + YAML 解析           :a1, 2026-06-02, 2d
-    section Day 3
-    Inventory + Connection(ssh)        :a2, after a1, 1d
-    section Day 4
-    Playbook/Task 领域对象             :a3, after a2, 1d
-    section Day 5
-    Strategy 抽象 + 进程池            :a4, after a3, 1d
-    section Day 6
-    Action 插件框架                    :a5, after a4, 1d
-    section Day 7
-    ansiballz 打包 + 集成测试          :a6, after a5, 1d
+**解决方案**：dynamic inventory 用脚本（任何语言）实时返回主机清单——对接 AWS EC2、Azure VM、CMDB。约定：脚本接收 `--list` 返回所有 host + groups JSON，`--host <hostname>` 返回单 host vars，stdout 是契约。
+```python
+#!/usr/bin/env python
+import json
+import boto3
+def main():
+    ec2 = boto3.client('ec2')
+    instances = ec2.describe_instances()
+    inventory = {
+        '_meta': {'hostvars': {}},
+        'web': [],
+        'db': [],
+    }
+    for r in instances['Reservations']:
+        for i in r['Instances']:
+            name = i['Tags'][0]['Value']
+            inventory['_meta']['hostvars'][name] = {
+                'ansible_host': i['PrivateIpAddress'],
+            }
+    print(json.dumps(inventory))
 ```
 
-### 12.4 打分卡
+**关键参数**：
+- `--list`：返回所有 host + groups（JSON）
+- `--host <hostname>`：返回单 host vars
+- `_meta.hostvars`：必须输出，否则 hostvars 为空
+- 缓存：inventory 缓存到本地文件，避免每次打 AWS API
+- `hostvars` 提前 prefetch 加载
 
-| 维度 | 评分 | 评语 |
-|---|---|---|
-| 创新性 | 9/10 | "无代理 + 推送"是杀手锏 |
-| 工程严谨度 | 8/10 | 数千 PR 打磨,4 道测试防线 |
-| 文档完整度 | 9/10 | docs.ansible.com 是行业标杆 |
-| 可读性 | 7/10 | 注释足,但元类 + 反射坑新人 |
-| 可扩展性 | 9/10 | 7 大类插件,几乎全可换 |
-| 性能 | 7/10 | 默认 fork 模型不优,mitogen 才能接近 ssh 极限 |
-| 安全性 | 8/10 | Vault 加密 + agentless 减攻击面 |
-| 社区活跃度 | 9/10 | 5000+ 贡献者,5 万 stars |
-| 总分 | 8.0/10 | 运维自动化领域的事实标准 |
+**最佳实践**：用 `ec2.py` / `gce.py` / `azure_rm.py` 等官方脚本；自定义 dynamic inventory 必须输出 `_meta.hostvars`；缓存 inventory 到本地文件——避免每次都打 AWS API；dynamic inventory 只返回 JSON——stdout 是契约。
 
-## 13. 学习萃取(Cheat Sheet)
+---
 
-### 一句话价值
-**"SSH 即总线、YAML 即语言、进程即隔离"**——这是 ansible 给整个运维行业的范式礼物。
+### 模式 19：lookup / filter / test 三种模板扩展
 
-### 3 个核心洞察
-1. **无代理 = 用户不装东西 = 采用阻力为零**——任何 B2B 工具都该问"能不能别让用户装客户端"
-2. **Strategy 抽象 = 把"调度策略"提升为一等公民**——比"参数化策略"更优雅
-3. **dataclass(frozen, slots) + multiprocessing.SimpleQueue = 跨进程消息协议的最佳实践**
+**问题场景**：模板里要查文件、读环境变量、转大写、判断文件是否存在。每种需求都写一个 module 太重——需要"轻量扩展点"。
 
-### 5 段必读代码
-
-| # | 文件 | 行 | 必读原因 |
-|---|---|---|---|
-| 1 | `lib/ansible/executor/playbook_executor.py` | 67-200 | `run()` 主体:5 步执行 playbook 的真相 |
-| 2 | `lib/ansible/executor/task_queue_manager.py` | 128-220 | TQM 构造 + FinalQueue 定义,看明白进程模型 |
-| 3 | `lib/ansible/executor/play_iterator.py` | 38-150 | 状态机定义,看明白 rescue/always 触发 |
-| 4 | `lib/ansible/plugins/strategy/linear.py` | 50-100 | lockstep 任务对齐算法,concurrency 精华 |
-| 5 | `lib/ansible/executor/module_common.py` | 1695 全文 | ansiballz 打包黑魔法,跨异构部署的杀手锏 |
-
-### 1 个反模式
-**`worker.py:97` 那种"fork 后手动重置实例状态"的 hack**——能用但脆弱;现代项目应该让对象在 spawn 后自我初始化,而不是依赖 fork 继承 + 手动修正。
-
-### 1 个可复用模式
-**PluginLoader 用 `globals()` 反射 + `@functools.cache` 一次性收集**——任何"插件化"项目都可以照搬;比你手写注册表省 90% 代码。
-
-### 3 个立刻能用
-1. **借鉴 Play/Task 的"字段即属性"**:用 `dataclass` + `__post_init__` 校验,代替手写 `setattr`
-2. **借鉴 ansiballz**:"代码 + 依赖打 zip + base64,再走任意通道"——本地调试神器
-3. **借鉴 Vault 字符串**:对敏感字段用包装类型,渲染时才解密,日志中永远不出现明文
-
-## 14. 项目特点速查
-
-### 独特看点
-- 唯一让 SSH 起飞做"集群编排"的工具
-- 唯一把"策略"做成一等抽象的运维工具
-- 唯一把"幂等性"做进模块语义而不是用户纪律的工具
-- 唯一一个"slogan 即承诺":radically simple IT automation
-
-### 与同类对比
-
-```mermaid
-quadrantChart
-    title IT 自动化工具象限
-    x-axis 学习曲线 高 --> 低
-    y-axis 能力 弱 --> 强
-    quadrant-1 新手友好+能力中等
-    quadrant-2 老手+能力大
-    quadrant-3 老手+能力小
-    quadrant-4 简单+能力小
-    "ansible": [0.85, 0.7]
-    "Puppet": [0.3, 0.85]
-    "Chef": [0.3, 0.9]
-    "SaltStack": [0.55, 0.75]
-    "Terraform": [0.6, 0.8]
-    "kubectl": [0.5, 0.85]
+**解决方案**：ansible 提供 `lookup()`、`| filter`、`is test` 三种语法扩展。`lookup` 在渲染时查找数据（file/env/pipe），`filter` 在渲染时转换数据（upper/json_query），`test` 在 when 条件里判断（defined/file）。
+```yaml
+# lookup：查数据
+vars:
+  mysql_password: "{{ lookup('file', '/etc/mysql/password') }}"
+  env_home: "{{ lookup('env', 'HOME') }}"
+# filter：转换数据
+tasks:
+  - debug:
+      msg: "{{ 'hello' | upper }}"
+# test：条件判断
+tasks:
+  - debug:
+      msg: "is file"
+    when: my_path is file
 ```
 
-| 工具 | 风格 | agent | 适用场景 |
-|---|---|---|---|
-| ansible | 推送 / 无代理 | 否 | 配置管理、应用部署、ad-hoc |
-| Puppet | 拉取 / agent | 是 | 严格合规、大规模长期状态 |
-| Chef | 拉取 / agent | 是 | Ruby 团队、复杂业务编排 |
-| SaltStack | 推送 / agent(可无) | 可选 | 大规模、高并发 |
-| Terraform | 声明式 | N/A | 基础设施 provisioning |
-| kubectl | 声明式 | N/A | K8s 资源管理 |
+**关键参数**：
+- `lookup('name', args)`：渲染时查找，`file` / `env` / `pipe` / `template`
+- `value | name(args)`：渲染时转换，`upper` / `lower` / `json_query`
+- `value is name`：when 条件判断，`defined` / `file` / `directory`
+- `lookup` 默认 1 个结果，`wantlist=True` 拿列表
+- `filter` 是 chain——`value | filter1 | filter2`
 
-### ansible 在 2026 的位置
-- **核心地位**:稳——Red Hat 不可能放弃
-- **挑战**:K8s/IaC 分流(很多人改用 Helm/ArgoCD/Terraform),网络设备仍 ansible 主导
-- **未来方向**:RPC host 替换 multiprocessing、AAP 控制平面商业化、AI 辅助 playbook 生成(社区已有 `ansible-ai` 实验项目)
+**最佳实践**：`lookup` 接收任意类型参数（路径、URL、命令）；`test` 只返回 boolean——`is` 是约定；自定义 lookup / filter / test 写 plugin 即可；在 playbook 顶部用 `lookup` 收集动态数据，避免在 task 里反复调。
 
-## 附:仓库元信息
+---
+
+### 模式 20：role 与 import/include 的模块化
+
+**问题场景**：playbook 写长了无法维护。100 个 task 平铺在一个 site.yml 里——审 PR 像读天书。
+
+**解决方案**：role 是"标准化目录结构"的模块单位——`tasks/main.yml` + `handlers/main.yml` + `vars/main.yml` + `defaults/main.yml` + `templates/` + `files/` + `meta/main.yml`。`import_*` 是"静态展开"（预解析），`include_*` 是"动态调用"（运行时条件触发）。
+```yaml
+# site.yml
+- hosts: all
+  roles:
+    - common
+    - { role: nginx, tags: ['web'] }
+    - { role: db, vars: { db_name: 'app' } }
+# tasks/main.yml
+- import_tasks: setup.yml
+- include_tasks: dynamic.yml
+  when: condition
+```
+
+**关键参数**：
+- `import_tasks`：静态包含，**预解析**
+- `include_tasks`：动态包含，**条件触发**
+- `import_role`：静态 role 引用
+- `include_role`：动态 role 引用
+- `roles:`：playbook 顶部静态包含
+- `meta/main.yml`：声明 role 依赖——自动 include 依赖
+
+**最佳实践**：role 目录结构强约定——`tasks/main.yml` 是入口；`defaults/main.yml` 是 role 默认值——可被覆盖；`import_*` 是"展开"——`include_*` 是"调用"；用 `tags` 给 role 打标——`ansible-playbook site.yml --tags web`。
+
+---
+
+## 附：仓库元信息
 
 | 字段 | 值 |
-|---|---|
-| 仓库路径 | `G:\实战案例\GitHub顶尖项目\ansible\` |
-| 大小 | 5,713 文件,~270MB(包含 changelogs/test/doc) |
-| 主分支 | `devel`(持续开发) + `stable-2.X`(维护) |
-| 解析时间 | 2026-06-02 |
-| 解析耗时 | ~15 分钟(目录扫描 + 12 个关键文件 + 1 篇笔记) |
-| 解析版本 | ansible-core devel(2026-06-01 拉取) |
-| 协议 | GPL-3.0-or-later |
-
-## 一句话总结
-
-解析 = 计划书 + 框架图 + 核心功能 + 跑起来 + 偷过来。
-ansible 的精髓不是 Python 代码,而是"无代理 + 推送式 + 幂等性 + Strategy 抽象"的产品观——这四条合起来,定义了现代 IT 自动化的语言。
+|:---|:---|
+| 仓库 | `github.com/ansible/ansible` |
+| 协议 | GPL-3.0 |
+| 总文件 | ~3500（lib/ansible + test + docs） |
+| 主语言 | Python |
+| 当前版本 | 2.x devel（持续滚动） |
+| 团队 | Red Hat + 5000+ 社区贡献者 |
+| 商业模式 | 上游开源 + Ansible Automation Platform 商业版 |
+| 关键里程碑 | 1.x → 2.0 strategy → 2.10 community 拆出 → ansible-core 独立包 |
