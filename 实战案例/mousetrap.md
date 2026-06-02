@@ -1,592 +1,984 @@
----
-title: mousetrap
-type: library
-lang: javascript
-stars: 18400
-date: 2026-06-02
-tags:
-  - 开源项目
-  - 库
-  - 键盘快捷键
-  - 前端工具
-  - 零依赖
+# Mousetrap - 零依赖键盘快捷键库的归一化与序列状态机
+
+**来源**：GitHub ccampbell/mousetrap
+**创建时间**：2026-06-02
+
 ---
 
-# mousetrap · 项目深度解析
+## 一、键盘事件归一化
 
-> 一个零依赖、2KB minified+gzipped 的纯 JavaScript 键盘快捷键库，~18.4k stars，主页 craig.is/killing/mice
-> 来源：G:\实战案例\GitHub顶尖项目\mousetrap\
+### 1. 三事件一入口：_handleKeyEvent 统一调度（Event Funnel）
 
-## 写在前面：解析哲学
+**问题场景**：浏览器键盘事件有 3 种（keydown / keypress / keyup），触发时机、可用字段、modifier 状态都不同；如果按"键字符"绑定，每个事件类型都得注册一次 listener，事件间状态难共享。
 
-解析一个 4.5KB minified 的库，关键不在读多少行代码，而在读懂"为什么这样写"。本笔记按 **What → Why → How to steal** 三阶推进：先看它解决什么问题（键盘绑定 API 碎片化），再剖析它如何在 1059 行内把 IE6 兼容、组合键、序列、跨平台、shadow DOM 全部塞进去，最后提炼出可复用到任何前端项目的设计模式与反模式。
+**解决方案**：
+```js
+// mousetrap.js _handleKeyEvent 简化
+function _handleKeyEvent(element, event, handlerName) {
+    if (event.target instanceof HTMLInputElement ||
+        event.target instanceof HTMLSelectElement ||
+        event.target instanceof HTMLTextAreaElement) {
+        // input 内默认不触发（除非 bindGlobal）
+        return;
+    }
+    
+    var character = _characterFromEvent(event);
+    
+    if (character) {
+        handler(character, event);
+    }
+}
 
-## 0. 解析前的 5 个准备
-
-1. **克隆**：本地已就绪 `G:\实战案例\GitHub顶尖项目\mousetrap\`，版本 v1.6.5，commit `c202a0bd`
-2. **分类**：纯 JS 库（无构建/无依赖/无运行时），含 4 个独立插件、1 个测试套件
-3. **问题清单**：跨浏览器键盘事件归一化、组合键与序列匹配、`keypress` vs `keydown` 选择、文本输入框自动跳过
-4. **速查表**：
-   - 主文件：`mousetrap.js` (1059 行 / 35KB)
-   - 入口：`Mousetrap.bind(key, cb, action)`
-   - 数据结构：`_callbacks` (按字符索引的 callback 数组) + `_directMap` (用于 `trigger()` 的直查表)
-5. **锁定 commit**：`c202a0bd4967d5a3064f9cb376db51dec9345336` (HEAD on package.json)
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-|------|------|
-| 项目名 | Mousetrap |
-| 一句话定位 | 零依赖的浏览器键盘快捷键库 |
-| 核心问题 | 跨浏览器 keydown/keypress 行为不一致、组合键匹配繁琐、序列键（Gmail 风格）难实现 |
-| 目标用户 | 前端开发者（尤其需要快捷键的富文本/IDE 类应用） |
-| 商业模式 | 完全开源，捐赠 + 商业咨询（Craig Campbell 是邮件营销公司 Wingify 工程师） |
-| 复刻难度 | ⭐⭐（中等，因为要兼容 IE6+ 的 `attachEvent`/`keyCode`） |
-| 状态 | 维护中（v1.6.5，2017-2018 年活跃，目前 2018 后基本停滞） |
-| 团队 | 1 个核心维护者 + 社区 PR（Craig Campbell） |
-| 里程碑 | v1.0 (2013) → v1.5 (2014 加序列) → v1.6 (2016 改 constructor) → v1.6.5 (2017 当前) |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-### 点状解析
-
-- **根目录**：`mousetrap.js`（UMD 包裹的 IIFE）+ `mousetrap.min.js`（构建产物）+ `package.json` + `Gruntfile.js`
-- **plugins/**：4 个独立插件，**全部走 prototype 猴子补丁**（`Mousetrap.prototype.stopCallback = ...`）
-- **tests/**：Mocha + Chai + Sinon + jsdom-global 模拟浏览器，KeyEvent 工具类手工构造事件
-
-### 实际目录树
-
-```text
-mousetrap/
-├── mousetrap.js              # 主库 1059 行
-├── mousetrap.min.js          # 压缩版 12 行
-├── package.json              # npm 元数据
-├── Gruntfile.js              # grunt-complexity 复杂度检查
-├── LICENSE                   # Apache 2.0 + LLVM exception
-├── README.md                 # 102 行
-├── plugins/
-│   ├── bind-dictionary/      # 接受对象批量绑定
-│   ├── global-bind/          # 在 input 内也触发的 bindGlobal
-│   ├── pause/                # 临时禁用
-│   └── record/               # 录制键盘序列
-└── tests/
-    ├── test.mousetrap.js     # 773 行测试
-    ├── libs/
-    │   └── key-event.js      # 159 行事件模拟器
-    └── mousetrap.html        # 浏览器内跑测试的入口
+// 三事件注册同一个 handler
+_addEvent(targetElement, 'keypress', _handleKeyEvent);
+_addEvent(targetElement, 'keydown', _handleKeyEvent);
+_addEvent(targetElement, 'keyup', _handleKeyEvent);
 ```
-
-### 思维导图
-
-```mermaid
-mindmap
-  root((Mousetrap))
-    输入层
-      keypress事件
-      keydown事件
-      keyup事件
-      shadow DOM兼容
-    解析层
-      _characterFromEvent
-      _eventModifiers
-      _pickBestAction
-      _getKeyInfo
-    存储层
-      _callbacks字典
-      _directMap直查
-      _sequenceLevels序列栈
-    匹配层
-      _getMatches
-      maxLevel计算
-      _resetSequences
-    输出层
-      _fireCallback
-      stopCallback拦截
-      return false阻止默认
-    扩展层
-      pause
-      bindGlobal
-      record
-      bindDictionary
-```
-
-### 配置入口
-
-- **库入口**：`mousetrap.js` 末尾 `Mousetrap.init()` 自动调用 → 监听 `document` 的 3 种键盘事件
-- **npm 入口**：`package.json` `"main": "mousetrap.js"`
-- **CDN 入口**：`mousetrap.min.js`（CDNJS 维护版本）
-
-### 代码入口
-
-- **构造函数**：`mousetrap.js:435` `function Mousetrap(targetElement)`
-- **绑定 API**：`mousetrap.js:908` `Mousetrap.prototype.bind`
-- **事件分派**：`mousetrap.js:716` `function _handleKeyEvent`（keypress/keydown/keyup 共享入口）
-- **字符归一**：`mousetrap.js:191` `function _characterFromEvent`
-
-## 3. 项目画像（Profile）
-
-| 维度 | 数据 |
-|------|------|
-| 总文件数 | 12（含测试 + 插件） |
-| 主语言 | JavaScript (ES5) |
-| 涉及语言 | JavaScript（仅） |
-| 体积 | 35KB 源码 / 5KB minified+gzipped ≈ 2KB |
-| 协议 | Apache-2.0 WITH LLVM-exception |
-| 浏览器目标 | IE6+, Safari, Firefox, Chrome |
-| 是否依赖 npm | 0 运行时依赖（dev 依赖：mocha/chai/sinon/jsdom） |
-| Docker | ❌ |
-| K8s | ❌ |
-| CI | ❌（仅本地 `npm test`） |
-| Lint | grunt-complexity（cyclomatic≤10, halstead≤30, maintainability≥85） |
-| 测试 | 773 行 Mocha 测试，覆盖 20+ 场景 |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-### 核心抽象
-
-Mousetrap 的设计哲学可以浓缩为一句话：**把"用户友好的语义"翻译成"浏览器能理解的 keyCode"**。它把"按了 ctrl+shift+k"这样的字符串 → 拆成 modifier 列表 + 单一主键 → 监听 3 种键盘事件 → 归一化到字符 → 在字典里查 callback → 触发。
-
-### 思维导图
-
-```mermaid
-mindmap
-  root((架构分层))
-    事件源
-      document/element
-      三种事件类型
-      addEventListener兼容
-    归一化
-      keyCode→character
-      modifier提取
-      US键盘shift映射
-    路由
-      按character索引
-      modifier数组比较
-      action类型匹配
-      sequence level追踪
-    拦截
-      stopCallback钩子
-      input/select/textarea
-      shadow DOM穿透
-    输出
-      触发callback
-      return false协议
-      preventDefault+stopPropagation
-```
-
-### 三大核心看点
-
-1. **`_callbacks` 字典 + 数组结构**（mousetrap.js:456）：用字符做 key 索引 callback 数组，O(1) 路由。但同一字符可能对应多个 modifier 组合（如 `a`、`shift+a`），所以值是数组。这是最朴素也最有效的数据结构选择。
-2. **序列 vs 单键的统一接口**（mousetrap.js:762-819）：`_bindSequence` 内部把 `g i` 拆成单键逐个绑定，每个中间键用 `_increaseSequence` 累加 level，最后一键用 `_callbackAndReset` 触发并重置。**1 秒超时定时器**（mousetrap.js:748-751）保证序列中断后能恢复初始态。
-3. **shadow DOM 穿透 + input 跳过**（mousetrap.js:973-1001）：`stopCallback` 用 `_belongsTo` 递归检查祖先链判断事件是否在绑定目标内；对 `composedPath()` 做了特殊处理（open 模式取 path[0]，closed 模式无法获取）。这是当下大部分老库不具备的能力。
-
-### ADR 关键设计决策
-
-| 决策 | WHY |
-|------|-----|
-| UMD 包裹 + IIFE | 兼容 script 标签/AMD/CommonJS 三种引入方式，但污染 `window.Mousetrap` 全局 |
-| 用 `string.replace(/\+{2}/g, '+plus')` 转义 `++` | 让用户能绑定"按两下 +"这种罕见组合 |
-| 序列 timeout 写死 1 秒（mousetrap.js:750） | Gmail 风格约定俗成，可读性 > 灵活性 |
-| 数字小键盘 `0` 用字符串存储（mousetrap.js:165） | 注释：`0` 是 falsy，`_callbacks[0]` 会查不到，所以必须 `i.toString()` |
-| `_SPECIAL_ALIASES.mod` 根据 navigator 动态决定 | Mac 上 `mod` = `meta`，其他 = `ctrl`，跨平台开发者体验 |
-| 用 prototype 暴露 `Mousetrap.prototype.handleKey`（mousetrap.js:1006） | 显式 hook 点，让插件/继承能覆盖默认行为而不动闭包 |
-
-### 核心架构 3 句话
-
-1. **双索引存储**：`_callbacks` 按字符路由用于匹配循环，`_directMap` 按 `combo:action` 字符串直查用于 `trigger()`，二者写时同步、读时分工。
-2. **3 事件 1 入口**：所有键盘事件都进 `_handleKeyEvent`，根据 `e.type` 决定走 keypress 字符路径还是 keydown 键码路径，避免分散的 listener。
-3. **序列即累加器**：序列不是一种新数据结构，而是单键绑定的组合；用 `_sequenceLevels[combo]` 计数器 + 1 秒 timer 模拟"状态机"，状态在 closure 里，零额外对象。
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-整个 1059 行只有 1 个文件、1 个 IIFE，分 5 个层次：
-
-1. **常量字典**（39-166）：`_MAP` / `_KEYCODE_MAP` / `_SHIFT_MAP` / `_SPECIAL_ALIASES` 4 个映射表 + 2 个循环填充 F1-F19 和小键盘
-2. **DOM 工具**（176-297）：`_addEvent` / `_characterFromEvent` / `_modifiersMatch` / `_eventModifiers` / `_preventDefault` / `_stopPropagation` 6 个跨浏览器兼容垫片
-3. **内部状态**（435-892）：构造函数 `Mousetrap` 闭包内的所有变量与方法
-4. **prototype API**（908-1009）：bind / unbind / trigger / reset / stopCallback / handleKey
-5. **初始化 & 导出**（1029-1057）：`init()` 把 prototype 方法搬到 Mousetrap 函数本身上 + UMD 导出
-
-### 5.2 单文件分析卡：`mousetrap.js`
-
-#### `_characterFromEvent` (mousetrap.js:191-228) ⭐⭐⭐
-
-**WHY**：
-- 浏览器事件里 `e.keyCode` 在 keydown/keyup 时是数字键码（不区分大小写），keypress 时是 ASCII 码（区分大小写）。作者**故意按事件类型分流**：
-  - keypress：直接 `String.fromCharCode(e.which)`，如果不按 shift 就 `toLowerCase()`——**注释明确说"Caps Lock 不影响绑定"**，这是个有意识的产品决策
-  - keydown/keyup：先查 `_MAP`（如 27→esc），查不到再查 `_KEYCODE_MAP`（如 191→/），最后兜底 `String.fromCharCode(e.which).toLowerCase()`
-- 这种"keypress 优先用字符，keydown 优先用语义名"的策略，是 Mousetrap 跨浏览器行为统一的核心
-
-#### `_handleKey` (mousetrap.js:630-708) ⭐⭐⭐
-
-**WHY**：
-- 这是**匹配 + 触发 + 状态机维护**的三合一核心。`maxLevel` 计算（638-642）解决了"序列中按了中间键时不要触发前面更短序列的回调"——例如同时绑定 `a` 和 `g a` 两个键，按 `a` 时 `a` 触发而 `g a` 不触发。
-- `_ignoreNextKeypress` 状态机（707 行）解决 keydown 与后续 keypress 重复触发同一字符的问题——注释解释 "chrome will not fire a keypress if meta or control is down"，作者必须显式追踪这种浏览器差异。
-- `doNotReset` 白名单机制（669 行）保证多个并行的序列（如 `g i` 和 `g t`）在按 `g` 时不会互相清空。
-
-#### `_bindSequence` (mousetrap.js:762-819) ⭐⭐
-
-**WHY**：
-- 把 `g i` 拆成两段单键绑定，**倒数第二段用 `_increaseSequence` 增加 level，最后一段用 `_callbackAndReset` 触发并重置**。这避免了"序列需要专门的数据结构"的设计复杂度。
-- `_callbackAndReset` 里那个 `setTimeout(_resetSequences, 10)`（802 行）是防御性编程——注释说"防止刚结束的序列的最后一个键恰好是另一个序列的首键时的 race condition"。这个 10ms 延迟是经验值，让浏览器先处理完 keyup 事件再清状态。
-- 第 816 行 `action || _getKeyInfo(keys[i + 1]).action` 是**递归式 action 推断**：如果用户没指定 action，就用下一键的推荐 action，让序列能混合使用 keypress 和 keydown。
-
-#### `stopCallback` (mousetrap.js:973-1001) ⭐⭐
-
-**WHY**：
-- 三个守卫：class="mousetrap" 标记 → 触发；事件源在绑定 target 子树内 → 触发；否则若是 input/select/textarea/contenteditable → 不触发。
-- **shadow DOM 处理**（986-997 行）是当代 Web 标准兼容的精华：open 模式可以从 `composedPath()[0]` 找回原始 target，closed 模式则无能为力——这是 Web Components 规范的固有限制，不是库的 bug。
-- 这个方法是**所有插件的钩子**：`pause`、`global-bind`、`record` 都重写它而不是改主流程。这是一种"开放-封闭"原则的体现——主流程不变，行为可扩展。
-
-#### `_handleKeyEvent` (mousetrap.js:716-738) ⭐
-
-**WHY**：
-- 极简但精妙。`typeof e.which !== 'number'` 兼容老 IE（那时 e.which 不存在）。`_ignoreNextKeyup` 防止"按 `a` 完成序列后松开 a 键时又触发一个 keyup 回调"。
-- 没有显式的事件优先级——所有 3 种事件一视同仁进同一函数，靠 `_getMatches` 里的 `action` 字段过滤。这样代码量最小，但调试时心智负担较大。
-
-### 5.3 设计模式
-
-| 模式 | 体现位置 | 价值 |
-|------|---------|------|
-| **策略模式** | `_pickBestAction`（mousetrap.js:341）根据键类型动态选 keydown/keypress | 隐藏浏览器差异 |
-| **观察者模式** | `_callbacks` 字典 + `_addEvent` | 一对多路由 |
-| **状态机** | `_sequenceLevels` + `_resetTimer` | 序列追踪 |
-| **装饰器模式** | 4 个 plugin 用 prototype 猴子补丁装饰 `stopCallback` | 不改主流程即可扩展 |
-| **适配器模式** | UMD 包裹（mousetrap.js:1048-1057） | 兼容 3 种模块系统 |
-| **单例模式** | `Mousetrap.init()` 创建一个 document 级实例并把方法搬到 `Mousetrap` 函数上（1029-1040） | 全局 API 入口 |
-
-### 5.4 反模式
-
-1. **全局变量污染**（mousetrap.js:1045）`window.Mousetrap = Mousetrap`——所有用法都依赖这个全局，未来想做多实例隔离就得改 API。
-2. **`unbind` 用空函数占位**（mousetrap.js:932-935）作者自己在注释里写 `TODO: actually remove this from the _callbacks dictionary instead of binding an empty function`——典型的"先能用，再优化"遗留债务。
-3. **多 Mousetrap 实例共享同一个 `Mousetrap.init()` 全局 API**（1029-1040）`init` 总是用 `Mousetrap(document)` 创建实例并覆盖静态方法，多实例的 pause 状态会相互覆盖。
-4. **闭包内 `var self = this`** 在 ES5 是必需，但与现代 ES6+ 箭头函数相比显得啰嗦——为了 IE6 兼容必须这样写，是历史包袱。
-5. **时间复杂度 O(n) 的 callback 数组扫描**（mousetrap.js:557）每按一键都遍历所有回调；通常 n < 20 不是问题，但理论上有优化空间（按 modifier 集合分组）。
-
-### 5.5 独特看点
-
-1. **"小键盘 0 不能用 number"**（mousetrap.js:158-166）的 8 行注释 + `i.toString()` 是 JavaScript 真值陷阱的经典修复示范。GitHub Issue #258 明确记录这个 bug。
-2. **`_getReverseMap` 懒缓存**（mousetrap.js:315-332）第一次访问时才构建反向表，避开启动期开销。`addKeycodes` 会把缓存清掉（1020 行），保证用户扩展键码后能重新生成。
-3. **`_belongsTo` 递归检查 DOM 祖先**（mousetrap.js:423-433）用 `element.parentNode` 一直走到 `document`，没用 `Node.contains`（兼容性差）。**递归而非循环**——代码可读性优先。
-4. **`Mousetrap.init()` 动态方法拷贝**（1029-1040）用 `charAt(0) !== '_'` 过滤内部方法，闭包技巧：`for (var method in documentMousetrap) Mousetrap[method] = (function(method) { ... })(method)`——IIFE 锁定 method 引用，避免 for 循环变量提升的经典坑。
-5. **`stopCallback` 的 shadow DOM 注释**（985-997 行）长达 13 行的注释解释 Web Components 规范的细节，这是少见的高质量内联文档。
-
-## 6. 运行机制（Bring It Up）
-
-### 启动脚本
-
-```bash
-# 1. 安装开发依赖
-cd G:\实战案例\GitHub顶尖项目\mousetrap
-npm install
-
-# 2. 跑测试
-npm test
-# 等价于：mocha --reporter=nyan tests/test.mousetrap.js
-
-# 3. 检查代码复杂度
-npx grunt complexity
-```
-
-### 本地起服务
-
-```bash
-# 浏览器中跑测试（需打开静态服务器）
-python -m http.server 8000
-# 访问 http://localhost:8000/tests/mousetrap.html
-```
-
-### 浏览器 Smoke Test
-
-```html
-<!DOCTYPE html>
-<html>
-<head><title>Mousetrap Test</title></head>
-<body>
-<script src="../mousetrap.js"></script>
-<script>
-    // 单键
-    Mousetrap.bind('4', () => console.log('4'));
-    // 组合键
-    Mousetrap.bind('command+shift+k', () => console.log('cmd+shift+k'));
-    // 序列
-    Mousetrap.bind('g i', () => console.log('go to inbox'));
-    // 录制
-    Mousetrap.record(seq => console.log('recorded:', seq));
-</script>
-</body>
-</html>
-```
-
-### 启动时序图
-
-```mermaid
-sequenceDiagram
-    participant Page as 页面加载
-    participant IIFE as IIFE执行
-    participant Map as 字典初始化
-    participant Init as Mousetrap.init
-    participant Doc as document
-    Page->>IIFE: 引入mousetrap.js
-    IIFE->>Map: 填充_MAP/_KEYCODE_MAP/_SHIFT_MAP
-    Map->>Map: 循环添加F1-F19和小键盘
-    IIFE->>Init: 调用Mousetrap.init()
-    Init->>Doc: 创建Mousetrap(document)实例
-    Init->>Doc: 监听keypress/keydown/keyup
-    Init->>Init: 把prototype方法搬到Mousetrap函数
-    IIFE->>Page: window.Mousetrap = Mousetrap
-    Page-->>Page: 全局API就绪
-```
-
-## 7. 演进历史（Time Travel）
-
-### git log 摘要
-
-> 注：本地无 `.git` 目录，基于 README/package.json/CHANGELOG 推断：
-
-- **2012**：v1.0 发布，纯单键绑定
-- **2013-2014**：v1.x 系列，加入组合键 `+` 语法、跨平台 modifier 别名
-- **2014**：v1.5 加入 **Gmail 风格序列**（`_bindSequence` + `_sequenceLevels`）
-- **2016**：v1.6 改造为**构造函数 + init 模式**（1029-1040），允许 `Mousetrap(element)` 针对特定元素绑定
-- **2017**：v1.6.5 加入 **shadow DOM 穿透**（986-997 行）、IE11 支持完善
-- **2018+**：维护停滞，4 个独立插件陆续抽出
-
-### 时间线
-
-```mermaid
-gantt
-    title Mousetrap 演进时间线
-    dateFormat YYYY-MM
-    section 核心功能
-    单键绑定            :a1, 2012-01, 6M
-    组合键+语法         :a2, after a1, 12M
-    跨平台modifier别名  :a3, after a2, 6M
-    Gmail序列           :a4, after a3, 6M
-    构造函数模式         :a5, after a4, 12M
-    section 兼容性
-    IE6-8兼容          :b1, 2012-01, 24M
-    shadow DOM穿透     :b2, 2017-01, 6M
-    section 扩展
-    pause插件          :c1, 2014-06, 3M
-    global-bind插件     :c2, 2014-09, 3M
-    bind-dictionary插件 :c3, 2015-01, 3M
-    record插件         :c4, 2016-06, 6M
-```
-
-## 8. 质量保障（How It Doesn't Break）
-
-### 测试体系（773 行 Mocha + Chai + Sinon）
-
-**第一道防线：单元测试**（`tests/test.mousetrap.js`）
-- 覆盖范围：bind 基础、组合键、序列、stopCallback、shadow DOM、unbind、构造函数
-- 工具：jsdom-global 在 Node 中模拟浏览器（tests/test.mousetrap.js:11）
-- 事件模拟：`KeyEvent.simulate(charCode, keyCode, modifiers, element, repeat, options)` 完整模拟用户按键（key-event.js:49-143）
-- 浏览器端：用 `tests/mousetrap.html` 加载到真实浏览器验证兼容性
-
-**第二道防线：代码复杂度**（`Gruntfile.js`）
-- `grunt-complexity` 强制 cyclomatic ≤ 10, halstead ≤ 30, maintainability ≥ 85
-- 失败时 CI 报错——**但仓库无 CI 配置**，是手动跑 `npx grunt complexity`
-
-**第三道防线：跨浏览器测试矩阵**
-- README 列出 IE6+, Safari, Firefox, Chrome 是目标
-- 没有 BrowserStack/SauceLabs 集成，纯靠社区 PR 测试
-
-**第四道防线：单测断言**
 
 ```js
-// test.mousetrap.js:36-38
-expect(spy.callCount).to.equal(1, 'callback should fire once');
-expect(spy.args[0][0]).to.be.an.instanceOf(Event, 'first argument should be Event');
-expect(spy.args[0][1]).to.equal('z', 'second argument should be key combo');
+// mousetrap.js _characterFromEvent 简化（核心归一化）
+function _characterFromEvent(e) {
+    if (e.type === 'keypress') {
+        var character = String.fromCharCode(e.which);
+        if (!e.shiftKey) character = character.toLowerCase();
+        return character;
+    }
+    // keydown / keyup
+    if (e.keyCode in _MAP) return _MAP[e.keyCode];  // 27 → 'esc'
+    if (e.keyCode in _KEYCODE_MAP) {
+        return _KEYCODE_MAP[e.keyCode];  // 191 → '/'
+    }
+    return String.fromCharCode(e.which).toLowerCase();
+}
 ```
 
-每次按键回调都被验证：调用次数、参数类型、参数值。**注释 `// really slow for some reason` 表明作者发现 sinon spy 的 `calledOnce` 断言比 `callCount === 1` 慢 5-10 倍**（test.mousetrap.js:34-35），是性能优化的踩坑记录。
+**关键参数**：
 
-## 9. 生态依赖（Map of the World）
+| 字段 | 说明 |
+| --- | --- |
+| `_handleKeyEvent` | 三事件统一入口（funnel pattern） |
+| `_characterFromEvent` | keyCode → 语义字符的归一化 |
+| `_MAP` | 语义键（`esc` / `tab` / `enter`） |
+| `_KEYCODE_MAP` | 符号键（`/` `?` `;`） |
+| keypress 优先 | 字符型快捷键走 keypress 拿 ASCII |
+| keydown 优先 | 功能键走 keydown 拿 keyCode |
 
-### 依赖图
+**最佳实践**：
+- ✅ 业务方多事件源统一 funnel 到一个 handler（避免状态分裂）
+- ✅ 按事件类型分流字符归一（keypress 走字符，keydown 走语义）
+- ✅ `keypress` 不按 shift 时 toLowerCase（防 Caps Lock 干扰）
+- ❌ 切勿让 3 个事件各自一套逻辑（应用 funnel）
+- ❌ 切勿在 keydown 里假设能拿到 ASCII（应分情况）
 
-```mermaid
-mindmap
-  root((mousetrap))
-    运行时依赖
-      无
-    开发依赖
-      mocha 5.2
-      chai 4.2
-      sinon 7.2
-      jsdom 13.1
-      jsdom-global 3.0
-      grunt 1.0
-      grunt-complexity 1.1
-    同类项目
-      Keymaster
-      Keypress
-      Mousetrap Plugins
-        pause
-        global-bind
-        bind-dictionary
-        record
-    上层使用者
-      Gmail类似富客户端
-      代码编辑器
-      仪表盘
-      IDE类Web应用
+### 2. keyCode / key / which 三时代兼容（Legacy Polyfill）
+
+**问题场景**：现代浏览器 `e.key` 字段好用（`'Escape'` / `'/'`），但老 IE（IE6-8）只有 `e.keyCode`；Mousetrap 1.6 时代要兼容 IE6+，必须用 keyCode。
+
+**解决方案**：
+```js
+// mousetrap.js 跨浏览器垫片
+function _addEvent(target, eventType, handler) {
+    if (target.addEventListener) {
+        target.addEventListener(eventType, handler, false);
+    } else if (target.attachEvent) {
+        target.attachEvent('on' + eventType, function(eventObject) {
+            var e = {
+                type: eventObject.type,
+                which: eventObject.keyCode,
+                target: eventObject.srcElement,
+                shiftKey: eventObject.shiftKey,
+                ctrlKey: eventObject.ctrlKey,
+                metaKey: eventObject.metaKey,
+                altKey: eventObject.altKey,
+                keyCode: eventObject.keyCode,
+            };
+            return handler(e);
+        });
+    }
+}
+
+function _preventDefault(e) {
+    if (e.preventDefault) e.preventDefault();
+    else e.returnValue = false;
+}
 ```
 
-### 合规检查清单
+**关键参数**：
 
-- ✅ Apache 2.0 协议 + LLVM exception（允许闭源）
-- ✅ 无第三方运行时依赖（不传污染）
-- ✅ 0 已知 CVE（库逻辑简单，攻击面小）
-- ⚠️ 维护停滞（2018 后），fork 评估需要
-- ⚠️ `attachEvent` 路径（mousetrap.js:182）仅 IE 支持，无需担心
+| API | 适用 |
+| --- | --- |
+| `addEventListener` | IE9+ / 现代浏览器 |
+| `attachEvent` | IE6-8 |
+| `e.which` | 跨浏览器（老 IE 用 keyCode 兜底） |
+| `preventDefault` / `returnValue` | 跨浏览器 |
+| `keyCode` | 跨浏览器（旧 API） |
 
-## 10. 生产实践（Battle-Tested）
+**最佳实践**：
+- ✅ 业务方跨 IE 兼容时显式 `addEventListener || attachEvent` 二选一
+- ✅ 事件对象字段重映射到统一接口（`e.which` / `e.shiftKey`）
+- ✅ 兜底 `returnValue`（IE 老 API）
+- ❌ 切勿假设 `e.key` 在 IE 上存在（应只用 keyCode）
+- ❌ 切勿让 `addEventListener` 失败后崩溃（应降级到 attachEvent）
 
-| 能力 | 状态 | 代码位置 |
-|------|------|---------|
-| 配置热更新 | ❌ 无热加载，需 reset+rebind | mousetrap.js:959 |
-| 优雅停服 | ❌ 不适用（前端库） | - |
-| 限流 | ❌ 不适用（事件粒度） | - |
-| 链路追踪 | ❌ 无 tracing | - |
-| 健康检查 | ❌ 不适用 | - |
-| 结构化日志 | ❌ 无 console 包装 | - |
-| pause/unpause | ✅ 通过 plugin 实现 | plugins/pause/mousetrap-pause.js:20-28 |
-| 全局快捷键 | ✅ bindGlobal plugin | plugins/global-bind/mousetrap-global-bind.js:31-43 |
-| 事件录制 | ✅ record plugin | plugins/record/mousetrap-record.js:189-196 |
-| 跨域隔离 | ✅ 构造函数可指定 element | mousetrap.js:438 |
+### 3. 4 张映射表：语义键 + 键码 + Shift 状态（Lookup Tables）
 
-## 11. 社区文化（People & Process）
+**问题场景**：键码到字符的转换有 100+ 特殊键（功能键 F1-F19、小键盘、媒体键），维护一份大表是笨办法；Mousetrap 用 4 张映射表分门别类。
 
-- **维护者**：Craig Campbell（独立前端工程师，Wingify 雇员）
-- **治理模式**：单维护者独裁 + 社区 PR review
-- **RFC 流程**：无正式 RFC，新功能通过 GitHub issue 讨论
-- **沟通渠道**：GitHub Issues + Stack Overflow 标签
-- **议题活跃度**：2017 顶峰期 200+ issue，目前（2026）~5/月
-- **典型贡献者**（从 commit 历史可见）：CC 主导核心逻辑，Dan Tao 写 record 插件
+**解决方案**：
+```js
+// mousetrap.js 常量字典
+var _MAP = {
+    8: 'backspace', 9: 'tab', 13: 'enter', 16: 'shift', 17: 'ctrl', 18: 'alt',
+    27: 'esc', 32: 'space', 33: 'pageup', 34: 'pagedown', 35: 'end', 36: 'home',
+    37: 'left', 38: 'up', 39: 'right', 40: 'down', 45: 'ins', 46: 'del',
+    // ... 完整 100+ 项
+};
 
-## 12. 教训总结（What To Steal / What To Avoid）
+var _KEYCODE_MAP = {
+    106: '*', 107: '+', 109: '-', 110: '.', 111: '/',
+    186: ';', 187: '=', 188: ',', 189: '-', 190: '.', 191: '/',
+    192: '`', 219: '[', 220: '\\', 221: ']', 222: "'",
+};
 
-### 12.1 必偷 3 件
+var _SHIFT_MAP = {
+    '`': '~', '1': '!', '2': '@', '3': '#', '4': '$', '%': '5', '^': '6',
+    '&': '7', '*': '8', '(': '9', ')': '0', '-': '_', '=': '+',
+    ';': ':', "'": '"', ',': '<', '.': '>', '/': '?', '\\': '|',
+};
 
-1. **`_characterFromEvent` 的双路径设计**——keypress 用字符，keydown 用键码。这是所有键盘库的核心抽象，能直接复用到自己的表单/编辑器项目。
-2. **`_bindSequence` 把序列拆成单键绑定的组合**——用 1 秒 timer + level 计数器模拟状态机，零额外数据结构。
-3. **`stopCallback` 作为单一钩子**——所有"是否触发"的判断集中在一个方法里，4 个 plugin 都只是装饰它。这比"在主流程里加 if"干净 10 倍。
+var _SPECIAL_ALIASES = {
+    'option': 'alt',  command: 'meta', cmd: 'meta',  mod: /Mac/.test(navigator.platform) ? 'meta' : 'ctrl',
+};
 
-### 12.2 必避 3 坑
-
-1. **`unbind` 用空函数占位**（mousetrap.js:934）——会导致 `_callbacks[character]` 数组越积越多，长时间运行内存泄漏。**正确做法**：用 splice 删除。
-2. **全局 `window.Mousetrap`**（1045 行）——一旦页面里有 2 个版本的 mousetrap.js 直接互踩。**正确做法**：用 ES Module + namespace。
-3. **单例 + 多实例混乱**（`Mousetrap.init()` 1029-1040）——创建 `Mousetrap(element)` 后静态方法还是指向 document 实例。**正确做法**：每个实例独立持有状态。
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7天复刻Mousetrap核心
-    dateFormat YYYY-MM-DD
-    section 基础
-    字典+跨浏览器垫片     :d1, 2026-06-01, 1d
-    _characterFromEvent   :d2, after d1, 1d
-    section 路由
-    _callbacks+_directMap  :d3, after d2, 1d
-    bind/unbind基础        :d4, after d3, 1d
-    section 序列
-    _bindSequence+定时器   :d5, after d4, 1d
-    maxLevel状态机         :d6, after d5, 1d
-    section 收尾
-    stopCallback+shadow DOM :d7, after d6, 1d
+// 动态填充 F1-F19
+for (var i = 1; i < 20; ++i) _MAP[111 + i] = 'f' + i;
+// 动态填充小键盘
+for (var i = 96; i < 106; ++i) _MAP[i] = 'num' + (i - 96);
 ```
 
-### 12.4 打分卡
+**关键参数**：
 
-| 维度 | 评分 (1-10) | 评语 |
-|------|------------|------|
-| 代码可读性 | 9 | 注释详尽，命名规范 |
-| 模块化 | 6 | 单一文件 1059 行，4 个 plugin 独立 |
-| 可测试性 | 8 | Mocha + jsdom 覆盖全 |
-| 性能 | 9 | 2KB minified，O(1) 路由 |
-| 可维护性 | 7 | 已停滞，需评估 fork |
-| 文档完整度 | 8 | JSDoc + 注释占代码 30% |
-| **综合** | **7.8** | 教科书级小型库 |
+| 表 | 用途 |
+| --- | --- |
+| `_MAP` | keyCode → 语义字符串（`27 → 'esc'`） |
+| `_KEYCODE_MAP` | keyCode → 符号（`191 → '/'`） |
+| `_SHIFT_MAP` | 字符 → Shift 字符（`/ → ?`） |
+| `_SPECIAL_ALIASES` | 别名（`cmd → meta`，跨平台） |
+| F1-F19 | 动态循环生成（111+1 ~ 111+19） |
+| 小键盘 | 96-105（`num0` ~ `num9`） |
 
-## 13. 学习萃取（Cheat Sheet）
+**最佳实践**：
+- ✅ 业务方"键码 → 语义"用 4 张表分门别类（不用 if-else 链）
+- ✅ 别名（`mod` / `cmd`）根据平台动态化
+- ✅ 大段重复用循环生成（`for` 填充 F1-F19）
+- ❌ 切勿把 100+ 键码写进 if-else 巨型函数
+- ❌ 切勿让 `mod` 硬编码（应跟随平台）
 
-### 一句话价值
+### 4. stopCallback 三守卫：class + 子树 + input 跳过（Default Skip）
 
-> **Mousetrap 教会我：所有跨浏览器兼容问题，最终都浓缩成 4 个映射表 + 1 个状态机。**
+**问题场景**：Mousetrap 默认在 `input / select / textarea / contenteditable` 内不触发快捷键（避免抢用户的字符输入）；但用户输入框里 mousetrap 仍占着事件；需要 hook 让用户临时"穿透"。
 
-### 3 大核心洞察
+**解决方案**：
+```js
+// mousetrap.js stopCallback 默认实现
+Mousetrap.prototype.stopCallback = function(e, element, combo) {
+    // 1. 自定义标记 class：mousetrap 元素永远触发
+    if ((' ' + element.className + ' ').indexOf(' mousetrap ') > -1) return false;
+    
+    // 2. 事件源在绑定 target 子树内
+    if (element.contains && element.contains(e.target)) return false;
+    
+    // 3. input/select/textarea/contenteditable 不触发
+    var tagName = (e.target || e.srcElement).tagName;
+    return tagName === 'INPUT' || tagName === 'SELECT' || tagName === 'TEXTAREA' || tagName === 'BUTTON';
+};
 
-1. **双索引存储**（`_callbacks` 路由 + `_directMap` 直查）是"用空间换时间"的经典——同一个写操作维护两份数据，读时按场景选最快路径。
-2. **序列即单键 + 计时器**——避免引入新数据结构的优雅简化。
-3. **prototype 猴子补丁**是 ES5 时代插件架构的银弹——4 个 plugin 总共 300 行代码就能扩展核心行为。
-
-### 5 段必读代码
-
-1. **`mousetrap.js:191-228`** — `_characterFromEvent`：keypress vs keydown 的双路径归一化
-2. **`mousetrap.js:539-597`** — `_getMatches`：核心匹配逻辑，含 maxLevel 防御
-3. **`mousetrap.js:630-708`** — `_handleKey`：触发 + 状态机 + reset
-4. **`mousetrap.js:762-819`** — `_bindSequence`：序列绑定的精妙拆解
-5. **`mousetrap.js:973-1001`** — `stopCallback`：单一钩子 + shadow DOM 兼容
-
-### 1 个反模式
-
-> **`Mousetrap.prototype.unbind = function(keys, action) { return self.bind.call(self, keys, function() {}, action); }`**（mousetrap.js:932-935）—— 用空函数占位代替真正的删除。作者自己留了 TODO 注释承认这是技术债。
-
-### 1 个可复用模式
-
-> **"把所有条件判断塞进一个可被覆盖的方法"**——`stopCallback` 是主流程唯一的"是否触发"判断点，4 个 plugin 全部围绕它扩展。这比策略模式/责任链简单，比继承灵活。
-
-### 3 个立刻能用的招式
-
-1. **抄 `_MAP` 字典**——任何需要键码转换的库都能直接用，覆盖 F1-F19 + 数字小键盘
-2. **抄 `_SPECIAL_ALIASES.mod`**——`/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? 'meta' : 'ctrl'` 一行解决跨平台 modifier
-3. **抄 `KeyEvent.simulate` 模板**——`tests/libs/key-event.js:49-143` 完整模拟 keydown/keypress/keyup 序列，可直接复用到任何键盘库测试
-
-## 14. 项目特点速查
-
-### 独特看点
-
-- **史上最短可用键盘库**（2KB gzipped）— 它的存在本身就是 4 个映射表 + 1 个状态机
-- **跨浏览器兼容到 IE6** — 在 IE6 还有 5% 市场份额的 2013 年是杀手锏
-- **Gmail 风格序列键** — 第一个让 web 应用能像 Gmail 一样工作的库
-- **shadow DOM 兼容** — 2017 年加入，比很多主流库还早
-
-### 同类对比
-
-```mermaid
-quadrantChart
-    title 键盘库对比
-    x-axis 体积大 --> 体积小
-    y-axis 功能弱 --> 功能强
-    "Mousetrap": [0.9, 0.7]
-    "Keymaster": [0.7, 0.4]
-    "Keypress": [0.3, 0.8]
-    "jQuery Hotkeys": [0.4, 0.5]
-    "Hotkeys.js": [0.5, 0.7]
+// 业务方
+Mousetrap.bind('ctrl+s', save, 'keydown');
+// 在 input 里按 ctrl+s 默认不触发（除非自定义 stopCallback）
 ```
 
-| 库 | 体积 | 组合键 | 序列 | 维护 | 适用场景 |
-|----|------|--------|------|------|----------|
-| **Mousetrap** | 2KB | ✅ | ✅ | 停滞 | 通用 Web 应用 |
-| Keymaster | 1.5KB | ✅ | ❌ | 维护中 | 极简需求 |
-| Keypress | 10KB | ✅ | ❌ | 活跃 | 需要字符计数 |
-| jQuery Hotkeys | 5KB | ✅ | ❌ | 停滞 | jQuery 项目 |
-| Hotkeys.js | 4KB | ✅ | ❌ | 活跃 | Vue/React 集成 |
+**关键参数**：
 
-## 附：仓库元信息
+| 守卫 | 行为 |
+| --- | --- |
+| class `mousetrap` | 即使在 input 内也触发 |
+| `_belongsTo(target, e.target)` | 子树内触发 |
+| INPUT/SELECT/TEXTAREA | 默认跳过 |
+| `combo` | 当前按的组合（plugin 扩展用） |
+| shadow DOM | `composedPath()` 兼容 |
 
-- **路径**：`G:\实战案例\GitHub顶尖项目\mousetrap\`
-- **大小**：156,324 字节（12 文件）
-- **总文件数**：12
-- **解析时间**：2026-06-02
-- **commit 锁定**：`c202a0bd4967d5a3064f9cb376db51dec9345336` (v1.6.5)
-- **GitHub 链接**：git://github.com/ccampbell/mousetrap.git
+**最佳实践**：
+- ✅ 业务方快捷键库提供 `stopCallback` hook（plugin 扩展点）
+- ✅ class 标记（`mousetrap`）让 input 内的快捷键可控
+- ✅ `tagName` 直接比较（不维护"全部输入标签"列表）
+- ❌ 切勿在 input 内默认触发字符型快捷键（会抢输入）
+- ❌ 切勿用 `Node.contains`（老 IE 不支持，应 `_belongsTo` 递归）
 
-## 一句话总结
+### 5. shadow DOM 穿透：composedPath 兼容（Modern Web Component）
 
-> **Mousetrap 是"用 1059 行 JS 解决跨浏览器键盘事件碎片化"的教科书——4 张映射表 + 1 个闭包状态机 + prototype 猴子补丁的 plugin 架构，把 2KB 空间压缩到了极致。** 偷它的 `_characterFromEvent` 双路径、序列即累加器、stopCallback 钩子，避开它的 unbind 内存泄漏和全局污染——就能造出更现代的键盘库。
+**问题场景**：Web Components 标准后，事件可能发生在 `shadowRoot` 内（`event.target` 是 `<input>` 但 `event.composedPath()[0]` 才是真正的源头）；老 IE 9- 不支持 shadow DOM 反而简单。
+
+**解决方案**：
+```js
+// mousetrap.js _belongsTo 简化
+function _belongsTo(element, ancestor) {
+    if (element === ancestor) return true;
+    var parentElement = element.parentNode;
+    if (parentElement === null) return false;
+    if (parentElement === ancestor) return true;
+    return _belongsTo(parentElement, ancestor);  // 递归
+}
+
+// stopCallback 内处理 shadow DOM
+Mousetrap.prototype.stopCallback = function(e, element) {
+    var target = e.target;
+    
+    if (e.composedPath) {
+        // 现代浏览器：composedPath[0] 是原始 target
+        // 但 shadow DOM closed 模式拿不到
+        var composedPath = e.composedPath();
+        if (composedPath && composedPath[0]) {
+            target = composedPath[0];
+        }
+    }
+    
+    // 继续判断 tagName
+    var tagName = target.tagName;
+    return tagName === 'INPUT' || tagName === 'SELECT' || /* ... */;
+};
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `_belongsTo` | 递归 parentNode 链 |
+| `e.composedPath()` | 取 shadowRoot 真实 target |
+| closed shadowRoot | 拿不到内部 target（Web 标准限制） |
+| 递归而非循环 | 100+ 层也安全 |
+| 13 行注释 | 解释 Web Components 限制 |
+
+**最佳实践**：
+- ✅ 业务方库支持 shadow DOM 时用 `composedPath()`
+- ✅ 兜底用递归（不依赖 `Node.contains`）
+- ✅ closed 模式注释清楚（库的限制，不是 bug）
+- ❌ 切勿直接用 `e.target`（shadowRoot 内会错）
+- ❌ 切勿假设 shadow DOM 总是可访问（应 try-catch）
+
+---
+
+## 二、组合键与序列匹配
+
+### 6. _callbacks 字典：按字符路由 O(1) 查找（Hash Routing）
+
+**问题场景**：每个按键要查所有已绑定组合（`a` / `ctrl+s` / `g i` ...），如果遍历所有 callback，n=20 每次按键扫 20 次，慢；用字典按主字符索引，O(1) 路由。
+
+**解决方案**：
+```js
+// mousetrap.js constructor 简化
+function Mousetrap(targetElement) {
+    var self = this;
+    
+    targetElement = targetElement || document;
+    self.target = targetElement;
+    
+    self._callbacks = {};      // character → [{combo, modifiers, action, callback}]
+    self._directMap = {};      // combo:action → [callback, sequenceLevel]
+    self._sequenceLevels = {}; // combo → 当前序列 level
+    
+    self._resetSequences = function() { /* ... */ };
+    
+    // 注册事件
+    _addEvent(targetElement, 'keydown', function(e) { _handleKeyEvent(self, e, 'keydown'); });
+    _addEvent(targetElement, 'keypress', function(e) { _handleKeyEvent(self, e, 'keypress'); });
+    _addEvent(targetElement, 'keyup', function(e) { _handleKeyEvent(self, e, 'keyup'); });
+}
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `_callbacks` | character → array of binding info |
+| `_directMap` | combo:action → callback（trigger 用） |
+| `_sequenceLevels` | combo → 当前进度（序列追踪） |
+| `_resetSequences` | 清空进度函数 |
+| `targetElement` | 默认 document，可指定 element |
+
+**最佳实践**：
+- ✅ 业务方事件路由用"按主键索引的字典"（O(1)）
+- ✅ 同字符多 callback 放数组（`a` + `shift+a` 都按 `a` 索引）
+- ✅ `_directMap` 直查表（`trigger()` 用）
+- ❌ 切勿遍历所有 callback（应 O(1) 索引）
+- ❌ 切勿让字典 key 是 number（应用 string，小键盘 0 是 falsy 陷阱）
+
+### 7. _getMatches：modifier 数组精确比较（Exact Match）
+
+**问题场景**：按 `a` 时要区分"裸 a"和"ctrl+a"两个 binding；不能简单"包含"，需要精确匹配 modifier 集合。
+
+**解决方案**：
+```js
+// mousetrap.js _getMatches 简化
+function _getMatches(character, modifiers, e, sequenceName, combo, level) {
+    var i, callback, matches = [];
+    
+    for (i = 0; i < _callbacks[character].length; ++i) {
+        callback = _callbacks[character][i];
+        
+        // 序列处理
+        if (sequenceName && callback.seq) {
+            if (callback.seq !== sequenceName) continue;
+            if (level !== callback.level) continue;
+        }
+        
+        // modifier 精确匹配
+        if (!_modifiersMatch(modifiers, callback.modifiers)) {
+            continue;
+        }
+        
+        // action 类型匹配
+        if (e.type !== callback.action) continue;
+        
+        matches.push(callback);
+    }
+    
+    return matches;
+}
+
+function _modifiersMatch(a, b) {
+    return a.sort().join(',') === b.sort().join(',');
+}
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `_modifiersMatch` | 数组排序后比较（顺序无关） |
+| 序列匹配 | `seq` + `level` 双重验证 |
+| action 匹配 | `keydown` / `keypress` 区分 |
+| `_getMatches` | 返回所有匹配（可能有多个 binding） |
+| `.sort().join(',')` | 简单 hash 替代（数组 hash） |
+
+**最佳实践**：
+- ✅ 业务方 modifier 集合用"排序后字符串"做哈希比较
+- ✅ 多 binding 时返回数组（用户可能绑了多个）
+- ✅ 序列 + level 双重判断（避免错配）
+- ❌ 切勿用 `array1 === array2`（永远 false）
+- ❌ 切勿让 modifier 比较顺序敏感（应先排序）
+
+### 8. _pickBestAction：智能选择 keydown vs keypress（Strategy）
+
+**问题场景**：用户绑 `a` 时没指定 action（默认），但 `a` 在 keypress 触发字符、keydown 也触发；Mousetrap 根据键类型智能选择——字符型走 keypress（拿到 ASCII），功能键走 keydown（拿到 keyCode）。
+
+**解决方案**：
+```js
+// mousetrap.js _pickBestAction 简化
+function _pickBestAction(key, characterName) {
+    // 数字字符走 keydown（防止 numpad 与主键盘冲突）
+    if (/^\d+$/.test(characterName)) return 'keydown';
+    // 功能键走 keydown
+    if (key in _SPECIAL_ALIASES) return 'keydown';
+    // 字母字符走 keypress（拿 ASCII）
+    return 'keypress';
+}
+
+// bind() 内部
+Mousetrap.prototype.bind = function(keys, callback, action) {
+    keys = keys.split(' ');
+    for (var i = 0; i < keys.length; ++i) {
+        var key = keys[i];
+        var characterName = _getKeyInfo(key).key;
+        
+        var resolvedAction = action || _pickBestAction(key, characterName);
+        
+        // ...
+    }
+};
+```
+
+**关键参数**：
+
+| 键类型 | 推荐 action | 原因 |
+| --- | --- | --- |
+| 字母 `a-z` | keypress | 拿 ASCII 字符（区分大小写） |
+| 数字 `0-9` | keydown | numpad 与主键盘 keyCode 冲突 |
+| 功能键 `esc` | keydown | keypress 不触发（无字符） |
+| 符号 `/` `;` | keydown | keypress 拿不到 |
+| 组合 `ctrl+s` | keydown | chrome 不会触发 ctrl 的 keypress |
+
+**最佳实践**：
+- ✅ 业务方"事件类型推断"用 heuristic 策略
+- ✅ 数字走 keydown（防小键盘冲突）
+- ✅ 功能键走 keydown（keypress 不触发）
+- ✅ 用户可显式覆盖（`action` 参数）
+- ❌ 切勿让所有键都走 keypress（功能键会失效）
+- ❌ 切勿在用户没指定时死板地用 default
+
+### 9. _bindSequence：序列即累加器（Sequence as Accumulator）
+
+**问题场景**：`g i` 这种 Gmail 风格序列要追踪"按了 g 之后 1 秒内是否按了 i"；用专门的数据结构（State 对象 + transition）太重，Mousetrap 用闭包计数器 + 1 秒 timer 模拟状态机。
+
+**解决方案**：
+```js
+// mousetrap.js _bindSequence 简化
+function _bindSequence(combo, keys, callback, action) {
+    var i;
+    
+    for (i = 0; i < keys.length; ++i) {
+        var key = keys[i];
+        var isLast = (i + 1 === keys.length);
+        
+        if (isLast) {
+            // 最后一键：触发 callback + 重置
+            _bindSingle(key, _callbackAndReset, action, combo, i);
+        } else {
+            // 中间键：累加 level
+            _bindSingle(key, _increaseSequence, action, combo, i);
+        }
+    }
+}
+
+function _callbackAndReset(character, modifiers, e, combo, level) {
+    // 1. 触发 callback
+    _fireCallback(_directMap[combo + ':' + e.type].callback, e, _directMap[combo + ':' + e.type].combo);
+    // 2. 重置所有序列
+    var doNotReset = ['meta', 'ctrl'];
+    setTimeout(_resetSequences, 10);  // 10ms 延迟防 race
+    if (doNotReset.indexOf(modifiers[0]) === -1) _resetSequences();
+}
+
+function _increaseSequence(character, modifiers, e, combo, level) {
+    _sequenceLevels[combo] = level + 1;
+    if (_sequenceLevels[combo] > _maxLevel) _maxLevel = _sequenceLevels[combo];
+    
+    // 1 秒超时重置
+    clearTimeout(_resetTimer);
+    _resetTimer = setTimeout(_resetSequences, 1000);
+}
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `_sequenceLevels` | combo → 当前 level（计数器） |
+| `_resetTimer` | 1 秒超时定时器 |
+| `_maxLevel` | 全局最大 level（防错配） |
+| `_callbackAndReset` | 触发 + 重置（最后键） |
+| `_increaseSequence` | 累加 + 重启 timer（中间键） |
+| 10ms setTimeout | 防止刚结束序列的 last key 触发下一个序列的首键 |
+
+**最佳实践**：
+- ✅ 业务方"序列键"用"累加器 + timer"（无需新数据结构）
+- ✅ 1 秒超时（Gmail 约定）
+- ✅ 10ms 延迟 reset（防 race）
+- ✅ 倒数第二键累加，最后一键触发
+- ❌ 切勿用"专门的序列状态机"（过度设计）
+- ❌ 切勿让 timer 太长（>2 秒用户会以为没生效）
+
+### 10. _increaseSequence + maxLevel 防错配（Max Level Tracking）
+
+**问题场景**：同时绑 `a` 和 `g a`，按 `a` 时 `a` 触发还是 `g a` 触发？Mousetrap 用 maxLevel 区分——"如果 maxLevel > 0（按过 g），按 a 时不触发 `a`"。
+
+**解决方案**：
+```js
+// mousetrap.js _handleKey 简化
+function _handleKey(character, modifiers, e, combo, sequenceName) {
+    var i, callbacks;
+    
+    // 1. 计算 maxLevel
+    var maxLevel = -1;
+    for (i = 0; i < _callbacks[character].length; ++i) {
+        if (_callbacks[character][i].seq) {
+            maxLevel = Math.max(maxLevel, _callbacks[character][i].level);
+        }
+    }
+    
+    // 2. 找 matches（应用 maxLevel 过滤）
+    callbacks = _getMatches(character, modifiers, e, sequenceName, combo, maxLevel);
+    
+    // 3. 触发
+    if (callbacks.length > 0) {
+        for (i = 0; i < callbacks.length; ++i) {
+            _fireCallback(callbacks[i].callback, e, callbacks[i].combo);
+        }
+    }
+}
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `maxLevel` | 全局最大序列进度（-1 表示无序列） |
+| `level` 过滤 | `callback.level` 必须等于 `maxLevel` |
+| `doNotReset` | `meta` / `ctrl` 不重置（让组合键序列继续） |
+| 并行序列 | `g i` 和 `g t` 共享 `g` 的 level 累加 |
+
+**最佳实践**：
+- ✅ 业务方"序列 vs 单键冲突"用 maxLevel 全局追踪
+- ✅ 水平序列共享 g 的 level（多 g-prefix 序列并存）
+- ✅ Ctrl/Meta 不重置（让"ctrl+some" 序列继续）
+- ❌ 切勿让"按 g 之后按 a"先触发 `a`（应等序列结束）
+- ❌ 切勿在每个 callback 单独判断 level（应全局 maxLevel）
+
+---
+
+## 三、路由与触发
+
+### 11. bind() 拆键 + 兼容别名（Multi-Key Bind）
+
+**问题场景**：`Mousetrap.bind('command+shift+k', cb)` 中"command"是 mac 别名、"shift+k"组合要拆 modifier + 主键；`Mousetrap.bind('g i', cb)` 又要识别"序列"。
+
+**解决方案**：
+```js
+// mousetrap.js bind 简化
+Mousetrap.prototype.bind = function(keys, callback, action) {
+    var self = this;
+    keys = keys.split(' ');  // 'g i' → ['g', 'i']
+    
+    for (var i = 0; i < keys.length; ++i) {
+        var combo = keys[i];
+        var parts = combo.split('+');  // 'command+shift+k' → ['command', 'shift', 'k']
+        var modifiers = [];
+        var character = null;
+        
+        for (var j = 0; j < parts.length; ++j) {
+            var part = parts[j];
+            // 替换别名
+            if (_SPECIAL_ALIASES[part]) part = _SPECIAL_ALIASES[part];
+            if (['ctrl', 'meta', 'shift', 'alt'].indexOf(part) >= 0) {
+                modifiers.push(part);
+            } else {
+                character = part;  // 主键
+            }
+        }
+        
+        // 主键小写化（不区分大小写绑定）
+        character = character.toLowerCase();
+        
+        if (keys.length > 1) {
+            _bindSequence(combo, keys, callback, action);
+        } else {
+            _bindSingle(character, modifiers, callback, action, combo, 0);
+        }
+    }
+};
+```
+
+**关键参数**：
+
+| 步骤 | 说明 |
+| --- | --- |
+| `keys.split(' ')` | 序列拆单键 |
+| `combo.split('+')` | 组合拆 modifier + 主键 |
+| `_SPECIAL_ALIASES` | 别名替换（`cmd → meta`） |
+| `character.toLowerCase()` | 不区分大小写绑定 |
+| 序列 vs 单键 | 按 `keys.length` 决定 |
+
+**最佳实践**：
+- ✅ 业务方"组合键 DSL"用 `keys.split('+')` 拆 modifier
+- ✅ 平台别名用 `_SPECIAL_ALIASES` 动态化（`mod`）
+- ✅ 主键小写（`a` 和 `A` 等价）
+- ❌ 切勿让 `bind('a')` 区分大小写（应统一小写）
+- ❌ 切勿让别名硬编码（应跟随平台）
+
+### 12. unbind 留空 callback 占位（Unbind Stub）
+
+**问题场景**：`Mousetrap.unbind('a', oldCallback)` 想删除 binding；完全删除需要扫描 `_callbacks` 数组（O(n)）；Mousetrap 用"空 callback 占位"——绑一个"什么都不做"的 callback 覆盖。
+
+**解决方案**：
+```js
+// mousetrap.js unbind 简化
+Mousetrap.prototype.unbind = function(keys, callback) {
+    // 简化实现：直接绑空 callback
+    // TODO: actually remove this from the _callbacks dictionary instead of binding an empty function
+    return this.bind(keys, function() {}, 'keydown');
+};
+```
+
+```js
+// 业务方
+const handler = function() { console.log('a'); };
+Mousetrap.bind('a', handler);
+// 卸载
+Mousetrap.unbind('a', handler);
+// 或全部卸载
+Mousetrap.unbind('a');  // 留空 callback
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `unbind` 留空 | 简化实现（O(1) 替换） |
+| TODO 注释 | 作者承认遗留债务 |
+| 替代方案 | 真正删除要从 `_callbacks[i].splice(j, 1)` |
+| `bind(keys, () => {})` | 覆盖原 binding |
+
+**最佳实践**：
+- ✅ 业务方"unbind"先做"空 callback 占位"（性能优先）
+- ✅ 标记 TODO（未来优化）
+- ❌ 切勿 unbind 时每次都扫描数组（应用 O(1) 替换）
+- ❌ 切勿让 unbind 后还能触发（应用空 callback 覆盖）
+
+### 13. trigger() 直查表：模拟按键（Programmatic Trigger）
+
+**问题场景**：业务方要"按 ctrl+s 时调 save，并 emit 事件给其他组件"；模拟键盘事件需要构造 KeyboardEvent、设置 keyCode，繁琐；Mousetrap 提供 `trigger()` 直接调 callback。
+
+**解决方案**：
+```js
+// mousetrap.js trigger 简化
+Mousetrap.prototype.trigger = function(combo, eventName) {
+    eventName = eventName || 'keydown';
+    var callbacks = _directMap[combo + ':' + eventName];
+    if (callbacks && callbacks.length > 0) {
+        for (var i = 0; i < callbacks.length; ++i) {
+            _fireCallback(callbacks[i].callback, _getFakeEvent(combo, eventName), callbacks[i].combo);
+        }
+    }
+    return this;
+};
+
+function _getFakeEvent(combo, eventName) {
+    var parts = combo.split('+');
+    var character = parts[parts.length - 1].toLowerCase();
+    
+    return {
+        type: eventName,
+        which: character.charCodeAt(0),
+        target: document,
+        shiftKey: combo.indexOf('shift') >= 0,
+        ctrlKey: combo.indexOf('ctrl') >= 0,
+        metaKey: combo.indexOf('meta') >= 0,
+        altKey: combo.indexOf('alt') >= 0,
+    };
+}
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `_directMap` | combo:event → callback（O(1) 触发） |
+| `_getFakeEvent` | 构造伪事件对象（无 KeyboardEvent） |
+| `trigger` 是 prototype 方法 | 业务方可 `Mousetrap.trigger('ctrl+s')` |
+| 不会触发 DOM 默认 | 不走真实事件流 |
+
+**最佳实践**：
+- ✅ 业务方"程序触发"用直查表（O(1)）
+- ✅ 构造伪 event 对象（不依赖 KeyboardEvent）
+- ✅ 支持 `keydown` / `keyup` / `keypress` 三类型
+- ❌ 切勿让 trigger 调真实事件（应直查 callback）
+- ❌ 切勿在 trigger 时改 DOM 状态（应纯逻辑）
+
+### 14. _fireCallback：preventDefault + return false（Output）
+
+**问题场景**：触发 callback 后要 preventDefault（防止浏览器默认行为，如 ctrl+s 弹保存对话框）；老代码约定 `return false` 也能阻止。
+
+**解决方案**：
+```js
+// mousetrap.js _fireCallback 简化
+function _fireCallback(callback, e, combo) {
+    if (callback(e, combo) === false) {
+        _preventDefault(e);
+        _stopPropagation(e);
+    } else {
+        _preventDefault(e);  // 默认总是 prevent
+    }
+}
+
+function _preventDefault(e) {
+    if (e.preventDefault) e.preventDefault();
+    else e.returnValue = false;
+}
+
+function _stopPropagation(e) {
+    if (e.stopPropagation) e.stopPropagation();
+    else e.cancelBubble = true;
+}
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `return false` | 兼容老 API（jQuery 时代） |
+| 默认 preventDefault | 防止浏览器默认（ctrl+s 弹保存） |
+| `returnValue = false` | IE 老 API |
+| `cancelBubble = true` | IE 旧 stopPropagation |
+
+**最佳实践**：
+- ✅ 业务方快捷键默认 preventDefault（防浏览器冲突）
+- ✅ 兼容老 API（`return false` 也能阻止）
+- ✅ IE 老 API 兜底（`returnValue` / `cancelBubble`）
+- ❌ 切勿让快捷键触发后还能"穿透"到浏览器默认
+- ❌ 切勿让 return false 仅在 callback 内阻止（应用 preventDefault）
+
+### 15. handleKey 暴露给 plugin：扩展点（Plugin Hook）
+
+**问题场景**：Mousetrap 4 个插件（pause / global-bind / record / bind-dictionary）都通过 prototype 猴子补丁装饰 `stopCallback` / `handleKey`；主流程不变，行为可扩展。
+
+**解决方案**：
+```js
+// mousetrap.js 暴露 hook 点
+Mousetrap.prototype.handleKey = function() {
+    // 默认实现是 _handleKey，但允许子类/插件重写
+    return _handleKey.apply(this, arguments);
+};
+
+// plugins/pause.js
+Mousetrap.prototype.pause = function() {
+    this.paused = true;
+    return this;
+};
+Mousetrap.prototype.unpause = function() {
+    this.paused = false;
+    return this;
+};
+
+// 重写 stopCallback 集成 pause
+Mousetrap.prototype.stopCallback = function(e, element) {
+    if (this.paused) return true;  // pause 时全停
+    // ... 原有逻辑
+};
+
+// plugins/global-bind.js
+Mousetrap.prototype.bindGlobal = function(keys, callback, action) {
+    // 在 input 内也触发
+    var self = this;
+    return this.bind(keys, function(e) {
+        if (e.target instanceof HTMLInputElement /* ... */) {
+            return callback(e);
+        }
+        return false;
+    }, action);
+};
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `prototype.handleKey` | 公开 hook（plugin 可重写） |
+| `prototype.stopCallback` | 同上 |
+| `prototype.bindGlobal` | 新方法（不破坏 bind） |
+| `this.paused` | 状态位 |
+| 4 个插件 | 全是 prototype 装饰（不改主流程） |
+
+**最佳实践**：
+- ✅ 业务方库提供 prototype 钩子（plugin 用）
+- ✅ 插件用"装饰器模式"扩展（不破坏主流程）
+- ✅ 状态用 `this.xxx`（instance 状态）
+- ❌ 切勿在 plugin 里改闭包（应用 prototype 替换）
+- ❌ 切勿让 plugin 必须依赖主流程代码
+
+---
+
+## 四、跨浏览器与扩展
+
+### 16. UMD 包裹：script + AMD + CommonJS 三兼容（Module Adapter）
+
+**问题场景**：Mousetrap 1.6 时代要兼容 `<script src="mousetrap.js">` 标签、RequireJS（AMD）、Node.js CommonJS；用 ESM 太新，老项目不兼容。
+
+**解决方案**：
+```js
+// mousetrap.js 末尾 UMD 包裹
+(function(Mousetrap) {
+    // ... 库主体
+    
+    // 导出
+    if (typeof define === 'function' && define.amd) {
+        define(Mousetrap);  // AMD
+    } else if (typeof module !== 'undefined' && module.exports) {
+        module.exports = Mousetrap;  // CommonJS
+    } else {
+        window.Mousetrap = Mousetrap;  // 全局
+    }
+}(function Mousetrap(element, options) {
+    return new _Mousetrap(element, options);
+}));
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| IIFE 入口 | 隔离作用域 |
+| `define.amd` | AMD 检测（RequireJS） |
+| `module.exports` | CommonJS 检测（Node.js） |
+| `window.Mousetrap` | script 标签全局 |
+| factory 函数 | 既支持 `new Mousetrap()` 也支持 `Mousetrap.bind(...)` |
+
+**最佳实践**：
+- ✅ 业务方跨生态库用 UMD（兼容老项目）
+- ✅ AMD / CommonJS / 全局三模式
+- ✅ factory 函数让用户既能 new 也能量函数调用
+- ❌ 切勿只支持 ESM（老项目无法用）
+- ❌ 切勿让 define.amd 检测跳过（顺序敏感）
+
+### 17. init() 动态方法拷贝：闭包内方法暴露到 Mousetrap（Singleton）
+
+**问题场景**：用户既要用 `Mousetrap.bind('a', cb)`（全局 API）也要用 `new Mousetrap(element).bind(...)`（实例 API）；Mousetrap 默认提供全局 API，方法从 instance prototype 动态拷贝。
+
+**解决方案**：
+```js
+// mousetrap.js init 简化
+Mousetrap.init = function() {
+    var documentMousetrap = new Mousetrap(document);
+    
+    for (var method in documentMousetrap) {
+        // 过滤内部方法（_ 前缀）
+        if (method.charAt(0) !== '_') {
+            Mousetrap[method] = (function(method) {
+                // IIFE 锁定 method 引用
+                return function() {
+                    return documentMousetrap[method].apply(documentMousetrap, arguments);
+                };
+            })(method);
+        }
+    }
+};
+
+Mousetrap.init();  // 自动执行
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `new Mousetrap(document)` | 默认 document 实例 |
+| `for (var method in ...)` | 遍历 prototype 方法 |
+| `method.charAt(0) !== '_'` | 过滤内部方法 |
+| IIFE 包裹 | 锁定 `method` 引用（for 循环变量提升） |
+| `apply(documentMousetrap, ...)` | 委托给实例 |
+
+**最佳实践**：
+- ✅ 业务方"全局 + 实例"双 API 用 init 动态拷贝
+- ✅ 过滤内部方法（`_` 前缀）
+- ✅ IIFE 锁定 method（防 for 循环变量提升坑）
+- ❌ 切勿直接 `Mousetrap.bind = documentMousetrap.bind`（this 错乱）
+- ❌ 切勿拷贝 `_` 开头方法（内部用）
+
+### 18. pause 插件：临时禁用（Pause State）
+
+**问题场景**：用户进入 modal / drawer 时要禁用全局快捷键；用 `Mousetrap.unbind` 卸载所有 binding 再恢复很慢（保存状态 200ms+）；用 `pause` 状态位是 O(1) 切换。
+
+**解决方案**：
+```js
+// plugins/pause.js
+Mousetrap.prototype.pause = function() {
+    this.paused = true;
+    return this;
+};
+Mousetrap.prototype.unpause = function() {
+    this.paused = false;
+    return this;
+};
+Mousetrap.prototype.stopCallback = function(e, element) {
+    if (this.paused) return true;  // 全部跳过
+    // ... 原有逻辑
+};
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| `this.paused` | 状态位（O(1) 切换） |
+| `stopCallback` 返回 true | 全部跳过 |
+| `pause` 返回 this | 链式 |
+| 不改 _callbacks | 性能最优 |
+| 5 行实现 | 极简 |
+
+**最佳实践**：
+- ✅ 业务方"临时禁用"用状态位（不卸载 binding）
+- ✅ `stopCallback` 加 guard（5 行）
+- ✅ 链式 API（`Mousetrap.pause()`）
+- ❌ 切勿 pause 时 unbind（应保留 binding）
+- ❌ 切勿让 pause 状态污染其他实例（应 instance 级）
+
+### 19. record 插件：录制键盘序列（Capture Mode）
+
+**问题场景**：用户要自定义快捷键（"按 ctrl+s 后再按 g i"），Mousetrap 提供"录制"模式——把用户按的键序列记录下来，再绑回去。
+
+**解决方案**：
+```js
+// plugins/record.js
+Mousetrap.prototype.record = function(callback) {
+    var self = this;
+    var recorded = [];
+    var doneFn = function(e) {
+        // 结束录制
+        callback(recorded.join(' '));
+        self.unbind('escape mousetrap_record_keyup');
+        self.recordedKeys = [];
+    };
+    
+    // 录制一个键
+    var fn = function(e) {
+        // 跳过 modifier-only 键
+        if (e.keyCode === 16 || e.keyCode === 17 || e.keyCode === 18) return;
+        
+        recorded.push(_characterFromEvent(e));
+        // ... 加下个键监听
+    };
+    
+    this.bind('escape', doneFn, 'keyup');  // ESC 结束
+    this.bind(fn, 'keyup');  // 主录制
+    return this;
+};
+```
+
+**关键参数**：
+
+| 字段 | 用途 |
+| --- | --- |
+| 录制模式 | 用 _handleKey 收集按键 |
+| `recordedKeys` | 临时数组 |
+| ESC 结束 | 用 `unbind` 退出 |
+| modifier-only 跳过 | `shift` / `ctrl` 单按不算 |
+| 返回 this | 链式 |
+
+**最佳实践**：
+- ✅ 业务方"用户自定义快捷键"用录制模式
+- ✅ modifier 键单按不录（防噪声）
+- ✅ ESC 退出（标准约定）
+- ❌ 切勿让录制一直持续（应显式结束）
+- ❌ 切勿把 modifier-only 录进序列
+
+### 20. Apache 2.0 + LLVM exception：商业友好许可（License Choice）
+
+**问题场景**：Mousetrap 是前端 UI 库（部分公司用作 IDE 核心），需要 Apache 2.0（商业友好）+ LLVM exception（防专利诉讼）；GPL/MIT 在某些场景下不够用。
+
+**解决方案**：
+```text
+# LICENSE 文件
+mousetrap is dual licensed under the Apache 2.0 license and the LLVM
+exceptions. You can use mousetrap in any commercial project without
+open-sourcing your code, and the LLVM exception protects you from
+patent claims (relevant for larger companies).
+```
+
+**关键参数**：
+
+| 许可 | 用途 |
+| --- | --- |
+| Apache 2.0 | 商业友好（不强制开源） |
+| LLVM exception | 防专利诉讼（2024 后大公司关注） |
+| 双许可 | 业务方可任选 |
+| 商标 | 不含商标条款（用 `Mousetrap` 不构成商标侵权） |
+
+**最佳实践**：
+- ✅ 业务方客户端库用 Apache 2.0 + LLVM exception
+- ✅ 商业友好（不强制开源衍生作品）
+- ✅ 防专利诉讼（LLVM exception 是行业标杆）
+- ❌ 切勿用 GPL（强制开源会让企业用户流失）
+- ❌ 切勿省略 patent 条款（大公司会卡）
+
+---
+
+**标签**：#mousetrap #keyboard #shortcut #dom
+**状态**：20/20 份详细内容

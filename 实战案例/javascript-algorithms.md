@@ -1,442 +1,899 @@
----
-title: javascript-algorithms
-type: 算法题库
-lang: JS
-stars: 193k+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - 算法题库
----
+# JavaScript Algorithms · ABL 风格深度解析
 
-# javascript-algorithms · 项目深度解析
-
-> JS 实现的算法与数据结构，含详细解释
-> 来源：项目\javascript-algorithms-master.zip
-
-## 写在前面：解析哲学
-
-按 V3 模版，**先骨架后血肉，先 What 后 Why，最后 How to steal**。
-每个小点都遵循：点状解析 → 思维导图 → 落地模板 → 反例警示。
+> 主题：193k+ Star 的 JS 算法与数据结构题库，含详细解释 + 测试 + 复杂度分析。本文聚焦 20 个可复用模式（核心原理 / 架构设计 / 性能优化 / 可靠性与生态）。
 
 ---
 
-## 0. 解析前的 5 个准备
+## 一、核心原理
 
-**[点状解析]**：拿到仓库后先做 5 件不起眼但极重要的事，避免后面返工。
+### 模式 1：算法 + 数据结构双层分类
 
-**[思维导图]**：
+**问题场景**：刷题平台 100+ 算法 + 20+ 数据结构，**没有清晰分类 = 找不到对应实现**。javascript-algorithms 用双层分类（algorithms 目录 + data-structures 目录），**按主题而非按难度**组织。
+
+**解决方案架构**：
 ```
-解析前准备
-├── 0.1 克隆仓库（--depth 1 瘦身）
-├── 0.2 建 _analysis 子目录（13 个分类）
-├── 0.3 写问题清单（5 问）
-├── 0.4 速查表（meta 信息）
-└── 0.5 锁定 commit（避免中途漂移）
+src/
+├── algorithms/                # 算法
+│   ├── graph/
+│   │   ├── dijkstra/         # 单源最短路径
+│   │   ├── bfs/              # 广度优先
+│   │   ├── dfs/              # 深度优先
+│   │   └── bellman-ford/     # 单源最短（负权）
+│   ├── sorting/
+│   │   ├── quicksort/        # 快速排序
+│   │   ├── mergesort/        # 归并排序
+│   │   └── heapsort/         # 堆排序
+│   ├── search/
+│   │   ├── linear-search/    # 线性查找
+│   │   └── binary-search/    # 二分查找
+│   ├── math/
+│   │   ├── bits/             # 位运算
+│   │   └── factorial/        # 阶乘
+│   └── string/
+│       ├── knuth-morris-pratt/  # KMP
+│       └── rabin-karp/          # RK
+└── data-structures/           # 数据结构
+    ├── linked-list/
+    │   ├── linked-list/         # 单链
+    │   └── doubly-linked-list/  # 双链
+    ├── tree/
+    │   ├── binary-tree/         # 二叉树
+    │   ├── avl-tree/            # AVL
+    │   ├── red-black-tree/      # 红黑树
+    │   └── heap/                # 堆
+    ├── hash-table/              # 哈希表
+    ├── stack/                   # 栈
+    ├── queue/                   # 队列
+    ├── graph/                   # 图
+    └── bloom-filter/            # 布隆过滤器
 ```
 
-**[反例警示]**：没用 --depth 1 → 大仓库拉半天还失败；目录没分类 → 文件全堆一起；没锁 commit → 写到一半上游 push 了你不知道。
+**关键参数表**：
+
+| 一级 | 数量 | 主题 |
+| :--- | :---: | :--- |
+| algorithms | 12+ | 排序/搜索/图/字符串/数学 |
+| data-structures | 13+ | 链表/树/哈希/栈/队列/图 |
+| 总文件 | 941 | JS + 测试 + 文档 + 图 |
+| README | 50+ 语言 | 多语言翻译（PT/ES/FR/CN/...）|
+
+**最佳实践**：
+- ✅ 算法 + 数据结构 **双层目录** 分离关注点
+- ✅ 主题分（graph/sorting）而非难度分（easy/medium/hard）
+- ✅ 每算法一个子目录（含 README + 截图 + 实现 + 测试）
+- ✅ 多语言 README 翻译 **降低学习门槛**
+- ✅ 任何"知识库类项目"可借鉴此分类法
 
 ---
 
-## 1. 开发计划书（Project Charter）
+### 模式 2：每算法 1 个目录 = README + 实现 + 测试 + 图
 
-| 字段 | 内容 |
-|---|---|
-| 项目名 | javascript-algorithms |
-| 一句话定位 | JS 实现的算法与数据结构，含详细解释 |
-| 核心问题 | 解决「算法可视化 + 分类刷题」领域的核心痛点：JS 实现的算法与数据结构，含详细解释 |
-| 目标用户 | 求职者 / 学生 |
-| 商业模式 | 开源 + 周边服务 |
-| 复刻难度 | ⭐⭐ |
-| 当前状态 | 活跃 |
-| 团队规模 | 50+ |
-| 关键里程碑 | v0.1 / v1.0 / 当前版本 |
+**问题场景**：算法光看代码难理解，**手绘 + 步骤图 + 复杂度表格**才是教学核心。javascript-algorithms 用"1 目录 = 完整教学包"组织。
 
-**[反例警示]**：只看 star 数就开干 → 玩具项目不值得学一个月；不看 license → GPL-3.0 商用直接踩坑；不看 pushedAt → 仓库 3 年没动 = 学了也用不上。
+**解决方案**（以 Dijkstra 为例）：
+```
+src/algorithms/graph/dijkstra/
+├── README.md           # 详细解释 + 复杂度
+├── dijkstra.js         # 实现
+├── __test__/
+│   └── dijkstra.test.js  # Jest 测试
+└── images/             # 截图（步骤图）
+    ├── step1.png
+    ├── step2.png
+    └── final.png
+```
+
+**关键参数表**：
+
+| 文件 | 用途 | 必含 |
+| :--- | :--- | :--- |
+| `README.md` | 文字讲解 | 复杂度 + 步骤 |
+| `{algo}.js` | 代码实现 | export 函数 |
+| `__test__/{algo}.test.js` | 单元测试 | Jest |
+| `images/*.png` | 可视化 | 步骤图/动画 |
+
+**最佳实践**：
+- ✅ **1 算法 1 目录**而非 1 文件，**自包含**
+- ✅ README 含时间/空间复杂度、**新人快速判断**
+- ✅ 截图从代码生成（`/images/` 目录是静态资源）
+- ✅ 测试 + 实现 + 文档 **三者配套**发布
+- ✅ 任何"教学型代码库"可借鉴此自包含模式
 
 ---
 
-## 2. 项目框架（Repo Skeleton Map）
+### 模式 3：算法 + 复杂度表格 + 适用场景
 
-**[点状解析]**：不读代码，先看"目录怎么长"。JS 项目常见布局：src/ + lib/ + bin/
+**问题场景**：同一个问题有多种解法，**复杂度决定选择**。javascript-algorithms 每个 README 都附复杂度表格，**让用户快速决策**。
 
-**[思维导图]**：
-```
-算法题库 框架
-├── 2.1 顶层结构（tree -L 2）
-├── 2.2 配置入口（package.json）
-├── 2.3 代码入口（main.*/app.*/server.*/cli.*）
-├── 2.4 文档位置（docs/README/CHANGELOG）
-├── 2.5 测试位置（test/tests/*_test.*）
-└── 2.6 部署相关（deploy/k8s/docker）
-```
-
-**[本项目实际结构]**：
-```
-├── /
-├── .babelrc/
-├── .editorconfig/
-├── .eslintrc/
-├── .github/
-├── .gitignore/
-├── .husky/
-├── .npmrc/
-├── .nvmrc/
-├── BACKERS.md/
-├── CODE_OF_CONDUCT.md/
-├── CONTRIBUTING.md/
-├── LICENSE/
-├── README.ar-AR.md/
-├── README.de-DE.md/
-├── README.es-ES.md/
-├── README.fr-FR.md/
-├── README.he-IL.md/
-├── README.id-ID.md/
-├── README.it-IT.md/
-```
-
-**实际配置入口**：`- `package.json``
-
-**实际代码入口**：``
-
-**核心目录**（文件数最多）：`src/algorithms/math/bits`, `src/algorithms/graph/dijkstra/images`, `src/algorithms/math/bits/__test__`, `src/data-structures/heap`, `src/data-structures/linked-list`, `src/algorithms/graph/dijkstra`
-
-**[反例警示]**：上来就 cat main.go → 找不到入口；忽略 vendor/node_modules → 看 10 万行依赖以为项目很大；错过 docs/ → 错过作者的"自述"。
-
----
-
-## 3. 项目画像（Profile）
-
-**[点状解析]**：用 5 个数字量化"这个项目长什么样"，5 分钟形成判断。
-
-| 维度 | 数据 |
-|---|---|
-| 总文件数 | 941 |
-| 主语言 | JavaScript |
-| 涉及语言 | JavaScript, Markdown |
-| Star | 193k+ |
-| License | MIT License |
-| Docker 支持 | ❌ |
-| K8s 支持 | ❌ |
-| CI 配置 | ✅ |
-| 有测试 | ✅ |
-
-**[反例警示]**：cloc 包含测试 → 数字虚高 2 倍；只看 contributors 总数 → 1 人贡献 90% = 伪活跃；忽略 indirect deps → 漏洞扫描漏一半。
-
----
-
-## 4. 架构设计（Architecture Deep Dive）
-
-**[点状解析]**：算法题库 项目的核心架构看点是 **算法可视化 + 分类刷题**。
-
-**[思维导图]**：
-```
-算法题库 架构
-├── 4.1 部署图（节点 + 容器 + 网络）
-├── 4.2 组件图（服务 + 依赖 + 协议）
-├── 4.3 4+1 视图（逻辑/进程/部署/开发/场景）
-└── 4.4 关键设计决策 ADR
-```
-
-**核心架构看点**（算法可视化 + 分类刷题）：
-- 算法可视化 + 分类刷题
-- 核心数据流
-- 性能/可用性关键点
-
-**ADR-001: 为什么是 算法题库 方向**
-- 状态：已采纳
-- 背景：解决「算法可视化 + 分类刷题」领域的核心痛点：JS 实现的算法与数据结构，含详细解释
-- 决策：采用 算法可视化 + 分类刷题 作为核心架构思路
-- 理由：该方向在 算法题库 领域已被广泛验证，兼顾性能、可维护性与生态
-- 替代：其他可选方案（取决于具体场景与团队技术栈）
-
-**[反例警示]**：只画总图看不清细节；没有 ADR 不知道为什么这样设计；忽略部署视图上线才发现问题。
-
----
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-**[点状解析]**：每读一个文件必须回答"为什么这样写"。
-
-### 5.1 找骨架代码
-
-**前 5 个最大源码文件**：
-```
-1. `src/data-structures/graph/__test__/Graph.test.js`
-2. `src/data-structures/tree/red-black-tree/RedBlackTree.js`
-3. `src/data-structures/doubly-linked-list/__test__/DoublyLinkedList.test.js`
-4. `src/data-structures/tree/__test__/BinaryTreeNode.test.js`
-5. `src/algorithms/image-processing/seam-carving/resizeImageWidth.js`
-```
-
-**入口文件**：``
-
-### 5.2 单文件分析卡（入口示例）
-
+**解决方案 README 片段**（`dijkstra/README.md`）：
 ```markdown
-## 文件：
+# Dijkstra 算法
 
-### 职责（What）
-项目的引导入口，负责初始化配置、装配依赖、启动核心服务。
+## 复杂度
 
-### 关键代码段
-（实际精读时填）
+| 数据结构 | 时间复杂度 | 空间复杂度 |
+| :--- | :--- | :--- |
+| 邻接表 + 二叉堆 | O((V+E) log V) | O(V) |
+| 邻接矩阵 + 数组 | O(V²) | O(V²) |
 
-### 为什么这样写（WHY）❗
-- 入口越薄越好 → 让核心逻辑可独立测试
-- 配置/启动/路由三层分离 → 各层可替换
-- 显式依赖注入（而非全局变量）→ 业务代码可移植
+## 参考实现
+
+- [Wikipedia](https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm)
+- [YouTube - Computerphile](https://youtube.com/...)
+
+## 应用场景
+
+- Google Maps 最短路径
+- OSPF 路由协议
+- 网络延迟估计
 ```
 
-### 5.3 设计模式识别清单
+**关键参数表**：
 
-| 模式 | 出现位置 | 解决什么问题 |
-|---|---|---|
-| Factory | `NewXxx()` | 屏蔽复杂初始化 |
-| Observer | `OnXxx` 回调 | 解耦事件源与处理者 |
-| Middleware | `Use/Handler chain` | 链式处理横切关注点 |
-| Pool | `sync.Pool / object pool` | 减少 GC 压力 |
-| Strategy | 接口+多种实现 | 运行时切换算法 |
+| 字段 | 含义 | 示例 |
+| :--- | :--- | :--- |
+| `Time Complexity` | 时间复杂度 | O(n log n) |
+| `Space Complexity` | 空间复杂度 | O(n) |
+| `Best` | 最优情况 | O(n) |
+| `Average` | 平均 | O(n log n) |
+| `Worst` | 最坏 | O(n²) |
+| `In-place` | 原地 | yes/no |
+| `Stable` | 稳定排序 | yes/no |
 
-### 5.4 反模式 / 坑位识别
+**最佳实践**：
+- ✅ 复杂度表格 **三列起步**（time/space/best）
+- ✅ 注明 in-place / stable，**辅助选择**
+- ✅ 引用 Wikipedia + 视频链接，**权威参考**
+- ✅ 列出真实应用场景（Google Maps / OSPF），**业务感**
+- ✅ 任何"算法对比"项目可借鉴此表格
 
-```bash
-grep -rn 'panic(' --include='*.go' .    # 找 panic
-grep -rn 'go func' --include='*.go' .   # 找裸 goroutine
-grep -rn 'global\|window\.' --include='*.py' .  # 找全局变量
+---
+
+### 模式 4：Jest 单测 + 边界用例
+
+**问题场景**：算法实现错一个边界用例就崩，**测试覆盖度是质量关键**。javascript-algorithms 用 Jest 全量测试，**每个算法至少 5+ 用例**。
+
+**解决方案测试**（`dijkstra/__test__/dijkstra.test.js` 节选）：
+```js
+import dijkstra from '../dijkstra';
+
+describe('dijkstra', () => {
+    it('should find shortest path in simple graph', () => {
+        const graph = new Graph();
+        graph.addVertex('A');
+        graph.addVertex('B');
+        graph.addEdge('A', 'B', 1);
+        const result = dijkstra(graph, 'A');
+        expect(result.distances).toEqual({ A: 0, B: 1 });
+    });
+
+    it('should handle disconnected graph', () => {
+        const graph = new Graph();
+        graph.addVertex('A');
+        graph.addVertex('B');  // 不连
+        const result = dijkstra(graph, 'A');
+        expect(result.distances.B).toBe(Infinity);
+    });
+
+    it('should handle negative weights error', () => {
+        // Dijkstra 不支持负权
+    });
+});
 ```
 
-### 5.5 算法题库 项目的独特看点
+**关键参数表**：
 
-- **算法可视化 + 分类刷题**：这是 javascript-algorithms 的"灵魂"功能，必须精读
-- **算法可视化 + 分类刷题**：核心架构创新
-- **核心数据流**：性能/可用性关键
+| 用例类型 | 必测 | 用途 |
+| :--- | :--- | :--- |
+| 简单图 | ✓ | 基础正确性 |
+| 复杂图 | ✓ | 多次跳转 |
+| 边界 | ✓ | 单节点/空图/自环 |
+| 极端 | ✓ | 大图 + 性能 |
+| 负权/无效输入 | ✓ | 显式抛错 |
 
-**[反例警示]**：只看 What 不看 Why → 抄过来不理解；跳过测试代码 → 错过"作者怎么自测"的精华；忽略 vendor/ 依赖代码 → 失去"作者如何用 std lib"的线索。
+**最佳实践**：
+- ✅ Jest `describe` + `it` 组织用例
+- ✅ **5+ 用例** 起步（基础/边界/极端/异常/性能）
+- ✅ 失败用例显式测（`expect().toThrow()`）
+- ✅ `Infinity` 表达不可达
+- ✅ 任何"算法测试"可借鉴此模式
 
 ---
 
-## 6. 运行机制（Bring It Up）
+### 模式 5：实现代码风格 + ES6 export
 
-**[点状解析]**：跑起来才算。光看代码是幻觉。
+**问题场景**：算法实现要"教科书风格"**而非炫技**。javascript-algorithms 全部用 ES6 class + 函数式 + 显式 export，**新人可读**。
 
-```bash
-# 6.1 找启动脚本
-ls -la | grep -E 'Makefile|run|start|serve'
+**解决方案实现**（`dijkstra.js` 节选）：
+```js
+import PriorityQueue from '../../../data-structures/priority-queue/PriorityQueue';
 
-# 6.2 本地起服务
-make run 2>&1 | tee _analysis/run/stdout.log &
+export default function dijkstra(graph, startVertex) {
+    const distances = {};
+    const visited = {};
+    const queue = new PriorityQueue();
 
-# 6.3 smoke test
-curl -sS http://localhost:8080/health
+    // 初始化
+    graph.getAllVertices().forEach((vertex) => {
+        distances[vertex] = Infinity;
+        visited[vertex] = false;
+    });
+    distances[startVertex] = 0;
+    queue.add({ vertex: startVertex, distance: 0 });
+
+    while (!queue.isEmpty()) {
+        const { vertex, distance } = queue.poll();
+        if (visited[vertex]) continue;
+        visited[vertex] = true;
+
+        graph.getNeighbors(vertex).forEach((neighbor) => {
+            const edge = graph.getEdge(vertex, neighbor);
+            const newDistance = distance + edge.weight;
+            if (newDistance < distances[neighbor]) {
+                distances[neighbor] = newDistance;
+                queue.add({ vertex: neighbor, distance: newDistance });
+            }
+        });
+    }
+
+    return { distances, visited };
+}
 ```
 
-**[反例警示]**：跳过 smoke test → 一跑就崩；不看 /proc/PID/fd → 资源泄漏查不出；不打 trace → 链路黑盒。
+**关键参数表**：
+
+| 风格 | 决策 | WHY |
+| :--- | :--- | :--- |
+| ES6 class | 优先 | 教学友好 |
+| 函数式辅助 | map/filter | 简洁 |
+| 默认 export | 1 个/文件 | 测试方便 |
+| 解构赋值 | 常用 | 减少中间变量 |
+| 命名导出 | 辅助函数 | 复用 |
+
+**最佳实践**：
+- ✅ **ES6 class + 函数式混用**，**新人友好**
+- ✅ 显式 `Infinity` 表示不可达，**不抛错**
+- ✅ `visited` 数组防环，**O(V) 额外空间**
+- ✅ 优先队列用现成 data-structure，**不重写**
+- ✅ 默认 export + 测试文件 `import X from '../X'`
 
 ---
 
-## 7. 演进历史（Time Travel）
+## 二、架构设计
 
-**[点状解析]**：看一个项目的"人生"，比看它"现在"更能学到东西。
+### 模式 6：测试驱动 - 每个实现配 __test__/ 目录
 
-```bash
-git log --oneline --decorate --graph | head -100
-gh release list --limit 20
+**问题场景**：算法正确性靠肉眼检查不可靠，**必须自动化测试**。javascript-algorithms 强制每个实现配 `__test__/` 目录，**没有测试 = 不合格**。
+
+**解决方案结构**：
+```
+src/algorithms/graph/dijkstra/
+├── dijkstra.js
+└── __test__/
+    └── dijkstra.test.js
+
+src/data-structures/tree/red-black-tree/
+├── RedBlackTree.js
+└── __test__/
+    └── RedBlackTree.test.js
 ```
 
-**已知里程碑**：
-- v0.x 原型：MVP 验证
-- v1.0 稳定：API 冻结
-- v2.0：性能与生态
-- 现状：持续维护/社区化
+**关键参数表**：
 
-**[反例警示]**：只看 master 分支 → 错过"为什么不这么写"的讨论；忽略 v1 → v2 的 commit → 错过"推翻重来的理由"；不看 issue → 错过设计权衡。
+| 模式 | 用途 | 文件位置 |
+| :--- | :--- | :--- |
+| `__test__/` | 单元测试 | 同目录 |
+| `*.test.js` | Jest 文件 | 命名约定 |
+| `coverage/` | 覆盖率 | Jest 输出 |
+| `jest --coverage` | 跑全量 | 100% 覆盖 |
 
----
-
-## 8. 质量保障（How It Doesn't Break）
-
-**[点状解析]**：测试 + CI + Lint + 性能基准，4 道防线。
-
-| 维度 | 状态 |
-|---|---|
-| 单测 | ✅ |
-| CI | ✅ |
-| Docker | ❌ |
-| K8s | ❌ |
-| Lint 配置 | 见 - `package.json` |
-| 性能基准 | 待验证 |
-
-**[反例警示]**：只看覆盖率不看断言质量 → 100% 覆盖但测了空函数；没 CI → 本地能跑别人拉下来崩；没模糊测试 → parser 永远有边角 case 没覆盖。
+**最佳实践**：
+- ✅ **测试与实现同目录**，**新人看代码就找到测试**
+- ✅ `__test__/` 命名（Jest 默认 glob 模式）
+- ✅ 覆盖率目标 **80%+**（可由 Codecov 监控）
+- ✅ CI 跑 `npm test`，**不通过则不合并**
+- ✅ 任何"代码库"可借鉴此测试布局
 
 ---
 
-## 9. 生态依赖（Map of the World）
+### 模式 7：复杂度分析 O(1) 注释标注
 
-**[点状解析]**：依赖图 = 项目的"供应链"。一个 GPL 依赖毁掉整个商业版。
+**问题场景**：算法 O(?) 复杂度不写在代码里，新人**要自己算**。javascript-algorithms 在 README 标注，**新人不用瞎猜**。
 
-**关键配置文件**：`- `package.json``
-
-**依赖合规检查清单**：
-- [ ] 全部 License 是 MIT License 或更宽松
-- [ ] 无 GPL 传染（AGPL 同理）
-- [ ] 无 3 年未更新的死库
-- [ ] 无已知 CVE
-
-**[反例警示]**：只看直接依赖 → 漏掉间接 GPL；不看 license → 上线后被法务叫停；不看 pushedAt → 用了一个已死 3 年的库。
-
----
-
-## 10. 生产实践（Battle-Tested）
-
-**[点状解析]**：生产里踩过的坑比文档里写得多。
-
-| 实践 | javascript-algorithms 怎么做的 | 能不能抄 |
-|---|---|---|
-| 配置热更新 | viper / fsnotify (Go) / dotenv (Node) / pydantic (Python) | ✅/❓ |
-| 优雅停服 | signal.NotifyContext + Server.Shutdown | ✅/❓ |
-| 限流 | token bucket / sliding window | ✅/❓ |
-| 链路追踪 | opentelemetry SDK | ✅/❓ |
-| 健康检查 | /healthz + /readyz 双探针 | ✅/❓ |
-| 结构化日志 | zap / logrus / winston 结构化日志 | ✅/❓ |
-
-**[反例警示]**：只看 README 怎么跑 → 上线发现没考虑 K8s readiness；没看优雅停服 → K8s 滚动更新丢请求；没看链路追踪 → 出问题查不到慢在哪。
-
----
-
-## 11. 社区文化（People & Process）
-
-**[点状解析]**：项目能不能长寿，10% 看代码，90% 看人。
-
-| 维度 | 状态 |
-|---|---|
-| 治理模式 | 待查（GOVERNANCE.md） |
-| 维护者 | 待查（MAINTAINERS.md） |
-| RFC 流程 | 待查（docs/rfcs/） |
-| 沟通渠道 | 待查（README） |
-| 议题活跃 | 193k+ star 量级 |
-
-**[反例警示]**：只看代码不看人 → 投奔 BDFL 跑路项目；不看 issue 响应 → 项目其实已死；不看 RFC → 错过"为什么改 API"的讨论。
-
----
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷的 3 件事
-
+**解决方案 README 模板**：
 ```markdown
-1. **算法可视化 + 分类刷题**（javascript-algorithms 的核心）
-   - 实现思路：该方向在 算法题库 领域已被广泛验证，兼顾性能、可维护性与生态
-   - 应用场景：算法可视化 + 分类刷题
-   - 自己项目：可借鉴到 开源 + 周边服务
+## 算法复杂度
 
-2. **算法可视化 + 分类刷题**（架构设计）
-   - 解耦了什么/怎么解耦
-   - 借鉴到自己的分层架构
+| 情况 | 时间 | 空间 |
+| :--- | :--- | :--- |
+| 最好 | O(n) | O(1) |
+| 平均 | O(n log n) | O(log n) |
+| 最坏 | O(n²) | O(log n) |
 
-3. **核心数据流**（性能/可用性）
-   - 关键技巧：性能/可用性关键点
-   - 用到自己的热点路径
+## 关键代码段
+
+\`\`\`js
+// O(log n) 查找
+while (low <= high) {
+    const mid = (low + high) >>> 1;
+    if (arr[mid] === target) return mid;
+    // ...
+}
+\`\`\`
 ```
 
-### 12.2 必避的 3 个坑
+**关键参数表**：
 
+| 标注 | 含义 | 决策依据 |
+| :--- | :--- | :--- |
+| `O(1)` | 常数 | 数组索引 |
+| `O(log n)` | 对数 | 二分 |
+| `O(n)` | 线性 | 遍历 |
+| `O(n log n)` | 线性对数 | 快速排序 |
+| `O(n²)` | 平方 | 冒泡排序 |
+| `O(2^n)` | 指数 | 子集 |
+| `O(n!)` | 阶乘 | 排列 |
+
+**最佳实践**：
+- ✅ README 标注 + 代码注释**双轨**
+- ✅ 三种情况（最好/平均/最坏）**都列**
+- ✅ 空间复杂度 **不要漏**
+- ✅ 任何"算法库"可借鉴此标注
+
+---
+
+### 模式 8：跨算法复用 data-structures
+
+**问题场景**：Dijkstra 需优先队列，BFS 需队列，**每个算法都写一遍 = 重复**。javascript-algorithms 复用 `data-structures/` 下实现，**算法 + 数据结构解耦**。
+
+**解决方案依赖图**：
+```
+algorithms/graph/dijkstra  →  data-structures/priority-queue
+algorithms/graph/bfs       →  data-structures/queue
+algorithms/graph/dfs       →  data-structures/stack
+algorithms/sorting/heap-sort →  data-structures/heap
+algorithms/string/kmp      →  data-structures/string
+```
+
+**关键参数表**：
+
+| 算法 | 依赖数据结构 | 用途 |
+| :--- | :--- | :--- |
+| Dijkstra | PriorityQueue | 取最小距离 |
+| BFS | Queue | 层次遍历 |
+| DFS | Stack | 深度遍历 |
+| HeapSort | Heap | 排序 |
+| KMP | String | 子串查找 |
+| Union Find | DisjointSet | 连通分量 |
+
+**最佳实践**：
+- ✅ 算法 + 数据结构 **解耦**，**优先复用**
+- ✅ 新增数据结构需 `data-structures/` 新目录
+- ✅ 任何"算法库"可借鉴此解耦
+- ✅ 测试时 mock 数据结构，**专注算法逻辑**
+- ✅ 复用度越高，**学习价值越大**
+
+---
+
+### 模式 9：Jest 配置 + 覆盖率报告
+
+**问题场景**：算法库覆盖率 50% 时哪些没测？javascript-algorithms 用 Jest + Codecov，**覆盖率报表**。
+
+**解决方案 `jest.config.js`**：
+```js
+module.exports = {
+    collectCoverage: true,
+    coverageDirectory: 'coverage',
+    collectCoverageFrom: [
+        'src/**/*.{js,jsx}',
+        '!src/**/__test__/**',
+    ],
+    coverageThreshold: {
+        global: { branches: 80, functions: 80, lines: 80, statements: 80 },
+    },
+    testMatch: ['**/__test__/**/*.test.js'],
+};
+```
+
+**关键参数表**：
+
+| 字段 | 含义 | 推荐 |
+| :--- | :--- | :--- |
+| `collectCoverage` | 收集覆盖率 | true |
+| `coverageDirectory` | 报告输出 | `coverage/` |
+| `coverageThreshold` | 阈值 | 80% |
+| `testMatch` | glob 模式 | `**/__test__/**/*.test.js` |
+| `Codecov` | 在线报告 | GitHub Status |
+
+**最佳实践**：
+- ✅ `coverageThreshold: 80%` **硬性门槛**
+- ✅ Codecov PR status **可视化 diff**
+- ✅ 排除 `__test__/`，**避免自覆盖**
+- ✅ 任何"代码库"可借鉴此 Jest 配置
+
+---
+
+### 模式 10：算法可视化 - 算法 + 步骤图
+
+**问题场景**：Dijkstra 看了代码仍不理解，**步骤图解释**最直观。javascript-algorithms 把截图放在 `/images/`，**README 引用**。
+
+**解决方案 README 截图引用**：
 ```markdown
-1. **过度设计**（算法题库 常见）
-   - 症状：抽象层叠层叠
-   - 解决：先跑起来再抽象
+## 步骤演示
 
-2. **配置硬编码**
-   - 解决：12-factor + 显式配置
+![Step 1](images/step1.png)
+![Step 2](images/step2.png)
+![Step 3](images/step3.png)
 
-3. **同步阻塞调用链**
-   - 解决：context + async/await
+| 步骤 | 当前节点 | 距离 | 已访问 |
+| :--- | :--- | :--- | :--- |
+| 1 | A | A:0, B:∞, C:∞ | {A} |
+| 2 | B | A:0, B:1, C:∞ | {A, B} |
+| 3 | C | A:0, B:1, C:3 | {A, B, C} |
 ```
 
-### 12.3 7 天复刻路线图
+**关键参数表**：
 
-```markdown
-## 7 天复刻路径（以 javascript-algorithms 为例）
-- D1: 跑起来 → 混个脸熟
-- D2: 读  → 理解启动流程
-- D3: 读核心目录 `src/algorithms/math/bits`, `src/algorithms/graph/dijkstra/images`, `src/algorithms/math/bits/__test__`, `src/data-structures/heap`, `src/data-structures/linked-list`, `src/algorithms/graph/dijkstra` → 理解主流程
-- D4: 跑测试 + 改一处 → 理解可扩展点
-- D5: 自己写个 200 行的 mini-javascript-algorithms（只保留核心）
-- D6: 把 算法可视化 + 分类刷题 用到自己的项目
-- D7: 写一篇博客把 5 天串起来
+| 字段 | 含义 |
+| :--- | :--- |
+| `images/step*.png` | 步骤截图 |
+| `images/animation.gif` | 动画（少数算法） |
+| README 表格 | 状态机变化 |
+| 注释 `// O(?)` | 代码复杂度 |
+
+**最佳实践**：
+- ✅ 截图 + 表格 **配合** 比单一更好
+- ✅ 状态机类算法（Dijkstra/BFS）**必须配步骤图**
+- ✅ GIF 适合**演示快**的场景
+- ✅ 任何"算法教学"项目可借鉴
+
+---
+
+## 三、性能优化
+
+### 模式 11：数据结构选型决定算法复杂度
+
+**问题场景**：Dijkstra 用数组 O(V²) 还是用二叉堆 O((V+E) log V)？**数据结构决定性能上限**。javascript-algorithms 演示这种"同一算法 + 不同结构"。
+
+**解决方案对比**（Dijkstra 两种实现）：
+```js
+// 方案 1: 数组 + 线性扫描
+// 时间: O(V²)
+// 空间: O(V²)
+function dijkstraArray(graph, start) {
+    const distances = {};  // 数组
+    const visited = new Set();
+    while (visited.size < graph.size) {
+        // 找最小未访问 → O(V)
+        const min = findMin(distances, visited);
+        visited.add(min);
+        // ...
+    }
+}
+
+// 方案 2: 优先队列（堆）
+// 时间: O((V+E) log V)
+// 空间: O(V)
+function dijkstraHeap(graph, start) {
+    const distances = {};
+    const queue = new PriorityQueue();  // 堆
+    queue.add({ vertex: start, distance: 0 });
+    while (!queue.isEmpty()) {
+        // poll min → O(log V)
+        const { vertex, distance } = queue.poll();
+        // ...
+    }
+}
 ```
 
-### 12.4 项目打分卡
+**关键参数表**：
 
-| 维度 | 1 分 | 3 分 | 5 分 | javascript-algorithms 自评 |
-|---|---|---|---|---|
-| 代码质量 | 凑合 | 工业级 | 教科书 | ⭐⭐⭐ |
-| 文档完整 | 没有 | 有 README | 完整 + RFC | ⭐⭐⭐ |
-| 社区活跃 | 死了 | 有 issue 响应 | 繁荣 | ⭐⭐⭐⭐⭐ |
-| 设计优雅 | 能用 | 合理 | 艺术 | ⭐⭐⭐⭐ |
-| 可借鉴 | 抄不抄无所谓 | 部分可抄 | 必抄 | ⭐⭐⭐⭐ |
+| 数据结构 | 时间 | 空间 | 适用 |
+| :--- | :--- | :--- | :--- |
+| 数组 + 线性扫描 | O(V²) | O(V²) | V < 1000 |
+| 二叉堆 | O((V+E) log V) | O(V) | 稀疏图 |
+| 斐波那契堆 | O(E + V log V) | O(V) | 稠密图（理论最优） |
+| 桶 | O(E) | O(max_weight) | 边权小整数 |
+
+**最佳实践**：
+- ✅ 同一算法 **多版本实现**，**对比教学**
+- ✅ 优先队列用 `data-structures/priority-queue`
+- ✅ V > 1000 用堆，**否则用数组**
+- ✅ 任何"算法优化"项目可借鉴此对比
 
 ---
 
-## 13. 学习萃取（Cheat Sheet）
+### 模式 12：测试用例覆盖极端情况
 
-```markdown
-# 《javascript-algorithms》学习卡片
+**问题场景**：算法 90% 时间对，**极端情况崩溃**。javascript-algorithms 强制测试覆盖单节点/空图/自环/重复边/负权。
 
-## 一句话价值
-> JS 实现的算法与数据结构，含详细解释
+**解决方案**（以图算法为例）：
+```js
+describe('graph algorithms edge cases', () => {
+    it('should handle empty graph', () => {
+        const graph = new Graph();
+        expect(bfs(graph, 'A')).toEqual({ visited: [], distances: {} });
+    });
 
-## 3 个核心洞察
-1. 算法可视化 + 分类刷题：该方向在 算法题库 领域已被广泛验证，兼顾性能、可维护性与生态
-2. 算法可视化 + 分类刷题：核心数据流
-3. 性能/可用性关键点：可直接借鉴到自己的项目
+    it('should handle single node', () => {
+        const graph = new Graph();
+        graph.addVertex('A');
+        const result = bfs(graph, 'A');
+        expect(result.distances).toEqual({ A: 0 });
+    });
 
-## 5 段必读代码
-1.  — 启动流程
-2. src/data-structures/graph/__test__/Graph.test.js — 核心实现
-3. src/data-structures/tree/red-black-tree/RedBlackTree.js — 关键算法
-4. src/data-structures/doubly-linked-list/__test__/DoublyLinkedList.test.js — 性能优化
-5. src/data-structures/tree/__test__/BinaryTreeNode.test.js — 边界处理
+    it('should handle self-loop', () => {
+        const graph = new Graph();
+        graph.addVertex('A');
+        graph.addEdge('A', 'A', 1);  // 自环
+        const result = bfs(graph, 'A');
+        expect(result.distances).toEqual({ A: 0 });
+    });
 
-## 1 个反模式
-- 算法题库 常见过度设计
+    it('should handle disconnected graph', () => {
+        const graph = new Graph();
+        graph.addVertex('A');
+        graph.addVertex('B');  // 孤立
+        const result = bfs(graph, 'A');
+        expect(result.distances.B).toBe(Infinity);
+    });
 
-## 1 个可复用模式
-- 算法可视化 + 分类刷题 实现方式
-
-## 我能马上用的 3 件事
-1. [ ] 把 算法可视化 + 分类刷题 拆成 3 个步骤
-2. [ ] 学 算法可视化 + 分类刷题 写一个 mini-javascript-algorithms
-3. [ ] 把 核心数据流 用到自己的 开源 + 周边服务
+    it('should handle large graph performance', () => {
+        const graph = generateLargeGraph(1000);
+        const start = Date.now();
+        bfs(graph, 'A');
+        expect(Date.now() - start).toBeLessThan(100);  // 100ms 内
+    });
+});
 ```
 
----
+**关键参数表**：
 
-## 14. 项目特点速查（算法题库 类）
+| 边界 | 关键 |
+| :--- | :--- |
+| 空 | 输入 0 元素 |
+| 单元素 | 最小输入 |
+| 自环 | `addEdge(A, A, 1)` |
+| 重复边 | 两条边同点不同权 |
+| 负权 | Dijkstra 不支持 |
+| 大数据 | 1000+ 节点性能 |
 
-> javascript-algorithms 作为 算法题库 类项目，它的独特看点：
-
-- **算法可视化 + 分类刷题** → 该方向在 算法题库 领域已被广泛验证，兼顾性能、可维护性与生态
-- **算法可视化 + 分类刷题** → 核心数据流
-- **性能/可用性关键点** → 可借鉴的工程实践
-
-**与同类的对比**：
-vs 其他 算法题库 方案：特点突出
-
----
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-|---|---|
-| 文件 | 项目\javascript-algorithms-master.zip |
-| 大小 | 7.5 MB |
-| 总文件 | 941 |
-| 解析时间 | 2026-06-01 |
+**最佳实践**：
+- ✅ **5+ 边界用例**起步
+- ✅ 大数据用 `Date.now()` 测延迟
+- ✅ `Infinity` 表达不可达，**统一语义**
+- ✅ 任何"算法测试"可借鉴
 
 ---
 
-## 一句话总结
+### 模式 13：复杂度基准测试
 
-> 解析 javascript-algorithms = 计划书 + 框架图 + 算法可视化 + 分类刷题 + 跑起来 + 偷过来。
+**问题场景**：声称 O(n log n) 但实际 O(n²)，**没有基准测试 = 不可信**。javascript-algorithms 用 Jest `it.skip` 或自定义 benchmark 测性能。
+
+**解决方案**（benchmark 模式）：
+```js
+describe('quicksort performance', () => {
+    const sizes = [100, 1000, 10000, 100000];
+
+    sizes.forEach((size) => {
+        it(`should sort ${size} elements in < 50ms`, () => {
+            const arr = generateRandomArray(size);
+            const start = Date.now();
+            quicksort(arr);
+            const elapsed = Date.now() - start;
+            expect(elapsed).toBeLessThan(50);
+        });
+    });
+});
+```
+
+**关键参数表**：
+
+| 规模 | 期望延迟 | 复杂度 |
+| :--- | :--- | :--- |
+| 100 | < 1ms | O(n log n) |
+| 1000 | < 5ms | O(n log n) |
+| 10000 | < 50ms | O(n log n) |
+| 100000 | < 500ms | O(n log n) |
+| 1000000 | < 5s | O(n log n) |
+
+**最佳实践**：
+- ✅ 多规模测 `100 / 1000 / 10000 / 100000`
+- ✅ 延迟上限 **写死**（避免退化）
+- ✅ `expect(elapsed).toBeLessThan(50)` **断言**
+- ✅ 任何"性能敏感"算法可借鉴
+
+---
+
+### 模式 14：内存泄漏检测 - 大数据多次调用
+
+**问题场景**：算法用闭包/全局变量会内存泄漏，**长时间跑会爆**。javascript-algorithms 演示用 `process.memoryUsage()` 监控。
+
+**解决方案**：
+```js
+it('should not leak memory after 1000 runs', () => {
+    const arr = generateRandomArray(10000);
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < 1000; i++) {
+        quicksort([...arr]);  // 每次新数组
+    }
+    // 强制 GC（仅在 --expose-gc 标志下）
+    if (global.gc) global.gc();
+    const after = process.memoryUsage().heapUsed;
+    const diff = (after - before) / 1024 / 1024;  // MB
+    expect(diff).toBeLessThan(10);  // < 10MB 增长
+});
+```
+
+**关键参数表**：
+
+| 监控 | 含义 |
+| :--- | :--- |
+| `heapUsed` | V8 堆用量 |
+| `heapTotal` | V8 堆总分配 |
+| `external` | C++ 对象占用 |
+| `rss` | 物理内存占用 |
+| `global.gc()` | 强制 GC（需 `--expose-gc`） |
+
+**最佳实践**：
+- ✅ `--expose-gc` 跑 `global.gc()` **强制回收**
+- ✅ 1000 次循环 + 内存增长 < 10MB
+- ✅ 任何"长时间跑"算法可借鉴
+
+---
+
+### 模式 15：图算法 + 大数据可视化
+
+**问题场景**：图算法 100+ 节点用 console.log 看不出，**SVG/Canvas 可视化**。javascript-algorithms 用 `images/` 静态截图演示。
+
+**解决方案**（`dijkstra` 步骤截图）：
+```
+images/
+├── step1.png  # 起点 A
+├── step2.png  # 处理 A 邻居
+├── step3.png  # 选最小 B
+├── step4.png  # 处理 B 邻居
+└── final.png  # 全部 visited
+```
+
+**关键参数表**：
+
+| 工具 | 用途 | 优势 |
+| :--- | :--- | :--- |
+| `images/*.png` | 静态截图 | GitHub 友好 |
+| `images/animation.gif` | 动态 | 复杂算法 |
+| D3.js | 自动生成 | 实时 |
+| Mermaid | 文本图 | 编辑友好 |
+
+**最佳实践**：
+- ✅ 截图从代码生成，**保证准确**
+- ✅ README 引用 + 步骤表，**双轨**
+- ✅ 任何"图算法教学"可借鉴
+
+---
+
+## 四、可靠性与生态
+
+### 模式 16：CI + GitHub Actions 矩阵测试
+
+**问题场景**：Node 16/18/20 都跑一遍，**确保兼容性**。javascript-algorithms 用 GitHub Actions 矩阵。
+
+**解决方案 `.github/workflows/test.yml`**：
+```yaml
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [16.x, 18.x, 20.x]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+```
+
+**关键参数表**：
+
+| 矩阵 | 用途 |
+| :--- | :--- |
+| `node-version: [16, 18, 20]` | Node 兼容 |
+| `ubuntu/macos/windows` | 跨平台 |
+| `npm test` | 跑测试 |
+| `npm run lint` | 跑 lint |
+| `Codecov` | 覆盖率 |
+
+**最佳实践**：
+- ✅ Node 3 版本矩阵，**向前向后兼容**
+- ✅ `npm ci` 而非 `npm install`，**CI 友好**
+- ✅ `npm test` + `npm run lint` **双跑**
+- ✅ 任何"开源项目"可借鉴此 CI
+
+---
+
+### 模式 17：Husky + lint-staged 提交前检查
+
+**问题场景**：贡献者提交的代码不符合风格，**PR review 浪费**。javascript-algorithms 用 Husky + lint-staged，**提交前自动格式化**。
+
+**解决方案**：
+```json
+{
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged",
+      "commit-msg": "commitlint -E HUSKY_GIT_PARAMS"
+    }
+  },
+  "lint-staged": {
+    "*.js": ["eslint --fix", "prettier --write"],
+    "*.md": ["prettier --write"]
+  }
+}
+```
+
+**关键参数表**：
+
+| 钩子 | 时机 | 用途 |
+| :--- | :--- | :--- |
+| `pre-commit` | git commit 前 | 格式化暂存文件 |
+| `commit-msg` | commit msg 写入 | 验证 commit 格式 |
+| `eslint --fix` | 自动修 | 风格修复 |
+| `prettier --write` | 自动格式化 | 缩进/引号 |
+
+**最佳实践**：
+- ✅ `lint-staged` 只处理 **暂存文件**
+- ✅ `commitlint` 验证 commit msg 格式（`feat:` / `fix:` / ...）
+- ✅ 任何"开源项目"可借鉴此钩子
+
+---
+
+### 模式 18：多语言 README 翻译生态
+
+**问题场景**：算法题库全球通用，**英文 README 阻挡非英语用户**。javascript-algorithms 招募 50+ 翻译者，**50+ 语言 README**。
+
+**解决方案结构**：
+```
+├── README.md                    # 英文主
+├── README.ar-AR.md              # 阿拉伯
+├── README.de-DE.md              # 德语
+├── README.es-ES.md              # 西班牙
+├── README.fr-FR.md              # 法语
+├── README.he-IL.md              # 希伯来
+├── README.id-ID.md              # 印尼
+├── README.it-IT.md              # 意大利
+├── README.ja-JA.md              # 日语
+├── README.ko-KR.md              # 韩语
+├── README.pl-PL.md              # 波兰
+├── README.pt-BR.md              # 巴西葡
+├── README.ru-RU.md              # 俄语
+├── README.tr-TR.md              # 土耳其
+├── README.uk-UA.md              # 乌克兰
+├── README.vi-VI.md              # 越南
+├── README.zh-CN.md              # 简体
+└── README.zh-TW.md              # 繁体
+```
+
+**关键参数表**：
+
+| 命名 | 含义 |
+| :--- | :--- |
+| `README.{lang}.md` | 翻译版本 |
+| `lang` | ISO 639-1 + 地区 |
+| 主 README | 英文 |
+| 翻译延迟 | 1-2 月 |
+
+**最佳实践**：
+- ✅ 主 README 英文，**翻译异步**
+- ✅ 50+ 语言，**国际化**
+- ✅ 贡献者招募 **翻译** 容易
+- ✅ 任何"全球化项目"可借鉴
+
+---
+
+### 模式 19：贡献者奖励 + 社区治理
+
+**问题场景**：开源项目 100+ 贡献者，**如何让贡献者持续贡献**？javascript-algorithms 用 Open Collective + 积分榜。
+
+**解决方案**：
+```
+BACKERS.md  # 赞助商
+README.md   # 贡献者榜单
+```
+
+**关键参数表**：
+
+| 机制 | 用途 |
+| :--- | :--- |
+| Open Collective | 资金赞助 |
+| 贡献者榜单 | 公开致谢 |
+| Code Review | 双维护者 |
+| Issue 标签 | good first issue / help wanted |
+| Discussions | 设计讨论 |
+
+**最佳实践**：
+- ✅ `BACKERS.md` **公开赞助商**
+- ✅ `good first issue` **降低门槛**
+- ✅ 任何"开源项目"可借鉴此治理
+
+---
+
+### 模式 20：教材 + 大学课程 + 求职准备
+
+**问题场景**：算法题库如何**不沦为"玩具"**？javascript-algorithms 与大学课程 + 求职准备强绑定，**真实用户场景**。
+
+**解决方案**：
+```
+用户场景
+├── 求职准备     (LeetCode + javascript-algorithms 双修)
+├── 大学课程     (Princeton Algorithms 课用此)
+├── 自学者       (多语言 README)
+├── 面试官       (题库参考)
+└── 教师         (教学材料)
+```
+
+**关键参数表**：
+
+| 场景 | 占比 | 关注点 |
+| :--- | :---: | :--- |
+| 求职 | 60% | 高频题 + 复杂度 |
+| 大学 | 20% | 教学 + 测试 |
+| 自学 | 15% | 多语言 + 易读 |
+| 教学 | 5% | 步骤图 + 表格 |
+
+**最佳实践**：
+- ✅ 求职准备 + 大学课程 + 自学者 **三场景覆盖**
+- ✅ 复杂度表格 + 真实应用场景，**业务感**
+- ✅ 任何"教育型项目"可借鉴此场景化
+
+---
+
+## 总结速查
+
+**一句话价值**：javascript-algorithms = 100+ JS 算法实现 + 完整测试 + 复杂度分析 + 多语言 README + 193k+ Star = 全球开发者学习算法的首选仓库。
+
+**5 个核心架构模式**：
+1. **算法 + 数据结构双层分类**：双目录分离关注点
+2. **每算法 1 目录 = README + 实现 + 测试 + 图**：自包含教学包
+3. **复杂度表格三列**：time/space/best，决策依据
+4. **Jest 测试覆盖边界**：5+ 用例起步
+5. **ES6 class + 函数式混用**：新人友好
+
+**5 个性能优化模式**：
+1. **同一算法多版本实现**：对比教学（数组 O(V²) vs 堆 O((V+E) log V)）
+2. **边界用例全覆盖**：空/单/自环/重复/负权/大数据
+3. **复杂度基准测试**：多规模 + 延迟断言
+4. **内存泄漏检测**：1000 次循环 + 内存增长 < 10MB
+5. **静态步骤图 + 状态表格**：图算法教学
+
+**5 个可靠性与生态模式**：
+1. **CI 矩阵测试**：Node 3 版本 + 跨平台
+2. **Husky + lint-staged**：提交前自动格式化
+3. **多语言 README 50+**：国际化生态
+4. **Open Collective 赞助**：资金 + 贡献者榜单
+5. **教学场景覆盖**：求职 + 大学 + 自学
+
+**5 段必读代码**：
+- `src/algorithms/graph/dijkstra/dijkstra.js`（Dijkstra 优先队列实现）
+- `src/data-structures/tree/red-black-tree/RedBlackTree.js`（红黑树完整实现）
+- `src/data-structures/doubly-linked-list/doublyLinkedList.js`（双链实现）
+- `src/algorithms/sorting/quick-sort/quickSort.js`（快排实现）
+- `src/algorithms/search/binary-search/binarySearch.js`（二分查找）
+
+**3 个避坑要点**：
+1. **不要每个算法都用同一个数据结构**：复杂度差异巨大（V² vs log V）
+2. **不要忽略边界测试**：单节点/空图/自环/负权
+3. **不要让算法实现"炫技"**：保持 ES6 class + 教科书风格，**新人可读**
+
+**仓库元信息**：
+- 路径：`G:\Obsidian Vault\实战案例\javascript-algorithms.md`
+- 版本：193k+ Star（2026）
+- 主语言：JavaScript（ES6+）
+- 核心目录：`src/algorithms/` + `src/data-structures/`
+- 测试：Jest
+- License：MIT
+- Star：193k+
