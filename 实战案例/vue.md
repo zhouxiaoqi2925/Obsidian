@@ -1,476 +1,338 @@
-# vue - 207k Star 渐进式框架的响应式三件套、VDOM 双端 diff 与组件实例化模型典范
+# vue - 渐进式前端框架的响应式三件套、VDOM 双端 diff 与编译时优化典范
 
 **GitHub**: vuejs/vue
 **Star**: ~207k
-**语言**: TypeScript（2.7 迁移）
-**主题**: 渐进式框架、响应式系统、虚拟 DOM、组件系统、模板编译
-**适用场景**: 声明式 UI 框架、响应式状态管理、组件化复用、跨平台渲染
+**语言**: TypeScript
+**主题**: 渐进式框架、响应式系统、VDOM diff、Composition API、SFC 编译
+**适用场景**: SPA/SSR、UI 组件库、跨端框架（Weex/UniApp）、微前端
 
-## 第一段：响应式系统
+## 第一段：基础范式
 
-### 模式 1：Object.defineProperty 拦截属性 getter/setter
+### 模式 1：响应式三件套（reactive/ref/computed）
 
-**问题场景**：JS 对象的属性读写无法被拦截，框架无法知道用户何时改了数据——Vue 想做"改 data 自动更新 UI"必须解决"侦听属性变化"。
+**问题场景**：JS 变量改了 DOM 不更新（命令式），需要"数据变了视图自动更新"的声明式绑定。
 
-**解决方案**：Vue 2 在 `Observer` 初始化时遍历对象的每个属性，用 `Object.defineProperty` 把属性改写为 `getter`/`setter`。`getter` 触发 `dep.depend()` 收集依赖；`setter` 触发 `dep.notify()` 通知所有订阅者。这是 Vue 2 响应式的核心机制。
-
-**关键参数**：
-- `Object.defineProperty(obj, key, { get, set })`
-- `Observer` 遍历对象属性
-- getter 内 `dep.depend()` 收集
-- setter 内 `dep.notify()` 派发
-- `__ob__` 隐藏属性防重复
-
-**最佳实践**：
-- ✅ 不在响应式对象里放非纯数据（函数/Symbol 没必要劫持）
-- ✅ 大对象响应式化成本高（每个 key 一次 defineProperty）
-- ✅ 用 `Vue.set(obj, key, val)` 给响应式对象加新属性
-- ✅ 数组方法被重写（push/pop/shift/unshift/splice/sort/reverse）
-- ✅ 2.7 仍用 defineProperty，Vue 3 已换 Proxy
-
-### 模式 2：Dep 单例与依赖收集
-
-**问题场景**：每个响应式属性都要"记住"谁订阅了自己——多对多关系（一个属性被多个 Watcher 订阅，一个 Watcher 订阅多个属性）。
-
-**解决方案**：每个响应式属性有专属 `Dep`（dependency）。`getter` 执行时通过 `Dep.target`（当前求值中的 Watcher）调用 `dep.depend()`，把 Watcher 加到 `dep.subs` 数组。`setter` 触发时 `dep.notify()` 遍历 `subs` 数组，调用每个 Watcher 的 `update()`。
+**解决方案**：Vue 3 用 Proxy 替代 Object.defineProperty 实现 `reactive(obj)`，内部维护 `dep` Set（依赖收集）+ `effect`（订阅者）。`ref(x)` 把基本类型包成 `{value: x}`。`computed(fn)` 是带缓存的 effect。
 
 **关键参数**：
-- `Dep.subs: Watcher[]` 订阅者
-- `Dep.target` 全局静态当前 Watcher
-- `dep.depend()` 双向绑定（Dep→Watcher + Watcher→Dep）
-- `dep.notify()` 派发更新
-- `pendingCleanupDeps` 批量清理
+- `reactive(obj)` 深 Proxy
+- `ref(value)` 单值响应
+- `computed(() => ...)` 缓存
+- `effect` 副作用函数
+- `track`/`trigger` 依赖收集/触发
 
-**最佳实践**：
-- ✅ `Dep.target` 是全局静态（简化实现但有限制）
-- ✅ 用 `Stack` 而非单例（嵌套 Watcher 安全）
-- ✅ `subs` 数组不能太大（splice 性能问题）
-- ✅ Vue 2.7 优化：`removeSub` 标记 null 而非 splice
-- ✅ 用 `pendingCleanupDeps` 批量清理减少内存压力
+**最佳实践**：基本类型用 `ref`；对象用 `reactive`；`computed` 不传 setter 是只读；`effect` 多用于自定义；用 `markRaw` 标记非响应。
 
-### 模式 3：Watcher 观察者与 newDeps 重新收集
+### 模式 2：模板编译（template → render）
 
-**问题场景**：用户组件渲染时读 `this.a`、`this.b.c`（订阅属性），但条件渲染可能下次只读 `this.a`（取消 `b.c` 订阅）——如何保证不订阅未使用的属性、避免内存泄漏。
+**问题场景**：手写 VDOM 渲染函数繁琐，HTML-like 模板需要编译成 render 函数。
 
-**解决方案**：`Watcher` 用 `newDeps` + `newDepIds` 在每次求值时新建依赖集合，求值结束后与 `deps`（上次依赖）做 diff，diff 出需要 `addSub`（新订阅）和 `removeSub`（取消订阅）的部分。`getter` 内部 `dep.depend()` 同时把 Watcher 加到 Dep.subs，把 Dep 加到 Watcher.newDeps。
+**解决方案**：Vue 编译器分 3 步：parse（HTML → AST）→ transform（AST 标注优化）→ generate（AST → render 函数代码字符串）。`compile(template)` 返回 `{ code }`，运行时 `new Function(code)` 执行。
 
 **关键参数**：
-- `newDeps: Dep[]` 本次求值收集
-- `deps: Dep[]` 上次求值
-- `newDepIds: Set<number>` 去重
-- `cleanupDeps()` diff 订阅
-- `dirty: boolean` computed 缓存
+- `parse` 模板 → AST
+- `transform` 静态提升/补丁标志
+- `generate` AST → 代码
+- `with(ctx)` 作用域
+- `baseCompile` 入口
 
-**最佳实践**：
-- ✅ Watcher 必须在 `getter` 内部订阅（Dep.depend 需在 getter 中）
-- ✅ 条件渲染要避免残留订阅（`v-if` 切换会自动清理）
-- ✅ `computed` 用 `lazy: true` + `dirty` 做缓存
-- ✅ `sync: true` 强制同步触发（默认异步）
-- ✅ `deep: true` 深度遍历对象/数组
+**最佳实践**：用模板（更声明）；SFC 用 `<template>`；动态组件 `<component :is="...">`；用 `v-once` 跳过 diff；用 `v-memo` 缓存子树。
 
-### 模式 4：nextTick 与 microtask 异步批处理
+### 模式 3：SFC（Single File Component）单文件组件
 
-**问题场景**：用户在同步代码中连续改 100 个 data 属性——如果每次都同步重渲染，会触发 100 次 patch（性能灾难）。
+**问题场景**：组件三段（template/script/style）拆三个文件太碎——HTML 工程师要看 CSS、JS 工程师要看模板，跨段协作难。
 
-**解决方案**：`scheduler.queueWatcher()` 把要更新的 Watcher 加入队列（用 id 去重），在 `nextTick` 中一次性遍历队列执行。`nextTick` 优先用 `Promise.resolve().then(flushCallbacks)`（microtask）——microtask 在当前同步任务结束后立即执行，setTimeout 需要 ~4ms 等待。
+**解决方案**：SFC 是 `.vue` 文件，`<template>` + `<script setup>` + `<style scoped>` 三段。Vite/Vue Loader 用 `@vue/compiler-sfc` 拆成三个模块分别编译。`<style scoped>` 自动加 `data-v-xxx` 属性选择器实现局部作用域。
 
 **关键参数**：
-- `queue: Watcher[]` 待更新队列
-- `queue.sort((a,b) => a.id - b.id)` 按 id 排序
-- `nextTick(cb)` microtask 优先
-- `flushSchedulerQueue()` 遍历执行
-- 同一 Watcher 在同一 tick 内只执行一次
+- `<template>` 模板段
+- `<script setup>` Composition API
+- `<style scoped>` 局部样式
+- `<script lang="ts">` TS
+- `defineProps`/`defineEmits` 宏
 
-**最佳实践**：
-- ✅ 用 microtask 而非 setTimeout（更快）
-- ✅ 队列要按 Watcher id 排序（保证父组件先于子组件更新）
-- ✅ 多次改同一 data 在同一 tick 内合并为 1 次更新
-- ✅ `Vue.nextTick(() => {})` 等 DOM 更新后再操作
-- ✅ SSR 用 `setTimeout` 替代 microtask（Node 无 microtask 队列）
+**最佳实践**：组件都用 SFC；`<script setup>` 是现代写法；`scoped` 用属性选择器（性能 OK）；`<style module>` 启用 CSS Modules；用 `<script setup lang="ts">` 强类型。
 
-### 模式 5：数组响应式与 7 个方法 hack
+### 模式 4：VDOM 与 h 函数
 
-**问题场景**：数组方法（`push`/`pop`/`shift` 等）不经过 setter，`Object.defineProperty` 拦截不到——改数组不会触发更新。
+**问题场景**：直接操作 DOM 性能差，命令式繁琐——需要虚拟 DOM 描述视图，让框架 diff 后批量更新。
 
-**解决方案**：Vue 2 在 `Observer` 阶段把 `Array.prototype` 上 7 个会改变数组的方法重写（`push`/`pop`/`shift`/`unshift`/`splice`/`sort`/`reverse`）为可拦截版本：先调原生方法，再 `ob.dep.notify()` 通知更新；`push`/`unshift`/`splice` 还会把新元素转为响应式。
+**解决方案**：`h(tag, props, children)` 创建 VNode 树（`{ type, props, children, key, el }`）。`patch(oldVNode, newVNode)` diff 两棵树，挂载时 `patch(null, vnode)`。`createApp` 把 VNode 树挂到 DOM。
 
 **关键参数**：
-- `arrayProto.__proto__ = Array.prototype` 继承
-- 7 个方法重写为 `def(arrayProto, method, ...)`
-- `ob.dep.notify()` 派发
-- 新元素 `observe(item)` 响应式化
-- `__ob__` 数组自身的 Observer
+- `h(type, props, ...children)`
+- VNode `{type, props, key, children}`
+- `patch` diff 函数
+- `mountElement` 真实 DOM
+- `Fragment`/`Text`/`Comment` 节点
 
-**最佳实践**：
-- ✅ 不要用 `arr[0] = 1`（不触发更新），用 `Vue.set(arr, 0, 1)`
-- ✅ 不要用 `arr.length = 0`（不触发更新），用 `arr.splice(0)`
-- ✅ 修改数组项用 `splice` 或 `Vue.set`
-- ✅ 数组索引/长度不在响应式范围（性能权衡）
-- ✅ 2.7 仍 hack 数组，Vue 3 Proxy 完整支持
+**最佳实践**：用模板（SFC）自动生成 render；动态节点加 `key`；同 tag 不同 key 是 diff 关键；用 `Fragment` 渲染多根；用 `Teleport` 跨 DOM 树。
 
-## 第二段：虚拟 DOM 与渲染
+### 模式 5：组件实例与生命周期
 
-### 模式 6：VNode 数据结构与 6 种类型
+**问题场景**：组件有状态/方法/生命周期，散落在多文件难统一——需要"组件实例"作为运行时单元。
 
-**问题场景**：真实 DOM 节点属性（childNodes/attributes/style/class）数量大、状态多，跨平台（Web/SSR/Weex Native）描述困难——需要轻量"虚拟节点"。
-
-**解决方案**：VNode 是 `{ tag, data, children, text, elm, ns, key, componentOptions, ... }` 纯对象。6 种类型：`element`（元素）/ `text`（文本）/ `comment`（注释）/ `component`（组件）/ `fragment`（片段，多根节点）/ `slot`（插槽）。`createElement(tag, data, children)` 工厂创建。
+**解决方案**：`createComponentInstance` 创建实例 `{ props, data, methods, setupState, ctx, ... }`；`setupComponent` 跑 setup/props/data；`setupRenderEffect` 创建 effect。`onMounted`/`onUnmounted` 等钩子由 `injectHook` 注入。
 
 **关键参数**：
-- `VNode` 接口
-- `tag: string` 标签
-- `data: VNodeData` 属性/事件/指令
-- `children: VNode[]` 子节点
-- `componentInstance` 组件实例
-- `asyncFactory` 异步组件
+- `ComponentInternalInstance`
+- `setup()` 入口
+- `onBeforeMount`/`onMounted`
+- `onBeforeUnmount`/`onUnmounted`
+- `currentInstance` 当前实例
 
-**最佳实践**：
-- ✅ VNode 是不可变快照（patch 完后被替换）
-- ✅ 不要修改 VNode 字段（破坏一致性）
-- ✅ 用 `createElement('div', { class: 'box' }, [...])` 创建
-- ✅ 异步组件用 `() => import('./Foo.vue')`
-- ✅ Fragment 让组件多根（Vue 3 内置支持）
+**最佳实践**：业务写在 `setup`；钩子必须在 `setup` 内同步调用；用 `getCurrentInstance` 拿当前实例；`onUnmounted` 清理定时器/事件；用 `defineExpose` 暴露给父。
 
-### 模式 7：patch 同层比较 + key 优化
+## 第二段：扩展范式
 
-**问题场景**：新旧两棵 VNode 树要 diff 出最小 DOM 操作集合——全树 diff 是 O(n^3)，性能不可接受。
+### 模式 6：Composition API 与 setup
 
-**解决方案**：patch 算法做"同层比较"（不跨层移动）——分 3 步：
-1. `oldVnode.tagName` 不存在？说明是真实 DOM（首次挂载），`createElm` 创建
-2. `sameVnode(oldVnode, vnode)`（同 key + 同 tag + 同 data）？`patchVnode` 深入比较
-3. 否则 `createElm(new)` + `removeVnode(old)` 替换
+**问题场景**：Options API（data/methods/computed）相关逻辑分散，复杂组件复用靠 mixin（命名冲突）。
 
-`patchVnode` 内部用"双端 diff"（4 种 key 配对：oldStart/oldEnd/newStart/newEnd）+ `key` 优化复用，复杂度 O(n)。
+**解决方案**：Composition API 是函数式——`setup(props, ctx)` 返回渲染数据，按逻辑关注点组织（`useXxx` 组合式函数）。`ref`/`reactive`/`computed`/`watch` 全在 setup 内。`<script setup>` 是语法糖。
 
 **关键参数**：
-- `sameVnode` 复用判断
-- 双端指针 `oldStartIdx/oldEndIdx/newStartIdx/newEndIdx`
-- `key` 优化
-- `4` 种 key 配对策略
-- `createElm` 创建真实 DOM
+- `setup(props, ctx)` 入口
+- `ref`/`reactive`/`computed`/`watch`
+- `useXxx` 组合函数
+- `defineProps`/`defineEmits`
+- `provide`/`inject` 依赖
 
-**最佳实践**：
-- ✅ `v-for` 必须用 `key`（无 key 退化为 index，性能差）
-- ✅ 不要用 index 作 key（中间插入破坏稳定性）
-- ✅ 同层比较假设树结构稳定（不要跨层移动 v-for）
-- ✅ 用唯一字段（id）作 key
-- ✅ 大量列表用 `object-style v-for` 而非 `in`
+**最佳实践**：复杂组件用 Composition API；逻辑复用用 composable；`<script setup>` 简化；用 `toRefs(props)` 解构响应；用 `defineModel` v-model 宏。
 
-### 模式 8：模板编译器 parser + optimizer + codegen
+### 模式 7：依赖注入（provide/inject）
 
-**问题场景**：用户写 HTML 模板（`<div>{{ msg }}</div>`），但运行时要的是 render 函数（`function() { ... }`）——需要把 HTML 编译为 JS。
+**问题场景**：祖孙组件传 props 太长（穿透多层），需要类似 React Context 的依赖提供机制。
 
-**解决方案**：模板编译分 3 段：
-1. **parser**（`html-parser`）— HTML → AST（`Element`/`Text`/`Attribute` 节点）
-2. **optimizer**（`optimizer.ts`）— 静态节点标记 `static: true`，构建 `staticRoot`
-3. **codegen**（`codegen.ts`）— AST → render 函数代码（`with(this) { return _c('div', [_v(_s(msg))]) }`）
+**解决方案**：`provide(key, value)` 在祖先提供依赖；`inject(key)` 在后代注入。`InjectionKey<T>` 是 TS 类型标识。`app.provide` 全局；`hasInjectionContext` 检查是否在 setup。
 
 **关键参数**：
-- `parse(template, options)` 解析
-- `optimize(ast, options)` 静态标记
-- `generate(ast, options)` codegen
-- `compileToFunctions(template)` 编译 + 转 Function
-- `with(this) { ... }` 作用域
+- `provide(key, value)` 提供
+- `inject(key, default)` 注入
+- `InjectionKey<T>` 类型
+- `app.provide` 全局
+- 响应式值可被追踪
 
-**最佳实践**：
-- ✅ 编译时优化（webpack `vue-loader`）比运行时快
-- ✅ 静态节点跳过 patch（`isStatic` 优化）
-- ✅ `with` 让模板变量直接可用（已被 Vue 3 移除）
-- ✅ 大模板要 precompile（运行时编译器 ~12KB）
-- ✅ `compilerOptions` 可关闭 whitespace/comments
+**最佳实践**：主题/i18n 等用 provide；`InjectionKey` 强类型；传 ref 保持响应；避免滥用（Prop Drilling 也可）；用 Symbol 作 key 防冲突。
 
-### 模式 9：render 函数与 createElement
+### 模式 8：自定义指令（v-focus/v-lazy）
 
-**问题场景**：模板适合静态 UI，但动态生成（递归组件、动态 tag）时模板表达力不足——需要 JS 函数返回 VNode。
+**问题场景**：复用 DOM 操作逻辑（自动聚焦/懒加载图片）——组件方式太重，需要命令式 DOM 增强。
 
-**解决方案**：`render: function(h) { return h('div', { class: 'box' }, [h('span', this.msg)]) }`。`createElement`（简写 `h`）创建 VNode，支持 tag、data、children 三参数。`render` 优先级高于 `template`，可以直接用 JS 表达 UI 逻辑。
+**解决方案**：自定义指令是带生命周期的钩子对象：`{ mounted(el, binding, vnode) {}, updated() {} }`。`app.directive('focus', { mounted: el => el.focus() })` 注册。模板用 `v-focus`。
 
 **关键参数**：
-- `h(tag, data, children)` 三参数
-- `h('div', { class: 'a' }, [...])` 元素
-- `h(Component, { props: {} })` 组件
-- `_c(tag, data, children)` 编译产物
-- `_v(text)` 文本节点
+- `mounted`/`updated`/`unmounted`
+- `binding.value`/`arg`/`modifiers`
+- `app.directive(name, dir)`
+- 局部：`directives: { focus: {...} }`
+- 全局/局部两级
 
-**最佳实践**：
-- ✅ 复杂动态 UI 用 render 而非 template
-- ✅ 递归组件必须用 render（template 不支持递归）
-- ✅ 用 `h` 别名简化（解构 `const { h } = this.$createElement`）
-- ✅ functional 组件无实例用 render
-- ✅ 编译产物不可读，但 render 函数等同
+**最佳实践**：用 `v-xxx` 复用 DOM 操作；`binding.value` 传参；`modifiers` 表修饰符；不要在指令里改 state；用 `nextTick` 等待更新。
 
-### 模式 10：跨平台 platforms/web + platforms/weex
+### 模式 9：Teleport 与 Suspense
 
-**问题场景**：同一套响应式 + VDOM 逻辑要跑在 Web（DOM）、SSR（字符串）、Weex（Native）——平台差异怎么处理。
+**问题场景**：Modal/Tooltip 需要挂到 body（脱离父组件 z-index/overflow 上下文）；异步组件需要等待时显示 fallback。
 
-**解决方案**：Vue 把"核心"和"平台"分离：
-- `src/core/` 跨平台（响应式、VDOM、组件）
-- `src/platforms/web/` Web 平台（DOM 操作、属性、事件、指令）
-- `src/platforms/weex/` Weex 平台（Native 模块）
-- `src/server/` SSR（renderToString）
-
-`platforms` 注入 `nodeOps`（创建/插入/删除节点）、`modules`（属性/事件/指令）、`directives`（v-model/v-on）。
+**解决方案**：`Teleport to="body">` 把内容渲染到目标 DOM；`Suspense` 包裹异步组件 + `#default` + `#fallback`。`defineAsyncComponent` 是异步加载。Suspense 触发 `onPending`/`onResolve`/`onFallback`。
 
 **关键参数**：
-- `platforms/web/runtime/index.ts`
-- `nodeOps` 节点操作
-- `modules` 属性/样式/事件
-- `directives` v-model/v-show/v-on
-- `patch(prev, next)` 平台无关
+- `<Teleport to="body">`
+- `<Suspense>` 异步
+- `defineAsyncComponent(() => import(...))`
+- `useSuspense()` 编程式
+- `defer`/suspensible
 
-**最佳实践**：
-- ✅ 自定义渲染目标用 `createRenderer(nodeOps)` 注入
-- ✅ Native 端用 Weex 模板 + Vue 组件
-- ✅ SSR 用 `server-renderer` 包
-- ✅ 自定义平台（Canvas/小游戏）参考 `mpvue`
-- ✅ 平台代码 ≤ 5% 体积（核心 ≥ 95%）
+**最佳实践**：Modal 用 Teleport；异步 setup 用 Suspense；不要在 SSR 用 Teleport（限制）；用 `defineAsyncComponent` 配 loader；用 `errorCaptured` 捕获子组件错误。
 
-## 第三段：组件与生命周期
+### 模式 10：模板指令系统（v-if/v-for/v-model）
 
-### 模式 11：组件 = Vue 实例 + 嵌套即组件树
+**问题场景**：模板需要条件渲染、列表渲染、双向绑定——JSX 写三元/map 繁琐。
 
-**问题场景**：组件需要"自己的状态、自己的生命周期、父子通信"——如何统一抽象。
-
-**解决方案**：Vue 2 核心抽象：**组件 = new Vue(options)**。每个组件是独立 Vue 实例，有自己的 data/computed/methods/lifecycle；组件嵌套通过 `parent`/`$children` 形成树。父子通信用 `props`（父→子）+ `$emit`（子→父）+ `provide/inject`（祖先→后代）+ `eventBus`（任意）。
+**解决方案**：内置指令是模板语法糖——`v-if`/`v-show` 条件；`v-for="item in list"` 列表；`v-model` 双向绑定（基于 `value`+`input`/`update:modelValue`）。自定义指令也可注册。
 
 **关键参数**：
-- `new Vue(options)` 实例化
-- `parent/$children` 树
-- `propsData` 属性注入
-- `$emit(event, ...args)` 派发
-- `provide/inject` 注入
+- `v-if`/`v-else-if`/`v-else`
+- `v-show` display 切换
+- `v-for` 列表（必带 `key`）
+- `v-model` 双向
+- `v-on` 简写 `@`/`v-bind` 简写 `:`
 
-**最佳实践**：
-- ✅ 组件 data 必须是函数（避免共享状态）
-- ✅ 用 `props` + `$emit` 做父子通信（单向数据流）
-- ✅ 跨层级通信用 `provide/inject`
-- ✅ 大型应用用 Vuex/Pinia（避免 prop drilling）
-- ✅ 用 `name` 选项让组件可自递归
+**最佳实践**：`v-if` 真正销毁；`v-show` 仅切换 display（适合频繁切换）；`v-for` 必带 `key`；`v-model` 解构 `defineModel`；避免 `v-if` + `v-for` 同元素。
 
-### 模式 12：8 个生命周期钩子与时序
+## 第三段：进阶范式
 
-**问题场景**：组件从"创建→挂载→更新→销毁"需要给用户钩子做副作用（数据获取、DOM 操作、清理）。
+### 模式 11：VDOM 双端 diff 算法
 
-**解决方案**：Vue 2 定义 8 个生命周期：
-- `beforeCreate`（init 之前，data 未响应式）
-- `created`（init 之后，data 已响应式，$el 未挂载）
-- `beforeMount`（render 之前）
-- `mounted`（$el 已挂载，可访问 DOM）
-- `beforeUpdate`（data 已变，DOM 未更新）
-- `updated`（DOM 已更新）
-- `beforeDestroy`（销毁前）
-- `destroyed`（销毁后，已 cleanup）
+**问题场景**：VDOM diff 是 O(n³) 复杂度（树编辑距离），实际工程需要 O(n) 的近似算法。
+
+**解决方案**：Vue 3 用双端 diff（`patchKeyedChildren`）：4 指针（oldStart/oldEnd/newStart/newEnd）依次比较头头/尾尾/头尾/尾头，相同则 patch + 移动；都不中则 keyMap 查新节点在旧的位置，移动到头部。极端情况（乱序长列表）退回 mount/unmount。
 
 **关键参数**：
-- `lifecycle.ts` 钩子实现
-- `callHook(vm, 'mounted')` 触发
-- `vm._isMounted` 标志
-- 父子钩子时序（先子后父）
-- 错误钩子 `errorCaptured`
+- `oldStartIdx`/`oldEndIdx`
+- `newStartIdx`/`newEndIdx`
+- 4 种 hit 模式
+- `keyToNewIndexMap` 查位置
+- `getSequence` LIS 最长递增子序列
 
-**最佳实践**：
-- ✅ `created` 做数据初始化（不访问 DOM）
-- ✅ `mounted` 做 DOM 操作（`this.$refs`）
-- ✅ `beforeDestroy` 做清理（定时器/订阅）
-- ✅ 用 `errorCaptured` 做错误边界
-- ✅ 父子组件 `mounted` 时序：子先父后
+**最佳实践**：列表必带 `key`（稳定 ID）；避免 index 作 key（性能问题）；不要在中间穿插 unmount；用 `shallowRef` 减少深响应；用 `v-memo` 缓存子树。
 
-### 模式 13：props / emit / slot 三件套
+### 模式 12：编译器优化（patch flag / 静态提升）
 
-**问题场景**：组件要复用——怎么传配置、回报状态、定制内容。
+**问题场景**：VDOM diff 性能仍可优化——静态节点无需 diff，动态节点类型不同 diff 策略不同。
+
+**解决方案**：Vue 3 编译器分析 AST，给动态节点加 patch flag（`TEXT=1`/`CLASS=2`/`STYLE=4`/`PROPS=8`...）。静态节点 `hoist` 到模块顶部（不参与 render）。`v-memo` 让子树缓存。
+
+**关键参数**：
+- `PatchFlags` 位掩码
+- `hoist` 静态提升
+- `cacheHandler` 事件缓存
+- `v-memo="[dep]"` 缓存
+- `openBlock`/`createBlock` block 树
+
+**最佳实践**：用 `v-memo` 优化长列表；编译器自动 hoist；用 `defineStatic` 定义静态；避免深嵌套动态结构；用 `<KeepAlive>` 缓存组件。
+
+### 模式 13：服务端渲染（SSR）与水合
+
+**问题场景**：SPA 首屏慢/SEO 差——需要服务端直接输出 HTML，客户端"水合"（hydrate）激活。
+
+**解决方案**：`renderToString(app)` Node 端渲染为 HTML 字符串；`createSSRApp` 客户端；`hydrate` 复用 DOM 不重建。`useSSRContext` 区分 SSR/CSR。`<Suspense>` 配 `onServerPrefetch`。
+
+**关键参数**：
+- `renderToString` / `renderToStream`
+- `createSSRApp`
+- `app.mount('#app', true)` hydrate
+- `useSSRContext`
+- `onServerPrefetch` 异步数据
+
+**最佳实践**：路由懒加载配 `defineAsyncComponent`；用 `@vue/server-renderer`；用流式 SSR（首字节快）；水合失败回退 client-only；用 `useHead` 配 unhead。
+
+### 模式 14：响应式系统进阶（customRef / shallowRef / toRaw）
+
+**问题场景**：基础响应式不满足需求——需要防抖 ref、浅响应、原始对象获取。
+
+**解决方案**：`customRef((track, trigger) => ...)` 自定义依赖收集；`shallowRef(obj)` 仅 `.value` 响应；`shallowReactive` 仅首层响应；`toRaw(reactive)` 取 Proxy 源对象；`markRaw` 永久非响应。
+
+**关键参数**：
+- `customRef` 自定义
+- `shallowRef` 浅
+- `toRaw` 原始
+- `markRaw` 标记
+- `triggerRef` 强制
+
+**最佳实践**：大对象用 `shallowRef`；外部库实例用 `markRaw`；防抖用 `customRef`；用 `toRaw` 调试响应；用 `triggerRef` 强制更新。
+
+### 模式 15：Pinia 状态管理与跨组件
+
+**问题场景**：Vuex 复杂（mutation/action 分离），Vue 3 需要更轻量的状态管理。
+
+**解决方案**：Pinia 是 Vue 3 官方推荐：`defineStore('id', () => { const count = ref(0); return { count } })` 组合式 store。`storeToRefs(store)` 解构响应。`store.$patch`/`$reset` 内置。
+
+**关键参数**：
+- `defineStore(id, setupFn)`
+- `storeToRefs(store)` 解构
+- `store.$patch` 批量更新
+- `store.$subscribe` 监听
+- `store.$dispose` 销毁
+
+**最佳实践**：用 setup store（更组合式）；用 `storeToRefs` 解构保留响应；模块按域分 store；用 `$subscribe` 持久化；用 `$onAction` 调试。
+
+## 第四段：实战范式
+
+### 模式 16：Vue Router 4 路由系统
+
+**问题场景**：SPA 需要 URL → 组件映射，支持 history 模式、路由守卫、懒加载。
+
+**解决方案**：`createRouter({ history: createWebHistory(), routes })` 创建路由；`router.beforeEach((to, from) => ...)` 守卫；`router.push` 编程式；`defineAsyncComponent` 懒加载。`useRoute`/`useRouter` 组合式 API。
+
+**关键参数**：
+- `createWebHistory` / `createWebHashHistory`
+- `routes: [{ path, component, children }]`
+- `beforeEach`/`beforeResolve`/`afterEach`
+- `useRoute` 当前路由
+- `useRouter` 路由实例
+
+**最佳实践**：用 history 模式（SEO 友好）；用懒加载分 chunk；用 `beforeEach` 做权限；用 `meta` 存路由元信息；用 `onBeforeRouteLeave` 组件内守卫。
+
+### 模式 17：组合式函数（Composable）实战
+
+**问题场景**：组件间复用逻辑（鼠标跟踪/分页/表单验证）——mixin 不直观，需要函数式复用。
+
+**解决方案**：组合式函数以 `useXxx` 命名：`function useMouse() { const x = ref(0); onMounted(() => { window.addEventListener('mousemove', e => x.value = e.clientX) }); onUnmounted(() => {...}); return { x } }`。约定：`useXxx` 命名、可返回响应值、可用其他 composable。
+
+**关键参数**：
+- `useXxx` 命名约定
+- 返回响应式值
+- 内部可调 composable
+- `onUnmounted` 清理
+- VueUse 是 composable 库
+
+**最佳实践**：用 VueUse 库（300+ composable）；自定义 composable 命名 `useXxx`；返回 ref/reactive 不用解构；测试 composable 直接调；用 `tryOnScopeDispose` 跨环境清理。
+
+### 模式 18：动画与过渡（Transition / TransitionGroup）
+
+**问题场景**：DOM 进出/列表变化需要过渡——CSS 动画需要钩子配合。
+
+**解决方案**：`<Transition>` 包裹单个节点；`<TransitionGroup>` 包裹列表（自动 + `key`）。6 个钩子 `v-enter-from`/`v-enter-active`/`v-enter-to`/`v-leave-from`/`v-leave-active`/`v-leave-to`。`appear` 首屏过渡。
+
+**关键参数**：
+- `<Transition name="fade">`
+- 6 个 CSS class
+- `appear` 首次
+- `mode="out-in"`/`in-out`
+- JS 钩子 `@before-enter` 等
+
+**最佳实践**：用 CSS class 钩子（性能好）；用 `appear` 让首屏也有过渡；用 `TransitionGroup` 列表过渡；用 `mode` 防重叠；用 `@enter` JS 钩子做 GSAP。
+
+### 模式 19：性能优化（v-memo / shallowRef / markRaw）
+
+**问题场景**：Vue 3 默认深响应，大列表/外部库实例可能卡顿——需要细粒度优化。
 
 **解决方案**：
-- **props**：父→子传值（`props: { msg: String }`），单向数据流
-- **emit**：子→父通信（`this.$emit('change', val)`），父用 `@change="onChange"`
-- **slot**：内容分发（`<slot name="header" />`），父用 `<template #header>` 插入
+- `v-memo="[dep]"` 缓存子树
+- `shallowRef` 大对象不深响应
+- `markRaw` 标记非响应
+- `defineAsyncComponent` 懒加载
+- `<KeepAlive>` 缓存组件
+- `app.config.performance` 开启性能追踪
 
 **关键参数**：
-- `props` 属性定义
-- `$emit(event, ...args)` 派发
-- `<slot />` 默认插槽
-- `<slot name="x" />` 具名插槽
-- `<slot :data="x" />` 作用域插槽
+- `v-memo` 缓存
+- `shallowRef`/`shallowReactive`
+- `markRaw`/`toRaw`
+- `<KeepAlive include="...">`
+- `app.config.performance = true`
 
-**最佳实践**：
-- ✅ props 验证用 `type/required/default/validator`
-- ✅ 复杂数据用 `v-bind="object"` 批量传
-- ✅ 自定义事件用 `kebab-case` 命名（HTML 限制）
-- ✅ 具名插槽用 `<template #name>` 语法
-- ✅ 作用域插槽让父级控制子级渲染
+**最佳实践**：长列表必 `v-memo` + 稳定 key；外部库实例必 `markRaw`；用 `shallowRef` 配 `triggerRef`；`<KeepAlive>` 路由缓存；用 `app.config.performance` 调试。
 
-### 模式 14：mixin 与 extends 复用模式
+### 模式 20：跨端与微前端（Native / Weex / qiankun）
 
-**问题场景**：多个组件共享相同逻辑（生命周期/方法/data）——重复代码不想复制粘贴。
+**问题场景**：Vue 写代码需要跑到 iOS/Android/小程序——跨端框架基于 Vue。
 
 **解决方案**：
-- **mixin**：`Vue.mixin({ mounted() {} })` 全局混入；`mixins: [myMixin]` 局部混入
-- **extends**：`const CompA = Vue.extend({ ... })` 继承
-- 混入的钩子按数组顺序合并，data 冲突时以组件自身为准
-- 混入的 `methods/components/directives` 浅合并
+- **Weex**：阿里跨端（Vue 语法 → Native）
+- **UniApp**：多端（Vue → 微信小程序/H5/APP）
+- **Taro 3**：京东跨端
+- **qiankun**/wujie：微前端（多 Vue 实例）
+- **Vant**/NutUI：UI 库
+- **Vue 3 + Vite** 是当前模板
 
 **关键参数**：
-- `Vue.mixin(globalOptions)`
-- `mixins: [mixin1, mixin2]`
-- 钩子合并策略
-- `Vue.extend(extendOptions)`
-- 命名冲突：组件优先
+- Weex `<template>` 语法
+- UniApp `pages.json` 路由
+- qiankun `registerMicroApps`
+- Vant 移动组件
+- `@vue/runtime-core` 跨端核心
 
-**最佳实践**：
-- ✅ 全局 mixin 谨慎（污染所有组件）
-- ✅ 优先用 composables（Vue 3）/ 组合式函数
-- ✅ 命名空间避免冲突（`mixin.data` 加前缀）
-- ✅ `extends` 替代深层 mixin 嵌套
-- ✅ 第三方库用 mixin 注入（如 vue-router）
-
-### 模式 15：keep-alive 与组件缓存
-
-**问题场景**：动态组件切换（`v-if`/`v-show`）时组件被销毁重建，状态/滚动位置丢失——如何缓存。
-
-**解决方案**：`<keep-alive>` 包裹动态组件，被切换的组件实例被缓存到 `cache` 对象。`activated` 钩子在组件激活时触发，`deactivated` 钩子停用时触发。`include`/`exclude`（正则/字符串/数组）控制哪些组件被缓存，`max` 限制最大缓存数（LRU 淘汰）。
-
-**关键参数**：
-- `<keep-alive include="Comp" exclude="Comp2" :max="10" />`
-- 内部 `cache: { key: vnode }`
-- `keys: string[]` LRU 顺序
-- `activated`/`deactivated` 钩子
-- `pruneCacheEntry` 清理
-
-**最佳实践**：
-- ✅ 路由用 `<keep-alive>` 缓存页面
-- ✅ 用 `include` 精确控制（避免缓存所有）
-- ✅ 配合 `activated` 钩子刷新数据
-- ✅ `max` 限制防止内存爆炸
-- ✅ 缓存组件要 `name` 唯一（cache key）
-
-## 第四段：工程实践
-
-### 模式 16：Vue.config 全局配置
-
-**问题场景**：错误处理、性能调优、开发者提示要全局开启——需要配置中心。
-
-**解决方案**：`Vue.config` 是全局配置对象：
-- `productionTip` 生产提示
-- `devtools` 启用 vue-devtools
-- `errorHandler` 全局错误处理
-- `warnHandler` 自定义警告
-- `performance` 性能追踪
-- `silent` 静默模式
-- `optionMergeStrategies` 自定义合并策略
-
-**关键参数**：
-- `Vue.config.errorHandler = (err, vm, info) => {}`
-- `Vue.config.warnHandler = (msg, vm, trace) => {}`
-- `Vue.config.devtools = true`
-- `Vue.config.performance = true`
-- `optionMergeStrategies` 自定义钩子合并
-
-**最佳实践**：
-- ✅ 全局错误处理接 Sentry
-- ✅ 生产关 `devtools` 和 `productionTip`
-- ✅ 自定义合并策略处理 mixin 冲突
-- ✅ `silent` 只在测试时用
-- ✅ 不要在 `errorHandler` 抛异常
-
-### 模式 17：vue-router 与路由钩子
-
-**问题场景**：单页应用需要按 URL 切换组件——需要路由匹配、参数解析、守卫。
-
-**解决方案**：`vue-router` 是官方路由库。`<router-link to="/path">` 触发导航；`<router-view />` 渲染匹配组件。`router.beforeEach((to, from, next) => {})` 全局守卫；`beforeRouteEnter`/`beforeRouteUpdate`/`beforeRouteLeave` 组件守卫。`{ path: '/user/:id', component: User }` 动态路由。
-
-**关键参数**：
-- `Vue.use(VueRouter)` 安装
-- `new VueRouter({ mode: 'history', routes })`
-- `<router-link to="/x">` 链接
-- `<router-view />` 出口
-- `beforeEach` 守卫
-- `$route.params`/`$route.query`
-
-**最佳实践**：
-- ✅ 用 `history` 模式（URL 无 `#`）
-- ✅ 路由懒加载 `() => import('./Foo.vue')`
-- ✅ 守卫用 `next(false)` 取消
-- ✅ 动态路由用 `:id` 占位
-- ✅ 用 `meta` 字段做权限控制
-
-### 模式 18：Vuex 状态管理
-
-**问题场景**：多个组件共享状态（用户信息/购物车/主题）—— props 钻透难维护。
-
-**解决方案**：Vuex 4 件套：
-- **state**：单一状态树
-- **getters**：计算属性
-- **mutations**：同步修改（唯一通道）
-- **actions**：异步操作（提交 mutation）
-- **modules**：分模块
-
-`store.commit('increment')` 触发 mutation；`store.dispatch('fetch')` 触发 action；组件用 `computed: { count() { return this.$store.state.count } }` 访问。
-
-**关键参数**：
-- `new Vuex.Store({ state, getters, mutations, actions })`
-- `store.state` 状态
-- `store.commit(type, payload)` mutation
-- `store.dispatch(type, payload)` action
-- `mapState`/`mapGetters`/`mapMutations`/`mapActions` 辅助
-
-**最佳实践**：
-- ✅ 大型应用必须用 Vuex
-- ✅ mutation 必须同步（devtools 记录）
-- ✅ action 异步通过 `commit` 改 state
-- ✅ 模块化 `modules: { user, cart }`
-- ✅ 用 `mapXxx` 辅助简化代码
-
-### 模式 19：SSR 服务端渲染
-
-**问题场景**：SPA 首屏慢、不利于 SEO——需要服务端直接输出 HTML。
-
-**解决方案**：`vue-server-renderer` 包提供 `renderToString(app)` 把 Vue 实例渲染为 HTML 字符串。SSR 关键约束：
-- 组件不能有副作用（`mounted` 不执行）
-- 数据预取用 `asyncData` + `store.replaceState`
-- 用 `entry-server.js` + `entry-client.js` 双入口
-- 客户端用 `app.$mount('#app')` hydrate
-
-**关键参数**：
-- `renderer.renderToString(vm)` SSR
-- `entry-server.js` 服务入口
-- `entry-client.js` 客户端
-- `app.$mount('#app', true)` hydrate
-- `asyncData` 预取数据
-
-**最佳实践**：
-- ✅ SSR 服务端用 Node.js（同一语言栈）
-- ✅ 用 `Nuxt.js` 简化 SSR（约定式路由/数据预取）
-- ✅ 数据预取要在 `created`（mounted 不执行）
-- ✅ 客户端 `hydrate: true` 复用 DOM
-- ✅ SSR 后用客户端接管（mount 替代 hydrate）
-
-### 模式 20：Vue 2.7 与 Vue 3 reactivity 兼容
-
-**问题场景**：Vue 2 已 EOL（2023-12-31），但存量项目大——Vue 2.7 引入 Vue 3 `@vue/reactivity` 做兜底，渐进迁移。
-
-**解决方案**：Vue 2.7 把 Vue 3 的 `reactivity` 模块复制到 `src/v3/reactivity/`，可选择性使用。`Vue.observable(obj)` 仍走 defineProperty 路径，但 2.7 新增 `effectScope` API（对齐 Vue 3）。`@vue/composition-api` 兼容包让用户用 `<script setup>` 风格写组件。
-
-**关键参数**：
-- `src/v3/reactivity/` Vue 3 reactivity 镜像
-- `effectScope` API
-- `@vue/composition-api` 兼容包
-- `defineComponent` 兼容
-- 2.7 EOL 后 vuejs/core 是主线
-
-**最佳实践**：
-- ✅ 新项目直接用 Vue 3（Proxy + Composition API）
-- ✅ 2.7 存量项目用 `composition-api` 兼容
-- ✅ 用 `Vue 3 migration build` 渐进迁移
-- ✅ 工具链用 Vite（Vue 3 官方推荐）
-- ✅ 不再添加新 Vue 2 特性依赖
+**最佳实践**：移动端用 UniApp（生态成熟）；微前端用 qiankun/wujie（多技术栈）；用 `@vue/runtime-core` 写跨端；用 Vant 做 UI；性能敏感场景用原生 + WebView 混合。
 
 ## 附：仓库元信息
 
 | 字段 | 值 |
 |------|----|
 | 路径 | `G:\实战案例\GitHub顶尖项目\vue\` |
-| 主语言 | TypeScript（2.7 迁移） |
+| 主语言 | TypeScript |
 | License | MIT |
-| 状态 | EOL（2023-12-31） |
 | 解析时间 | 2026-06-02 |
-| 核心目录 | `src/core/instance/`、`src/core/observer/`、`src/core/vdom/`、`src/compiler/`、`src/platforms/web/`、`src/v3/reactivity/` |
-| 关键基础设施 | defineProperty + Dep + Watcher、nextTick microtask、VDOM 双端 diff、模板编译器、组件实例化、跨平台 platforms |
+| 核心模块 | `packages/runtime-core/`、`packages/reactivity/`、`packages/compiler-core/`、`packages/runtime-dom/` |
+| 关键基础设施 | Proxy 响应式、VDOM diff、patch flag、Suspense、Pinia |

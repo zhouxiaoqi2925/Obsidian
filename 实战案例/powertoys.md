@@ -1,458 +1,340 @@
+# PowerToys - 微软官方 Windows 效率工具集
+
+**GitHub**: microsoft/PowerToys
+**Star**: 117k+
+**语言**: C# / C++ / WinUI 3
+**主题**: windows、utility、productivity、winui
+**适用场景**: Windows 高级用户、效率工具、键盘流、电源用户
+
 ---
-title: powertoys
-type: system-utility
-lang: C# / C++ / WinUI
-stars: 117000+
-date: 2026-06-01
-tags:
-  - 开源项目
-  - system-utility
+
+## 一、基础范式
+
+### 模式 1 · 多个独立工具 + 统一设置中心
+
+**问题场景**：Windows 默认能力有限（窗口分屏 / 批量重命名 / 快捷键），需要多个独立工具。
+
+**解决方案**：PowerToys 把 20+ 独立工具整合到一个 app，每个工具独立 dll / exe，统一 PowerToys Settings 设置中心（WinUI 3 编写）开关。
+
+**关键参数**：
+- 20+ 独立工具
+- PowerToys Settings
+- 统一托盘
+- 模块化加载
+- 0 依赖
+
+**最佳实践**：所有 Windows 效率用户装 PowerToys，单一工具箱。
+
+### 模式 2 · FancyZones 窗口分屏
+
+**问题场景**：手动拖窗口分屏费时，多显示器难布局。
+
+**解决方案**：FancyZones 自定义网格布局，按住 Shift 拖窗口到区域自动贴靠；支持 6 种布局（columns / rows / grid / priority grid / custom）。
+
+**关键参数**：
+- 自定义网格
+- Shift+drag 贴靠
+- 6 种布局
+- 多显示器
+- 编辑器
+
+**最佳实践**：所有多任务用户开 FancyZones，节省 50% 窗口整理时间。
+
+### 模式 3 · PowerToys Run 快速启动器
+
+**问题场景**：Windows 搜索慢，按名字找应用麻烦。
+
+**解决方案**：PowerToys Run（类似 macOS Spotlight / Alfred）`Alt+Space` 唤起，输入应用名 / 计算 / 文件 / 翻译 / 网页搜索；插件系统扩展。
+
+**关键参数**：
+- `Alt+Space` 唤起
+- 模糊匹配
+- 计算器插件
+- Shell 插件
+- 30+ 插件
+
+**最佳实践**：所有键盘流用 PowerToys Run，告别开始菜单。
+
+### 模式 4 · Keyboard Manager 键位重映射
+
+**问题场景**：习惯 macOS / Linux 快捷键，Windows 难改。
+
+**解决方案**：Keyboard Manager 把单键 / 组合键重映射（如 `CapsLock` → `Ctrl`，`Cmd+C` → `Ctrl+C`）；按应用独立映射。
+
+**关键参数**：
+- 单键映射
+- 组合键映射
+- 按应用独立
+- 低级钩子
+- 0 重启
+
+**最佳实践**：所有 macOS 迁移用户用 Keyboard Manager 改键。
+
+### 模式 5 · 文件预览（Preview）SVG / Markdown / PDF
+
+**问题场景**：资源管理器看 SVG / Markdown / PDF 内容要打开应用。
+
+**解决方案**：PowerToys 装 SVG / Markdown / PDF / 代码 等预览器，资源管理器选中文件按空格直接预览（`IFileExplorerCommand` 接口）。
+
+**关键参数**：
+- `IFileExplorerCommand`
+- SVG 渲染
+- Markdown 渲染
+- PDF 预览
+- 实时
+
+**最佳实践**：所有开发者开 SVG / Markdown 预览，选中即看。
+
 ---
 
-# powertoys · 项目深度解析
-
-> 微软官方维护的 Windows 高级用户效率工具集，30+ 工具共享一个 Runner + Settings 体系
-> 来源：G:\实战案例\GitHub顶尖项目\powertoys\
-
-## 写在前面：解析哲学
-
-PowerToys 是少数由"商业公司（微软）"主导的开源桌面工具集。本笔记不会逐个工具讲解（30+ 个会耗尽字数），而是从**架构层面**拆解：30 个工具怎么在同一个进程里共存？热键怎么全局拦截？Settings UI 怎么与 C++ 模块通信？Runner、ActionRunner、Module、Interface 四个角色各自的边界是什么？掌握这套"多工具宿主"架构后，任何"一组相关小工具打包发布"的需求都能套用。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆**：`git clone https://github.com/microsoft/PowerToys.git`
-2. **分类**：Windows 系统工具集 / 进程内多模块宿主 / C# + C++ 混合 / WinUI 3 前端
-3. **问题清单**：① 全局热键怎么拦？② 30+ 模块怎么同进程跑？③ C++ 模块怎么和 C# Settings UI 通信？④ 启动 / 关闭顺序？⑤ 故障模块怎么隔离不挂掉？
-4. **速查表**：`src/runner/`（C++ 宿主）/ `src/ActionRunner/`（MSIX 启动）/ `src/settings-ui/`（C# WinUI 3）/ `src/modules/`（30+ 工具）/ `src/common/`（共享 lib）
-5. **锁定 commit**：v0.85+（2025）
-
-## 1. 开发计划书（Project Charter）
-
-| 项 | 内容 |
-|---|---|
-| 项目名 | Microsoft PowerToys |
-| 定位 | Windows 高级用户 / 开发者 / 设计师的效率工具集 |
-| 核心问题 | Windows 自带工具对高级用户不够用；零散开源工具质量参差 |
-| 用户 | Power user、开发者、设计师、IT 管理员 |
-| 商业模式 | 微软官方项目，MIT 协议，不直接变现（带飞 Windows 口碑） |
-| 复刻难度 | ★★★★（多语言 + 30 工具 + Win32 / WinUI 双栈） |
-| 状态 | 活跃；每月 1-2 个 minor release |
-| 团队 | 微软 + 100+ 社区贡献者；核心维护者 @crutkas @dhowett |
-| 里程碑 | 1990 v1 · 2019 重启 · 2020 v0.20 FancyZones/PowerToys Run · 2022 WinUI 3 重构 · 2024 Command Palette v0.84 · 2025 Light Switch / New+ |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-```mermaid
-mindmap
-  root((PowerToys))
-    Runner C++
-      central_host.cpp
-      central ized_hotkeys
-      tray_icon
-      bug_report
-    ActionRunner
-      actionRunner.cpp
-      启动子模块进程
-    Settings UI C#
-      Settings.UI XAML
-      Settings.UI.Library ViewModel
-      QuickAccess UI
-    Modules
-      30+ 工具
-      每个独立子项目
-      C++/C# 都可
-    Common
-      UI Controls
-      COMUtils
-      GPOWrapper
-      CalculatorEngine
-    DSC
-      PowerToys.DSC Windows
-      PowerShell DSC 配置
-    Interface
-      IModule 抽象
-      IHotkey 抽象
-```
-
-**核心角色**：
-- **Runner**（C++ 桌面进程）：常驻系统托盘，调度所有模块
-- **ActionRunner**（C++ 工具进程）：每个模块独立 EXE，被 Runner 启停
-- **Settings UI**（C# WinUI 3）：配置面板，与 Runner 通过 named pipe 通信
-- **DSC**：Desired State Configuration，IT 管理员用 PowerShell 部署
-
-**代码入口**：
-- `src/runner/powertoys_runner.cpp`：Runner main
-- `src/ActionRunner/actionRunner.cpp`：Module 进程 main
-- `src/settings-ui/Settings.UI/SettingsXAML/App.xaml.cs`：Settings main
-
-## 3. 项目画像（Profile）
-
-| 指标 | 数值 / 描述 |
-|---|---|
-| 总文件数 | ~6000 |
-| 主语言 | C++ (~50%) / C# (~40%) |
-| 涉及语言 | C++ / C# / XAML / PowerShell / Python（测试）/ Rust（部分模块） |
-| Star | 117k+ |
-| License | MIT |
-| Docker | 否（桌面应用） |
-| K8s | 否 |
-| CI | Azure DevOps + GitHub Actions |
-| 有测试 | 是；xUnit + C++ Google Test |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-### 4.1 多进程宿主模型
-
-```mermaid
-flowchart TB
-  subgraph USER
-    U[用户]
-  end
-  subgraph R[Runner C++ 进程]
-    TH[中央热键]
-    TRAY[托盘图标]
-    MGR[Module Manager]
-    PIPE[Named Pipe Server]
-  end
-  subgraph AR1[ActionRunner CmdPal]
-    CP[Command Palette]
-  end
-  subgraph AR2[ActionRunner FancyZones]
-    FZ[FancyZones]
-  end
-  subgraph AR3[ActionRunner PowerToys Run]
-    PTR[Launcher]
-  end
-  subgraph SU[Settings UI C#]
-    PIPE2[Named Pipe Client]
-    XAML[XAML 渲染]
-  end
-  U -->|热键| TH
-  TH --> MGR
-  MGR -->|启动| AR1
-  MGR -->|启动| AR2
-  MGR -->|启动| AR3
-  U -->|点击| SU
-  SU <-->|JSON RPC| PIPE
-  PIPE2 <--> PIPE
-  AR1 <-->|JSON| MGR
-  AR2 <-->|JSON| MGR
-  AR3 <-->|JSON| MGR
-```
-
-**WHY 多进程**：一个模块崩溃不会拖死 Runner；可单独升级某个模块；UAC 权限可独立控制。
-
-### 4.2 IPC 通信
-
-Runner ↔ Settings UI、Runner ↔ Module 都用 **Named Pipe + JSON**：
-
-- `\\.\pipe\PowerToysSettings`（Runner 监听）
-- `\\.\pipe\PowerToys.InterProcessCommunication`（Runner ↔ Module）
-
-```mermaid
-sequenceDiagram
-  participant U as 用户
-  participant S as Settings UI
-  participant P as Named Pipe
-  participant R as Runner
-  participant M as Module
-  U->>S: 切换 FancyZones 开关
-  S->>P: {action: "enable_module", module: "FancyZones"}
-  P->>R: 解析 JSON
-  R->>M: 启动 FancyZones.exe
-  M-->>R: 启动成功
-  R-->>P: {result: "ok"}
-  P-->>S: 刷新 UI
-```
-
-### 4.3 热键拦截
-
-`src/runner/centralized_hotkeys.cpp` + `centralized_kb_hook.cpp`：
-- **全局热键**：用 `RegisterHotKey()` Win32 API（只支持 modifier+单键）
-- **全局按键 hook**：用 `SetWindowsHookEx(WH_KEYBOARD_LL, ...)`，必须 DLL 注入
-- **停靠区 / Snippet 触发**：用低层 hook + 状态机
-
-**WHY 双策略**：`RegisterHotKey` 简单但功能受限；`WH_KEYBOARD_LL` 强大但有 64-bit/32-bit 兼容问题。
-
-### 4.4 核心架构看点（3 条）
-
-1. **多进程 Runner + IPC**：让 30+ 模块隔离，单模块崩溃不影响全局；用 Named Pipe + JSON 做接口，跨语言无摩擦。
-2. **中央热键注册表**：所有模块的热键集中到 Runner，UI 里能看到全局冲突，**避免热键抢占**。
-3. **DSC（Desired State Configuration）**：把"哪些模块默认启用"做成 IT 策略，企业部署不用 GUI 一台台点。
-
-### 4.5 关键 ADR
-
-- **2020**：从 Electron 切到 WinUI 3，减少内存占用（一个 Settings 进程从 400MB 降到 80MB）
-- **2021**：所有模块从"Runner 内部 dll" 拆为独立 EXE
-- **2023**：Command Palette 模块引入，挑战 macOS Spotlight / Raycast 模式
-- **2024**：放弃 C++/WinRT 旧 IPC，改用 C#/WinRT 自动生成
-
-## 5. 代码深度解析（带 WHY）⭐
-
-### 5.1 找骨架代码
-
-Runner 启动链：`powertoys_runner.cpp: main()` → `centralized_hotkeys::register_hotkey()` 列表 → `module_manager::load_all()` → 逐个 fork ActionRunner。
-
-### 5.2 单文件分析卡
-
-#### `src/runner/centralized_hotkeys.cpp`
-
-所有模块热键注册到 Runner 的中央表。**WHY 集中**：避免热键冲突，UI 能在 Settings 里展示"已被占用"。
-
-```cpp
-// 注册示例
-Hotkey hk;
-hk.key = 0xC0; // VK_OEM_3 (`)
-hk.modifiers = {MOD_WIN, MOD_ALT};
-centralized_hotkeys::register_hotkey("FancyZones", hk);
-```
-
-#### `src/runner/centralized_kb_hook.cpp`
-
-低层键盘 hook（DLL），回调由 Runner 注入。**WHY 单独 DLL**：Win32 钩子必须驻留在可注入的 DLL 中；Runner EXE 无法被注入。
-
-#### `src/modules/launcher/`（PowerToys Run）
-
-"启动器"模块：Win + R 替代品。架构：
-- `Wox`/`Everything` SDK 索引文件
-- `FuzzyMatcher` 模糊匹配
-- `PluginLoader` 加载 C# 插件
-
-#### `src/modules/fancyzones/`
-
-窗口分屏：Hook `WM_WINDOWPOSCHANGED` + `WM_ENTERSIZEMOVE` 把窗口吸附到 zone。
-
-**WHY hook 这么多消息**：Windows 没有官方"窗口落位"API，只能 hack WM。
-
-#### `src/modules/cmdpal/`
-
-Command Palette 2024 引入，模块化启动器：每条命令是一个 `ICommandItemProvider` C# 类，DI 注入。
-
-```csharp
-public class CalculatorProvider : ICommandItemProvider {
-    public IEnumerable<CommandItem> Query(string query) => 
-        CalculatorEngine.Evaluate(query).Select(r => new CommandItem(r));
-}
-```
-
-### 5.3 设计模式
-
-- **Plugin Architecture**：Module 是独立 EXE，Settings 是 ViewModel 集合
-- **Mediator**：Runner 是中央调度
-- **Strategy**：每个模块是 IModule 接口实现
-- **Decorator**：热键叠加（win+shift+alt+...）
-
-### 5.4 反模式
-
-1. **WIN32 hook 滥用**：FancyZones hook 了 10+ 窗口消息，性能敏感
-2. **JSON RPC over Named Pipe**：手写序列化器易错，应改用 gRPC 或 FlatBuffers
-3. **Settings UI 双 Library 双 ViewModel**：`Settings.UI` 和 `QuickAccess.UI` 有 60% 代码重复
-4. **`#pragma once` + 巨无霸头文件**：`interface.h` 800+ 行
-
-### 5.5 独特看点
-
-- **轻量模块 + 中央调度**：30 工具共享一套 Settings + Hotkey 体系，零散做不可能
-- **DSC for IT admin**：Windows 唯一支持原生 PowerShell DSC 的桌面工具集
-- **WinUI 3 + Win32 混合**：新代码 WinUI 3，老代码原生 Win32，迁移路径平滑
-
-## 6. 运行机制（Bring It Up）
-
-### 6.1 本地构建
-
-```powershell
-# 用 Visual Studio 2022 + Windows App SDK
-# 打开 PowerToys.sln
-# Set as Startup: PowerToys (Native)
-# Build & Run
-```
-
-### 6.2 Smoke test
-
-```powershell
-# 启动 Runner 后，托盘有 PowerToys 图标
-# Win+Ctrl+` 打开 PowerToys Run
-# 输入 "calc" 启动计算器
-# Win+Ctrl+Shift+T 切换 Light Switch
-```
-
-### 6.3 启动链路
-
-```mermaid
-sequenceDiagram
-  participant OS
-  participant AR as ActionRunner.exe
-  participant R as powertoys_runner.exe
-  participant MS as Module EXE
-  OS->>AR: 启动入口
-  AR->>R: 检测 Runner 是否在跑
-  alt Runner 未运行
-    AR->>R: 启动 Runner
-    R->>R: 初始化中央热键
-    R->>MS: 逐个启动 30+ 模块
-  else Runner 已运行
-    AR->>R: 通知显示托盘
-  end
-```
-
-## 7. 演进历史
-
-```mermaid
-gantt
-  title PowerToys 重启后关键版本
-  dateFormat YYYY-MM
-  section 重建
-  v0.16 重启 :done, 2019-05, 3m
-  v0.20 FancyZones + Run :done, 2020-05, 3m
-  v0.30 WinUI 3 重构 :done, 2021-09, 3m
-  v0.50 30+ 工具 :done, 2022-08, 3m
-  section 现代化
-  v0.70 Command Palette :done, 2023-05, 6m
-  v0.80 Light Switch :done, 2024-02, 3m
-  v0.85 New+ :active, 2024-12, 3m
-```
-
-## 8. 质量保障
-
-- **单元测试**：C++ Google Test + C# xUnit
-- **UI 测试**：Appium + WinAppDriver
-- **Fuzzing**：自研 FuzzTest
-- **Telemetry**：用户可关闭，符合微软隐私
-- **性能预算**：每个模块启动 < 200ms
-- **Code Coverage**：Azure DevOps 报告
-
-## 9. 生态依赖
-
-```mermaid
-flowchart LR
-  P[PowerToys] --> WinAppSDK
-  P --> WinUI3
-  P --> Wox
-  P --> Everything SDK
-  P --> Boost
-  P --> WIL
-  P --> .NET 8
-  P --> Terminal.GUI
-  P -.可选.-> SQLite
-  P -.可选.-> PowerShell
-  P -.可选.-> WPF
-```
-
-## 10. 生产实践
-
-| 能力 | 是否支持 | 备注 |
-|---|---|---|
-| 配置热更新 | 是 | Settings 改完立即生效 |
-| 优雅停服 | 是 | Runner 监听 SIGTERM/CTRL_C |
-| 限流 | N/A | 桌面应用 |
-| 链路追踪 | 部分 | ETW 事件 |
-| 健康检查 | N/A | 桌面应用 |
-| 结构化日志 | 是 | Serilog + ETW |
-
-## 11. 社区文化
-
-- **治理**：微软官方 + community 维护者
-- **维护者**：@crutkas (Craig) @dhowett (Dustin) @yaohaizh @htcfreek
-- **RFC**：GitHub issue + `rfcs/` 目录
-- **沟通**：GitHub Discussions + Discord
-- **议题活跃**：日均 100+ issue；月度 release
-
-## 12. 教训总结
-
-### 12.1 必偷 3 件
-
-1. **多进程模块宿主**：让一组相关工具"共享 Settings + 热键 + 升级机制"的可复用模式
-2. **中央热键注册表**：避免多模块抢同一快捷键
-3. **DSC / 策略层**：IT 友好的部署接口是开源工具进企业的关键
-
-### 12.2 必避 3 坑
-
-1. **不要把 30 工具塞一个进程**：单点崩溃全盘挂
-2. **不要手写 JSON-RPC over Named Pipe**：上 gRPC 或 ZeroMQ
-3. **不要在 Win32 钩子链中做重活**：卡全系统
-
-### 12.3 7 天复刻 mini-powertoys
-
-```mermaid
-gantt
-  title 7天复刻 mini-powertoys
-  dateFormat YYYY-MM-DD
-  section 阶段
-  Day1 托盘 + 热键框架 :a1, 2026-06-01, 1d
-  Day2 Module 抽象 + IPC :a2, after a1, 1d
-  Day3 启动器（Run 替代）:a3, after a2, 1d
-  Day4 窗口管理（FancyZones 替代）:a4, after a3, 1d
-  Day5 颜色选择器 :a5, after a4, 1d
-  Day6 Settings UI :a6, after a5, 1d
-  Day7 安装包 + 自启动 :a7, after a6, 1d
-```
-
-### 12.4 打分卡
-
-| 维度 | 分数 | 评语 |
-|---|---|---|
-| 架构清晰 | 9 | 多进程 + IPC 设计工整 |
-| 代码可读 | 7 | 跨语言风格不统一 |
-| 文档 | 8 | aka.ms/powertoys-docs 完善 |
-| 测试 | 6 | UI 测试覆盖偏弱 |
-| 性能 | 7 | 启动慢，待优化 |
-| 上手难度 | 4 | 需懂 Win32 + WinUI + C# 三栈 |
-
-## 13. 学习萃取
-
-**一句话价值**：PowerToys 用"中央 Runner + 多进程模块 + 中央热键 + DSC"四件套，把 30 个零散小工具变成企业级产品形态。
-
-### 3 核心洞察
-
-1. **多进程比多线程更适合"工具集宿主"**：隔离性 + 升级粒度
-2. **中央热键注册表是 UX 关键**：用户能看见"已占用"，避免猜谜
-3. **DSC / 策略层 = 开源工具进企业**：技术 80% 之外的最后 20%
-
-### 5 段必读代码
-
-1. `src/runner/centralized_hotkeys.cpp` —— 中央热键注册
-2. `src/runner/centralized_kb_hook.cpp` —— 全局键盘 hook
-3. `src/modules/cmdpal/Microsoft.CmdPal.UI/Program.cs` —— Command Palette 主进程
-4. `src/modules/fancyzones/lib/WindowEventHook.cpp` —— 窗口 hook 实现
-5. `src/settings-ui/Settings.UI.Library/ViewModels/SettingsViewModel.cs` —— Settings 主体 ViewModel
-
-### 1 反模式
-
-- 单进程 30 模块：隔离失败就全盘挂
-
-### 1 可复用模式
-
-- **多进程模块宿主 + 中央热键 + Named Pipe IPC**：可移植到任何"工具集"项目
-
-### 3 立刻能用
-
-1. PowerToys Run (`Alt+Space`) 是 Win+R 替代品，已安装的用户应该 100% 在用
-2. FancyZones 配合多显示器，能让窗口管理从 1 天痛点降到 0
-3. 用 `Win+Ctrl+Shift+T` 切 Light Switch，熬夜护眼
-
-## 14. 项目特点速查
-
-- 独特看点：唯一微软官方维护的开源桌面工具集，30+ 工具共享 Runner
-- 同类对比：
-
-```mermaid
-quadrantChart
-  title Windows 工具集对比
-  x-axis 低集成度 --> 高集成度
-  y-axis 低质量 --> 高质量
-  "PowerToys": [0.95, 0.9]
-  "Sysinternals": [0.7, 0.95]
-  "Total Commander": [0.85, 0.8]
-  "ShareX": [0.6, 0.85]
-  "AutoHotkey 脚本集": [0.3, 0.5]
-```
+## 二、扩展范式
+
+### 模式 6 · 颜色拾取器（ColorPicker）
+
+**问题场景**：截图取色麻烦。
+
+**解决方案**：`Win+Shift+C` 唤起颜色拾取器，吸取屏幕任意位置颜色，复制 HEX / RGB / HSL 到剪贴板，含历史记录。
+
+**关键参数**：
+- `Win+Shift+C` 唤起
+- HEX / RGB / HSL
+- 历史记录
+- 编辑器模式
+- 屏幕任意位置
+
+**最佳实践**：所有设计师 / 前端开 ColorPicker，告别外部取色工具。
+
+### 模式 7 · 文本提取（Text Extractor）
+
+**问题场景**：截图 / 视频中文字复制不出来。
+
+**解决方案**：`Win+Shift+T` 框选屏幕区域，PowerToys 调用 Windows OCR 提取文字到剪贴板。
+
+**关键参数**：
+- `Win+Shift+T` 框选
+- Windows OCR
+- 多语言
+- 剪贴板
+- 实时
+
+**最佳实践**：所有需要截图取字场景开 Text Extractor。
+
+### 模式 8 · 批量重命名（PowerRename）
+
+**问题场景**：手动批量重命名文件慢。
+
+**解决方案**：资源管理器右键 PowerRename，支持正则替换 / 序号 / 大小写转换 / 文件日期等 10+ 规则组合。
+
+**关键参数**：
+- 右键 PowerRename
+- 正则替换
+- 序号
+- 大小写
+- 10+ 规则
+
+**最佳实践**：所有批量文件整理用 PowerRename，节省 90% 时间。
+
+### 模式 9 · 鼠标工具（Mouse Utilities）
+
+**问题场景**：找不到鼠标 / 高亮位置麻烦。
+
+**解决方案**：Find My Mouse（按 Ctrl 双击高亮鼠标位置）+ Mouse Highlighter（按住 Ctrl 显示鼠标轨迹 + 焦点圈）+ Mouse Jump（跨大屏快速移动）。
+
+**关键参数**：
+- Find My Mouse
+- Mouse Highlighter
+- 焦点圈
+- 跨屏跳转
+- 教学 / 演示
+
+**最佳实践**：所有教学 / 演示场景开 Mouse Highlighter。
+
+### 模式 10 · 视频会议静音（Video Conference Mute）
+
+**问题场景**：会议中忘记静音 / 取消静音。
+
+**解决方案**：`Win+Shift+Q` 全局一键静音麦克风 / 摄像头 + 系统托盘显示状态；多会议应用支持（Teams / Zoom / Meet）。
+
+**关键参数**：
+- `Win+Shift+Q` 全局
+- 麦克风 + 摄像头
+- 多应用支持
+- 托盘状态
+- 0 干扰
+
+**最佳实践**：所有远程会议用户开 Video Conference Mute。
+
+---
+
+## 三、进阶范式
+
+### 模式 11 · Hosts 文件编辑器
+
+**问题场景**：手动改 hosts 文件需要管理员权限。
+
+**解决方案**：PowerToys Hosts File Editor 提供 GUI 编辑 hosts（加条目 / 注释 / 启用禁用），自动提权。
+
+**关键参数**：
+- GUI 编辑
+- 自动提权
+- 条目管理
+- 注释
+- 启用 / 禁用
+
+**最佳实践**：所有开发者用 Hosts File Editor，告别记事本。
+
+### 模式 12 · 环境变量编辑器
+
+**问题场景**：Windows 环境变量编辑是 90 年代 UI，难用。
+
+**解决方案**：PowerToys Environment Variables 提供现代 UI 编辑（用户 / 系统 PATH），自动检测重复 / 冲突，profile 切换。
+
+**关键参数**：
+- 现代化 UI
+- 用户 / 系统
+- PATH 检测
+- profile 切换
+- 自动保存
+
+**最佳实践**：所有配环境变量的用户用 Environment Variables。
+
+### 模式 13 · 注册表预览（Registry Preview）
+
+**问题场景**：改注册表需要导出文件再用编辑器看。
+
+**解决方案**：选中 `.reg` 文件按空格，PowerToys 渲染为可读树形结构（类似 JSON viewer）。
+
+**关键参数**：
+- `.reg` 预览
+- 树形结构
+- 语法高亮
+- 搜索
+- WinUI 3
+
+**最佳实践**：所有改注册表场景用 Registry Preview。
+
+### 模式 14 · Awake 屏幕常亮
+
+**问题场景**：演示 / 下载时屏幕自动休眠。
+
+**解决方案**：PowerToys Awake 保持屏幕常亮（OFF / INDEFINITE / TIMED 三档），不修改电源设置。
+
+**关键参数**：
+- 屏幕常亮
+- 三档
+- 不改电源设置
+- 任务栏托盘
+- 0 干扰
+
+**最佳实践**：所有演示 / 长下载场景开 Awake。
+
+### 模式 15 · Command Not Found 建议
+
+**问题场景**：命令行敲错命令不知道装了什么包。
+
+**解决方案**：PowerToys 启用 Command Not Found 后，输入 `node` 但没装，会提示 `Run 'winget install OpenJS.NodeJS.LTS' to install`。
+
+**关键参数**：
+- 命令缺失检测
+- winget 建议
+- scoop / chocolatey 支持
+- 全局 PATH 扫描
+- 0 配置
+
+**最佳实践**：所有命令行用户开 Command Not Found，新手友好。
+
+---
+
+## 四、实战范式
+
+### 模式 16 · 7 件套启动模板
+
+**问题场景**：新 Windows 装机后配置。
+
+**解决方案**：7 件套：① PowerToys Run 启动器 ② FancyZones 窗口分屏 ③ Keyboard Manager 键位 ④ ColorPicker 取色 ⑤ PowerToys Awake 常亮 ⑥ Always On Top 置顶 ⑦ File Explorer Add-ons 预览。
+
+**关键参数**：
+- PowerToys Run
+- FancyZones
+- Keyboard Manager
+- ColorPicker
+- Awake
+- Always On Top
+- 预览
+
+**最佳实践**：所有新 Windows 装机后用 7 件套，效率提升 100%。
+
+### 模式 17 · 安装与更新（winget / Microsoft Store / GitHub）
+
+**问题场景**：PowerToys 怎么装。
+
+**解决方案**：3 种安装：① `winget install Microsoft.PowerToys` 命令行 ② Microsoft Store 自动更新 ③ GitHub Release `.exe` 安装包；自动检测升级。
+
+**关键参数**：
+- winget 安装
+- Microsoft Store
+- GitHub Release
+- 自动升级
+- 0 干扰
+
+**最佳实践**：所有用户用 `winget` 装，自动升级最省心。
+
+### 模式 18 · 性能优化 5 招
+
+**问题场景**：PowerToys 占用内存 / 启动慢。
+
+**解决方案**：5 招优化：① 关闭不用工具 ② `PowerToys.exe --startup` 自启动管理 ③ Settings 减少动画 ④ FancyZones 网格精简 ⑤ 升级到最新版（性能持续优化）。
+
+**关键参数**：
+- 关闭不用的
+- 自启动
+- 减少动画
+- 网格精简
+- 升级
+
+**最佳实践**：5 招叠加，PowerToys 内存占用 < 100MB。
+
+### 模式 19 · 与 macOS / Linux 工具对比
+
+**问题场景**：跨平台效率工具对比。
+
+**解决方案**：PowerToys 定位「Windows 平台 Alfred + Rectangle + 1Password 替代」；macOS 自带 Spotlight + Rectangle；Linux 用 Albert / KRunner + i3。功能上 PowerToys 已覆盖 80% macOS 效率工具。
+
+**关键参数**：
+- 跨平台对比
+- macOS 自带
+- Linux 自由
+- PowerToys 整合度更高
+- 100% 免费
+
+**最佳实践**：Windows 用户用 PowerToys，macOS 自带够用，Linux 自选。
+
+### 模式 20 · 7 天复刻最小可跑内核
+
+**问题场景**：想做内部 Windows 工具集。
+
+**解决方案**：7 天分 5 步：① WinUI 3 项目初始化 ② 单一工具（Hotkey 监听） ③ 设置存储（JSON / SQLite） ④ 托盘图标 ⑤ 第二个工具。
+
+**关键参数**：
+- Day 1: WinUI 3
+- Day 2-3: Hotkey
+- Day 4: 设置
+- Day 5: 托盘
+- Day 6-7: 扩展
+
+**最佳实践**：7 天复刻「单工具 + 设置 + 托盘」，完整 PowerToys 复刻需要 1 年+。
+
+---
 
 ## 附：仓库元信息
 
-- 路径：G:\实战案例\GitHub顶尖项目\powertoys\
-- 大小：~600 MB
-- 总文件：~6000
-- 解析时间：2026-06-02
+- **路径**: `G:\实战案例\GitHub顶尖项目\PowerToys\`
+- **大小**: ~500 MB
+- **总文件数**: 数百 C# / C++ 文件
+- **关键 commit**: v0.85+（持续更新）
+- **团队**: Microsoft 官方 + 社区
+- **许可**: MIT
 
 ## 一句话总结
 
-解析 PowerToys = 拆开 Runner + 跑通 FancyZones + 偷走多进程模块宿主模式。
+PowerToys 用「20+ 独立工具 + 统一设置中心 + 键盘流优先」让 Windows 拥有 macOS 级别的效率工具，是微软 2020+ 对 Windows 效率工具的官方回应。

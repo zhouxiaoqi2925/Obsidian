@@ -1,813 +1,997 @@
----
-title: laravel
-type: web-framework-skeleton
-lang: php
-stars: 78000
-date: 2026-06-02
-tags:
-  - 开源项目
-  - php
-  - web-framework
-  - skeleton
-  - mvc
-  - laravel
+# laravel · ABL 模式速查（Amazon Builders' Library Style）
+
+> Laravel 是 Taylor Otwell 维护的 PHP 全栈 Web 框架，官方骨架 `laravel/laravel`（当前 v13.8.0）是"开箱即用"的应用模板。本文按"问题场景 → 解决方案 → 关键参数 → 最佳实践"格式整理 20 个核心模式。
+
 ---
 
-# laravel · 项目深度解析
+## 一、核心原理：bootstrap/app.php 引导流
 
-> Laravel 官方应用骨架（`laravel/laravel`），Laravel 框架（`laravel/framework` ^13.8）的"开箱即用"项目模板 — 一句话：拿到手就能 `php artisan serve` 跑起来的最小可运行 Laravel 项目。
-> 来源：`G:\实战案例\GitHub顶尖项目\laravel\`
+### 模式 1：`Application::configure` fluent builder（解决"目录瘦身 + 单入口"）
 
-## 写在前面：解析哲学
+**问题场景**：Laravel 10 之前有 4 个 Kernel 入口（HTTP/Console/Exceptions/Route），新用户面对 `app/Http/Kernel.php` 里的 `protected $middleware = [...]` 数组不知怎么扩展。11.x 之后所有配置收敛到 `bootstrap/app.php` 一个文件。
 
-**先骨架后血肉，先 What 后 Why，最后 How to steal。** 这份解析的目标不是把 Laravel 框架的每一行源码都嚼一遍（那应该是 `laravel/framework` 仓库的任务），而是把这个 *官方推荐的应用骨架* 当成"产品级最佳实践的活体标本"来拆解：它**怎么**引导用户？怎么**最小化**前期决策？怎么**对接**周边生态（Vite/Tailwind/PHPUnit/GitHub Actions）？骨架的每一处看似随意的"空类"、"空闭包"，背后都是一次**主动抽象**——它把"业务开发者可能想改的地方"留成钩子，把"框架已经决定好的事"用 fluent builder 直接锁死。
-
-## 0. 解析前的 5 个准备
-
-1. **克隆/分类**：仓库 `laravel/laravel` 是 *Application Skeleton*，不是 *Framework Source*。它依赖 `laravel/framework` ^13.8；要看框架内部请去 `laravel/framework`。本仓库 ≈ 100+ 文件，绝大多数是配置/约定。
-2. **问题清单**：骨架要解决的核心问题 = "我刚 `composer create-project laravel/laravel`，前 5 分钟该改哪些文件、跑哪些命令才能上线？"
-3. **速查表**：PHP 8.3+、Composer 2、`artisan` CLI、Vite 8、Tailwind 4、PHPUnit 12。环境 = 单 SQLite 文件 `database/database.sqlite`。
-4. **锁定 commit**：v13.8.0 (2026-05-25) 当前 Unreleased。
-5. **本文档约定**：源代码引用基于 `bootstrap/app.php`、`public/index.php`、`artisan`、`composer.json`、`config/database.php` 等关键文件实际读到的内容。
-
-## 1. 开发计划书（Project Charter）
-
-| 字段 | 内容 |
-|------|------|
-| 项目名 | `laravel/laravel`（Laravel Application Skeleton） |
-| 定位 | Laravel 框架的官方推荐起手项目，所有新 Laravel 应用的"出厂种子" |
-| 核心问题 | 业务开发者面对一个 PHP 全栈框架，第一步该装哪些依赖、跑哪些命令、配哪些文件？ |
-| 目标用户 | 任何 `composer create-project laravel/laravel my-app` 的开发者 |
-| 商业模式 | MIT 开源，靠 `laravel/framework` 周边商业产品（Forge / Vapor / Nova / Pulse）变现 |
-| 复刻难度 | ★☆☆☆☆（骨架本身极简；复刻 *框架* 难度 ★★★★★） |
-| 状态 | Active，2026 年仍以 ~1-2 周一版的节奏更新（v13.8.0 是当前） |
-| 团队 | Laravel 核心团队（Taylor Otwell + ~20 maintainer） |
-| 里程碑 | 1.x（2013 原始）、5.x → 6.x → 8.x → 9.x → 10.x → 11.x（精简目录）→ 12.x → 13.x（PHP 8.3+） |
-
-## 2. 项目框架（Repo Skeleton Map）
-
-### 2.1 点状解析
-
-骨架的设计哲学：**目录越少越好，但留够扩展点**。从 Laravel 11 开始，框架做了一次"目录瘦身革命"——砍掉了 `app/Console/Kernel.php`、`app/Http/Kernel.php`、`app/Exceptions/Handler.php`、`app/Providers/RouteServiceProvider.php` 四个传统"Kernel 入口"，把它们的功能下沉到 `bootstrap/app.php` 一个文件里用 fluent builder 配置。
-
-### 2.2 思维导图
-
-```mermaid
-mindmap
-  root((laravel/laravel
-  v13.8.0))
-    入口
-      public/index.php
-        HTTP 请求入口
-      artisan
-        CLI 命令入口
-      bootstrap/app.php
-        共享引导
-    应用代码 app/
-      Http/Controllers
-      Models
-      Providers
-    配置 config/
-      app  auth  cache
-      database filesystems
-      logging mail queue
-      services session
-    数据库 database/
-      factories
-      migrations
-      seeders
-    资源 resources/
-      css  js  views
-    路由 routes/
-      web.php
-      console.php
-    存储 storage/
-      app  framework
-      logs
-    测试 tests/
-      Feature  Unit
-      TestCase
-    工具链
-      composer.json
-      package.json
-      vite.config.js
-      phpunit.xml
-      .env.example
-    CI .github/workflows/
-      tests.yml
-        PHP 8.3-8.5 矩阵
-```
-
-### 2.3 实际目录树（精简版）
-
-```
-laravel/
-├── app/
-│   ├── Http/Controllers/Controller.php        (9 行空抽象类)
-│   ├── Models/User.php                        (33 行，含 PHP 8 attributes)
-│   └── Providers/AppServiceProvider.php      (25 行 register/boot 钩子)
-├── bootstrap/
-│   ├── app.php                                (22 行，fluent builder)
-│   ├── providers.php                          (8 行)
-│   └── cache/.gitignore
-├── config/                                    (11 个配置文件)
-│   ├── app.php auth.php cache.php database.php
-│   ├── filesystems.php logging.php mail.php
-│   ├── queue.php services.php session.php
-├── database/
-│   ├── factories/UserFactory.php
-│   ├── migrations/ (3 个内置迁移)
-│   └── seeders/DatabaseSeeder.php
-├── public/
-│   ├── index.php                              (21 行，HTTP 入口)
-│   ├── .htaccess
-│   ├── favicon.ico
-│   └── robots.txt
-├── resources/
-│   ├── css/app.css                            (Tailwind 4 入口)
-│   ├── js/app.js
-│   └── views/welcome.blade.php
-├── routes/
-│   ├── web.php                                (8 行，单路由)
-│   └── console.php                            (9 行，inspire 命令)
-├── storage/                                   (空目录占位)
-├── tests/
-│   ├── Feature/ExampleTest.php
-│   ├── Unit/ExampleTest.php
-│   └── TestCase.php                           (11 行，扩展 BaseTestCase)
-├── .github/workflows/                         (4 个 GH Actions)
-├── artisan                                    (19 行 CLI 入口)
-├── composer.json                              (87 行依赖清单)
-├── package.json                               (17 行前端依赖)
-├── phpunit.xml                                (37 行测试配置)
-├── vite.config.js                             (25 行 Vite 配置)
-└── README.md
-```
-
-### 2.4 配置入口与代码入口
-
-| 维度 | 入口 | 说明 |
-|------|------|------|
-| HTTP 请求 | `public/index.php` → `bootstrap/app.php` → `App::handleRequest()` | 浏览器/Nginx 都从这里进 |
-| CLI 命令 | `artisan` → `bootstrap/app.php` → `App::handleCommand(ArgvInput)` | `php artisan xxx` |
-| 共享引导 | `bootstrap/app.php` | 唯一应用配置入口（v11+ 革命点） |
-| 服务提供者 | `bootstrap/providers.php` | 显式声明应用级 provider 列表 |
-| 自动发现 | Composer `extra.laravel.dont-discover` | 关闭特定包的自动发现 |
-
-## 3. 项目画像（Profile）
-
-| 字段 | 数据 |
-|------|------|
-| 总文件数 | 61（仅骨架应用文件，不含 vendor/node_modules） |
-| 主语言 | PHP 8.3+ |
-| 涉及语言 | PHP / Blade / JavaScript / CSS / YAML / XML / Shell |
-| 依赖 | `laravel/framework: ^13.8`、`laravel/tinker: ^3.0` |
-| Dev 依赖 | `laravel/pail`（日志 tail）、`laravel/pao`（PHP 8.4 analyzer output）、`laravel/pint`（代码风格）、`mockery/mockery`、`nunomaduro/collision`、`phpunit/phpunit ^12.5` |
-| 前端栈 | Vite 8 + Tailwind CSS 4 + `laravel-vite-plugin` 3.1 + `concurrently` 9 |
-| Star | 78k+（按 GitHub 公开数据） |
-| License | MIT |
-| Docker | ❌ 不内置（官方推荐 Laravel Sail） |
-| K8s | ❌ 不内置 |
-| CI | ✅ GitHub Actions：PHP 8.3 / 8.4 / 8.5 矩阵 + 定时 daily cron |
-| 测试 | ✅ PHPUnit 12，Unit + Feature 两套，in-memory SQLite |
-| Lint | ✅ Laravel Pint（通过 `composer.json` scripts 间接集成） |
-| Issue 模板 | ✅ `.github/workflows/issues.yml` + `pull-requests.yml` |
-| 自动 changelog | ✅ `update-changelog.yml` workflow |
-
-## 4. 架构设计（Architecture Deep Dive）
-
-### 4.1 点状解析
-
-Laravel 11+ 是一次**架构显性化**革命：把之前藏在 `app/Http/Kernel.php` 里的 `protected $middleware = [...]` 这种魔术属性，搬到 `bootstrap/app.php` 里用闭包显式表达。这背后的 WHY：**让一个全新开发者打开仓库，第一眼就能看到"中间件、异常、路由"这三大横切关切是怎么配置的**——不再需要去翻 `Kernel.php` 才找到 `$middlewareGroups['web']`。
-
-### 4.2 思维导图
-
-```mermaid
-mindmap
-  root((应用骨架架构))
-    引导层 bootstrap/
-      app.php
-        withRouting
-          web
-          commands
-          health
-        withMiddleware
-        withExceptions
-      providers.php
-        显式声明
-    应用层 app/
-      Providers
-        register 注册
-        boot 启动
-      Models
-        Eloquent
-      Controllers
-        抽象基类
-    路由层 routes/
-      web.php
-      console.php
-    配置层 config/
-      env 12-factor
-    资源层 resources/
-      views
-        Blade 模板
-      css Tailwind
-      js Vite
-    数据层 database/
-      migrations
-        版本化
-      factories
-        测试数据
-      seeders
-        初始化
-    入口双轨
-      HTTP
-        public/index.php
-      CLI
-        artisan
-```
-
-### 4.3 调用时序
-
-```mermaid
-sequenceDiagram
-    participant U as 浏览器
-    participant N as Nginx/Apache
-    participant P as public/index.php
-    participant B as bootstrap/app.php
-    participant A as Application 实例
-    participant R as Router
-    participant C as Controller/Closure
-
-    U->>N: GET / 
-    N->>P: 转发
-    P->>P: maintenance check
-    P->>P: require autoload
-    P->>B: 加载配置
-    B->>A: Application::configure()->create()
-    A->>A: 注册 Providers
-    A->>A: 启动 boot
-    A->>R: handleRequest(Request)
-    R->>R: 解析 web.php 路由
-    R->>C: dispatch(GET /) → closure
-    C-->>R: view('welcome')
-    R-->>A: Response
-    A-->>P: 发送响应
-    P-->>N: HTTP 200 + HTML
-    N-->>U: 渲染页面
-```
-
-### 4.4 核心架构看点（3 句话）
-
-1. **Fluent Bootstrap Builder**（`bootstrap/app.php`）：用 `Application::configure(basePath: ...)->withRouting()->withMiddleware()->withExceptions()->create()` 链式 API，把过去分散在 4 个 Kernel 类里的配置集中到 1 个文件，单一信息源，避免"中间件到底在哪个 Kernel 里"的认知负担。
-2. **双入口共享内核**（`public/index.php` + `artisan`）：HTTP 与 CLI 是两个不同的进程入口，但都通过 `bootstrap/app.php` 拿到同一个 `Application` 实例；区别仅是 `handleRequest()` vs `handleCommand(ArgvInput)`，让 "HTTP/Console 边界" 成为框架的显式 API 而非隐藏概念。
-3. **环境分层 + 零迁移成本**（`config/*.php`）：所有配置都从 `env()` 读取，但用 `config()` 助手取；`.env.example` 是模板、`.env` 是本地覆盖、`config/` 是默认值——典型 12-Factor，支持 dotenv 切换 + config 缓存（`php artisan config:cache`）。
-
-### 4.5 ADR 关键设计决策
-
-- **ADR-001：废弃 `app/Http/Kernel.php` 等老 Kernel 类** → 用 `bootstrap/app.php` 替代。理由：减少新用户需要理解的文件数。
-- **ADR-002：内置 SQLite 作为默认 DB** → `DB_CONNECTION=sqlite` + `database/database.sqlite`，零外部依赖即可跑。
-- **ADR-003：内置 `health: '/up'`** → 给 K8s/容器探活专用，框架层级支持健康检查。
-- **ADR-004：内置 `shouldRenderJsonWhen(api/*)`** → 异常渲染按 URL 前缀自动切 JSON/HTML，不用每个 API 路由单独声明。
-- **ADR-005：Eloquent 使用 PHP 8 attributes**（`#[Fillable]`、`#[Hidden]`） → 取代传统的 `$fillable` / `$hidden` 属性声明，IDE 重命名支持更好。
-
-## 5. 代码深度解析（带 WHY）⭐ 重点
-
-### 5.1 找骨架代码
-
-骨架虽然只有 ~60 个文件，但**每一行都承载"框架约定"**。我精读了 11 个核心文件，重点看 WHY：
-
-### 5.2 单文件分析卡
-
-#### 卡片 1：`bootstrap/app.php`（22 行，全仓库最核心）
+**解决方案代码**：
 
 ```php
+// bootstrap/app.php
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
-    ->withMiddleware(function (Middleware $middleware): void {
-        //
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->web(append: [
+            \App\Http\Middleware\VerifyCsrfToken::class,
+        ]);
+        $middleware->alias([
+            'subscribed' => \App\Http\Middleware\CheckSubscription::class,
+        ]);
     })
-    ->withExceptions(function (Exceptions $exceptions): void {
-        $exceptions->shouldRenderJsonWhen(
-            fn (Request $request) => $request->is('api/*'),
-        );
+    ->withExceptions(function (Exceptions $exceptions) {
+        $exceptions->dontReport(\App\Exceptions\BenignException::class);
+        $exceptions->render(function (\Throwable $e, $request) {
+            return response()->view('errors.500', [], 500);
+        });
     })->create();
 ```
 
-**WHY 深度解读**：
+**关键参数表**：
 
-- **named arguments 替代位置参数**：`basePath: dirname(__DIR__)` 而非 `configure(dirname(__DIR__))`。理由：fluent builder 调用链长时，位置参数极易错位（HTTP 路由 vs API 路由 vs commands 各占一参）；用 named arg 可以在 IDE 里看到 `web:`、`commands:`、`health:` 的语义，且增减参数不需要重排代码。
-- **`health: '/up'` 是 K8s 友好设计**：Laravel 内置了一个不经过 middleware stack 的"裸活探"路由，绕开 session/CSRF/CORS 等可能拖慢探活的中间件，给容器化部署一个超低延迟的存活检查。`up` 是反义词暗示（"服务在 up 状态"），与 K8s 探针语义契合。
-- **`withMiddleware` 留空但仍调用**：业务项目 *可能* 想要加全局中间件，但骨架不替你决定。所以保留这个钩子入口，让 `Middleware $middleware` 对象的方法（`append`、`prepend`、`alias`）可以链式调用。**这是"反默认"的设计哲学——骨架决定"有这个能力"，但不替你决定"用不用"**。
-- **`shouldRenderJsonWhen` 用闭包**：`fn (Request $request) => $request->is('api/*')`。WHY：异常渲染策略不是布尔，而是请求相关的判断；用闭包比静态配置 `['api/*' => true]` 灵活——你可以基于 header、token、用户角色做判断。这种"策略对象"模式（policy object）让同一段异常处理代码支持多套规则。
-- **`.create()` 返回 `Application`**：`bootstrap/app.php` 用 `return` 直接返回 Application 实例，调用方 `require_once __DIR__.'/bootstrap/app.php'` 拿到实例。WHY：避免把 Application 注册成 singleton、避免框架层做静态访问（`App::make()`），让 Application 的"实例化时机"完全由调用方控制。
+| 名称 | 作用 | 默认值 |
+|------|------|--------|
+| `basePath` | 项目根目录 | `dirname(__DIR__)` |
+| `withRouting` | 路由配置 | web/commands/api |
+| `web` | Web 路由文件 | `routes/web.php` |
+| `commands` | CLI 路由 | `routes/console.php` |
+| `health` | 健康检查 | `/up` |
+| `withMiddleware` | 中间件配置 | append/prepend/alias |
+| `withExceptions` | 异常配置 | report/render |
 
-#### 卡片 2：`public/index.php`（21 行，HTTP 入口）
+**最佳实践**：
+- ✅ Laravel 11+ 新项目**不要**手动创建 `app/Http/Kernel.php`——所有配置走 `bootstrap/app.php`。
+- ✅ `health: '/up'` 是 k8s/容器平台健康检查路径——**必须**保留。
+- ✅ 中间件 alias 用 kebab-case 命名（`subscribed`），路由里 `->middleware('subscribed')`。
+- ✅ `dontReport` 列表放"已知业务异常"——Sentry 等监控不会刷屏。
+- ✅ `render` 闭包最后接 `production` 环境统一返回 JSON/HTML。
 
-```php
-define('LARAVEL_START', microtime(true));
+---
 
-if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php')) {
-    require $maintenance;
-}
+### 模式 2：`artisan` CLI + Symfony Console（解决"命令行入口统一"）
 
-require __DIR__.'/../vendor/autoload.php';
+**问题场景**：PHP CLI 工具链没统一标准，每个框架自己造。Laravel 用 Symfony Console 组件 + `artisan` 二进制。
 
-/** @var Application $app */
-$app = require_once __DIR__.'/../bootstrap/app.php';
-
-$app->handleRequest(Request::capture());
-```
-
-**WHY 深度解读**：
-
-- **`LARAVEL_START` 常量**：用 `microtime(true)` 在最早时机打点，给 `php artisan` 启动器、debug bar、性能 profiler 留下"应用启动时间戳"的探针。不放框架里而是放入口文件，让任何组件都能 `defined('LARAVEL_START')` 安全检查。
-- **maintenance.php 短路检查**：维护模式（`php artisan down`）会生成 `storage/framework/maintenance.php`，里面通常 `return 503` 或抛 `MaintenanceModeException`。**WHY 在 require autoloader 之前短路**：维护模式下 *不要* 触发任何 service container 解析——因为容器启动本身可能依赖外部服务（DB、Redis），如果数据库挂了，down 命令也无响应，形成死锁。`storage/` 是 PHP 内置函数级别的文件检查，不依赖任何服务。
-- **`Request::capture()` 而不是注入 Request**：HTTP 入口从 `$_GET`/`$_POST`/`$_SERVER`/`$_COOKIE` 重建 PSR-7 Request 对象。这是"静态门面捕获"模式——CLI 入口、HTTP 入口、测试入口都能用统一方式拿到 Request。
-- **没有显式 `try/catch`**：异常处理交给 `withExceptions` 配置的 `Exceptions` 对象。这种"入口文件极简主义"让异常处理路径成为单一职责：HTTP 入口只做"接 Request + 发 Response"。
-
-#### 卡片 3：`artisan`（19 行，CLI 入口）
+**解决方案代码**：
 
 ```php
+// artisan
 #!/usr/bin/env php
 <?php
-use Illuminate\Foundation\Application;
 use Symfony\Component\Console\Input\ArgvInput;
-
 define('LARAVEL_START', microtime(true));
 require __DIR__.'/vendor/autoload.php';
 $app = require_once __DIR__.'/bootstrap/app.php';
 $status = $app->handleCommand(new ArgvInput);
 exit($status);
-```
-
-**WHY 深度解读**：
-
-- **与 `public/index.php` 镜像结构**：同样 `LARAVEL_START`、同样 `require_once bootstrap/app.php`、同样 *不* `try/catch`——这是"双入口共享内核"架构的物理体现。**WHY 这种对称性重要**：CLI 和 HTTP 行为必须高度一致（同一个 service container、同一个 config cache），否则就会出现"web 能跑、artisan 报错"的诡异问题。
-- **`new ArgvInput` 来自 Symfony Console**：Laravel 故意不自己解析命令行参数，而是用 Symfony 成熟的 `ArgvInput` / `ConsoleOutput`。**WHY**：CLI 框架的"解析命令、生成帮助、tab 补全"等周边生态（Symfony Console 组件）已是事实标准，造轮子无意义。
-- **`exit($status)` 显式返回 exit code**：CLI 进程 exit code 是 CI/CD 决定成败的关键（`if ! php artisan migrate; then exit 1`）。`$app->handleCommand()` 返回 int，`artisan` 透传给操作系统。**没有用 `die()` 或 `throw`**——避免在 `down` 维护模式下还走标准异常路径。
-
-#### 卡片 4：`app/Models/User.php`（33 行，PHP 8 现代特性集合）
-
-```php
-#[Fillable(['name', 'email', 'password'])]
-#[Hidden(['password', 'remember_token'])]
-class User extends Authenticatable
+// 业务命令
+namespace App\Console\Commands;
+use Illuminate\Console\Command;
+class SendReports extends Command
 {
-    use HasFactory, Notifiable;
-
-    protected function casts(): array
+    protected $signature = 'reports:send {--queue=}';
+    public function handle(): int
     {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-        ];
+        $this->info('Sending...');
+        return self::SUCCESS;
     }
 }
 ```
 
-**WHY 深度解读**：
+**关键参数表**：
 
-- **`#[Fillable]` PHP 8 attribute 取代 `$fillable = [...]` 属性**：传统写法 `$fillable = ['name', 'email', 'password']` 是 *约定式* 数组，需要 IDE 插件才能跳转到引用；用 attribute 后，`$user->fill(['name' => 'X'])` 在 IDE 里直接被识别为合法字段，并能在重命名字段时给出 refactor 提示。**这是 PHP 8 时代 ORM 声明的标准范式**——Symfony、Doctrine、cycle/orm 都在跟进。
-- **`'password' => 'hashed'` cast**：声明式地告诉 Eloquent "写入 `password` 字段时自动 bcrypt"。**WHY 这种 cast 而不是 `setPasswordAttribute()` mutator**：mutator 是 *写入* 拦截（更通用但需要写代码），cast 是 *类型转换* 拦截（更声明式、IDE 可识别）。密码 hash 这种"安全 + 无害"的操作适合 cast 表达。
-- **`Authenticatable` 父类**：`Illuminate\Foundation\Auth\User as Authenticatable`，提供 `getAuthPassword()`、`getAuthIdentifierName()` 等方法。骨架提供的 User 模型是 *最小的可用认证模型*，**WHY 不让用户自己写**：认证是几乎所有 Web 应用的必备场景，骨架提供开箱即用的实现，能省去 80% 项目的重复造轮子。
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `protected $signature` | 命令签名 | `name:action {arg} {--opt=}` |
+| `handle()` | 主逻辑 | 返回 int 退出码 |
+| `SUCCESS/FAILURE` | 标准退出码 | 常量 |
+| `info()/error()/line()` | 输出 | 颜色 + 状态 |
+| `new ArgvInput` | CLI 参数解析 | Symfony |
+| `handleCommand` | 框架入口 | 返回 int |
 
-#### 卡片 5：`app/Providers/AppServiceProvider.php`（25 行，业务注入点）
+**最佳实践**：
+- ✅ 命令类放 `app/Console/Commands/`，框架自动注册。
+- ✅ `artisan list` 看所有命令，`artisan list --raw` 完整签名。
+- ✅ 长任务用 `WithoutOverlapping` 中间件防并发。
+- ✅ `return self::FAILURE` 让 CI 脚本识别失败。
+- ✅ `protected $hidden = true` 隐藏命令不显示在 list。
+
+---
+
+### 模式 3：Eloquent ORM + ActiveRecord（解决"SQL 写在 Model 里"）
+
+**问题场景**：业务要"查 user 拿订单"链式调用，不写 SQL。Laravel 用 Eloquent ORM 提供 ActiveRecord 风格。
+
+**解决方案代码**：
 
 ```php
+// app/Models/User.php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+class User extends Model
+{
+    protected $fillable = ['name', 'email'];  // mass assign 白名单
+    protected $casts = ['email_verified_at' => 'datetime'];
+    public function posts(): HasMany
+    {
+        return $this->hasMany(Post::class);
+    }
+}
+// 使用
+$user = User::find(1);
+$posts = $user->posts()->where('status', 'published')->get();
+// 关联预加载（N+1 杀手）
+$users = User::with('posts.comments')->get();
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `$fillable` | mass assign 白名单 | 防 SQL 注入 |
+| `$guarded` | 黑名单 | 反义 |
+| `$casts` | 类型转换 | `'json_field' => 'array'` |
+| `$hidden` | JSON 隐藏字段 | 密码 |
+| `hasMany` | 一对多 | 返回 HasMany |
+| `belongsTo` | 反向 | 外键在子表 |
+| `with()` | 预加载 | 防 N+1 |
+
+**最佳实践**：
+- ✅ `$fillable` 比 `$guarded` 安全——明确列出允许字段。
+- ✅ `User::with('posts')` 预加载避免 N+1 查询。
+- ✅ `firstOrCreate(['email' => $email], ['name' => $name])` upsert。
+- ✅ `Chunk(100, fn($users) => ...)` 处理万级数据不爆内存。
+- ✅ 软删除 `use SoftDeletes` 加 `deleted_at` 字段，业务**不**真删。
+
+---
+
+### 模式 4：Blade 模板 + 组件（解决"前后端耦合"）
+
+**问题场景**：业务写 HTML+PHP 混排容易 XSS 漏洞。Laravel 用 Blade 模板 + `{{ }}` 自动转义。
+
+**解决方案代码**：
+
+```php
+// resources/views/welcome.blade.php
+@extends('layouts.app')
+@section('content')
+    <h1>{{ $title }}</h1>
+    @foreach ($users as $user)
+        <p>{{ $user->name }}</p>
+    @endforeach
+    @auth
+        <a href="/logout">Logout</a>
+    @endauth
+@endsection
+// 组件：resources/views/components/alert.blade.php
+<div class="alert alert-{{ $type }}">
+    {{ $slot }}
+</div>
+// 使用
+<x-alert type="success">操作成功</x-alert>
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `@extends/section/yield` | 布局继承 | 主-子模板 |
+| `{{ $var }}` | 自动转义 | 防 XSS |
+| `{!! $var !!}` | 不转义 | **危险** |
+| `@if/@foreach/@for` | 控制流 | Blade 指令 |
+| `@auth/@guest` | 认证状态 | 中间件需 `auth` |
+| `<x-alert>` | 组件 | 类名 kebab |
+| `@csrf` | CSRF token | form 内必备 |
+
+**最佳实践**：
+- ✅ 永远用 `{{ }}`，**绝不**用 `{!! !!}` 除非内容已 sanitize。
+- ✅ 复杂逻辑提到 ViewModel / Livewire，**不要**写在模板里。
+- ✅ 静态缓存用 `@cache('key', 60)` 指令（Vite + Redis 配合）。
+- ✅ `<x-alert>` 组件替代 `@include`——后者无法传 slot。
+- ✅ `@csrf` 在 form 必填，否则 POST 403。
+
+---
+
+### 模式 5：Service Container + IoC（解决"依赖注入自动解析"）
+
+**问题场景**：业务类构造函数要注入数据库/日志/缓存，手动 new 一坨。Laravel 用 IoC 容器自动解析。
+
+**解决方案代码**：
+
+```php
+// app/Providers/AppServiceProvider.php
+namespace App\Providers;
+use Illuminate\Support\ServiceProvider;
+use App\Services\PaymentGateway;
 class AppServiceProvider extends ServiceProvider
 {
-    public function register(): void { /* */ }
-    public function boot(): void { /* */ }
+    public function register(): void
+    {
+        $this->app->bind(PaymentGateway::class, StripeGateway::class);
+        $this->app->singleton(Cache::class, RedisCache::class);
+    }
 }
-```
-
-**WHY 深度解读**：
-
-- **空实现但必须存在**：`register()` 和 `boot()` 是 `Illuminate\Support\ServiceProvider` 的两个核心钩子。前者用于 *注册* 容器绑定（`$this->app->bind(X, Y)`），后者用于 *启动* 副作用（注册事件、宏、视图 composer）。**WHY 留空但保留**：让新用户知道"修改应用行为的入口在这里"——但 skeleton 不替你决定行为。
-- **命名 `AppServiceProvider`**：是约定优于配置（CoC）——`App\Providers\AppServiceProvider` 类在 `bootstrap/providers.php` 自动可被扫描。**WHY 不叫 `BootstrapServiceProvider` 或 `CoreServiceProvider`**：因为它代表 *应用级* 业务逻辑，与框架级 provider 区分。
-
-#### 卡片 6：`bootstrap/providers.php`（8 行，Application-level providers 列表）
-
-```php
-return [AppServiceProvider::class];
-```
-
-**WHY 深度解读**：
-
-- **为什么需要这个文件**：Laravel 自动发现（`package:discover`）会扫描所有 Composer 包里的 `extra.laravel.providers`——但 *应用自身* 的 provider 不在 Composer 包里，必须显式声明。`bootstrap/providers.php` 就是 *应用级* provider 的注册表。
-- **`package:discover` 缓存机制**：`post-autoload-dump` 钩子触发 `php artisan package:discover --ansi`，把第三方包的 provider 列表写入 `bootstrap/cache/packages.php`。**WHY 缓存**：避免每次请求都扫描 vendor 目录，O(1) 文件 include 即可。
-
-#### 卡片 7：`config/database.php`（185 行，多 driver 配置模板）
-
-```php
-'connections' => [
-    'sqlite' => [...],
-    'mysql' => [
-        'driver' => 'mysql',
-        'options' => extension_loaded('pdo_mysql') ? array_filter([
-            Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
-        ]) : [],
-    ],
-    'mariadb' => [...],
-    'pgsql' => [...],
-    'sqlsrv' => [...],
-],
-```
-
-**WHY 深度解读**：
-
-- **多 driver 预配置**：MySQL/MariaDB/PostgreSQL/SQLServer/SQLite 五大主流关系数据库全部预配置。**WHY**：让一个 `composer create-project` 出来的项目能直接对接任何一种生产数据库，不用 `php artisan vendor:publish` 重新生成。
-- **`Pdo\Mysql::ATTR_SSL_CA` 引用**：`use Pdo\Mysql;` + 直接用常量。Laravel 13.x 早期用字符串 `'1010'`（PDO::MYSQL_ATTR_SSL_CA 的整数值），现在升级为 *类型化常量*，**WHY**：避免常量值漂移（PDO 扩展版本不同整数值可能不同），让 SSL 配置"代码即文档"。
-- **`extension_loaded('pdo_mysql')` 守卫**：当 PHP 没装 `pdo_mysql` 扩展时，`options` 数组里不传 `Mysql::ATTR_SSL_CA`（引用 `Pdo\Mysql` 类会触发 `Class not found`）。**WHY 这种 conditional**：让"未安装扩展"也能让 artisan 启动（即使后续真正连库会失败），给开发者更清晰的错误信息（缺扩展 vs 配置错）。
-- **`'strict' => true` (MySQL)**：MySQL strict mode 开启后，插入超长字符串会报错而不是静默截断。**WHY 骨架默认开 strict**：生产事故多源于"静默截断"，骨架开 strict 是 *防御性默认*。
-- **Redis 用 `decorrelated_jitter` 退避算法**：`backoff_algorithm => 'decorrelated_jitter'`，配合 `backoff_base=100` `backoff_cap=1000`（毫秒）。**WHY 显式选退避算法**：Redis 客户端在断线重连时如果不退避，会瞬间压垮刚恢复的 Redis 实例。骨架选了 AWS 推荐的 *decorrelated jitter*（比 full jitter 更优），让重试更平滑。
-
-#### 卡片 8：`config/queue.php`（130 行，多后端队列）
-
-```php
-'connections' => [
-    'sync' => ['driver' => 'sync'],
-    'database' => ['driver' => 'database', 'table' => 'jobs', ...],
-    'beanstalkd' => [...],
-    'sqs' => [...],
-    'redis' => [...],
-],
-```
-
-**WHY 深度解读**：
-
-- **6 个 driver 预配置**：sync / database / beanstalkd / sqs / redis + 注释里提到的 deferred / background / failover。**WHY 这么多**：队列是 *最容易随业务规模迁移* 的基础设施——开发期用 `sync`，上线用 `redis`，上规模切 `sqs`。骨架预配置让"切驱动"只需改 `.env` 一行。
-- **`'after_commit' => false`（database driver）**：默认 *立即入队* 而非 *事务提交后入队*。**WHY 默认 false**：兼容大多数"我就要这个 job 跑起来"的场景；如果你想要 exactly-once，需要 `DB::afterCommit(fn() => Job::dispatch())`。
-- **`'retry_after' => 90` 秒**：job 超过 90 秒未 ack 视为失败，触发重试。**WHY 是 retry 而非 timeout**：队列的"超时"是 *软约束*（业务可能确实慢），所以 retry 后保留 visibility，触发另一个 worker 接管。
-
-#### 卡片 9：`routes/console.php`（9 行，命令式注册）
-
-```php
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
-```
-
-**WHY 深度解读**：
-
-- **闭包式命令 vs 类命令**：`Artisan::command('inspire', fn() => ...)` 适合 *小命令*，不需要 DI、不需要异步、不需要复杂参数解析。如果命令复杂（参数、选项、IO 交互），升级为 `php artisan make:command MyCommand` 生成类。
-- **`->purpose()` 方法**：声明命令的"用户视角目的"，出现在 `php artisan list` 和 `php artisan help inspire` 里。这是 *自文档化* 的小细节——命令列表页不用读源码就能知道每个命令干嘛。
-
-#### 卡片 10：`tests/TestCase.php`（11 行，测试基类）
-
-```php
-abstract class TestCase extends BaseTestCase
+// 自动注入
+class OrderController extends Controller
 {
-    //
+    public function __construct(
+        protected PaymentGateway $payments,
+        protected Cache $cache,
+    ) {}
+    public function store(Request $request)
+    {
+        $charge = $this->payments->charge($request->amount);
+        return response()->json(['id' => $charge->id]);
+    }
 }
 ```
 
-**WHY 深度解读**：
+**关键参数表**：
 
-- **留空但必须存在**：`Illuminate\Foundation\Testing\TestCase` 提供 `actingAs()`、`get()`、`post()`、`seeJson()` 等 HTTP 测试 API。骨架让应用 *扩展* 这个类（而不是直接用框架的），给应用留"塞全局测试 setup/teardown"的口子。
-- **`phpunit.xml` 注入环境变量**：`<env name="DB_DATABASE" value=":memory:"/>`、`<env name="CACHE_STORE" value="array"/>`、`<env name="QUEUE_CONNECTION" value="sync"/>` 等。**WHY 这些覆盖**：测试不能污染生产 DB；in-memory SQLite 让每个测试都从空库开始；array cache 让 cache 测试不持久化；sync queue 让 job 测试"立即执行"而不是"入队等待"。
-- **`PULSE_ENABLED=false`、`TELESCOPE_ENABLED=false`、`NIGHTWATCH_ENABLED=false`**：禁用三个可观测性工具的"自动捕获"——否则测试时会生成大量无关指标。
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `bind(abstract, concrete)` | 每次新建 | 无状态服务 |
+| `singleton(abstract, concrete)` | 单例 | 池/连接 |
+| `instance(key, obj)` | 注入已存在对象 |  |
+| `bindMethod` | 绑定方法 |  |
+| `tag(abstract, tags)` | 标签 | 批量获取 |
+| `extend(abstract, fn)` | 装饰 | AOP |
 
-#### 卡片 11：`.github/workflows/tests.yml`（48 行，CI 配置）
+**最佳实践**：
+- ✅ 无状态服务用 `bind`，有状态（DB 连接/池）用 `singleton`。
+- ✅ 构造函数类型提示自动注入，**不要**手动 `app()->make()`。
+- ✅ 接口绑定到实现：`bind(PaymentGateway::class, StripeGateway::class)`。
+- ✅ `app()->bind(...)` 在 ServiceProvider 的 `register()`，**不要**在 `boot()`。
+- ✅ 测试时 `app()->instance(...)` 替换 mock。
+
+---
+
+## 二、架构设计：路由、控制器、请求响应
+
+### 模式 6：`routes/web.php` + Resource Controller（解决"CRUD 一行写完"）
+
+**问题场景**：业务要"User 表的增删改查 7 个路由"手写枯燥。Laravel 用 `Route::resource` 一行生成。
+
+**解决方案代码**：
+
+```php
+// routes/web.php
+use App\Http\Controllers\UserController;
+Route::resource('users', UserController::class);
+// 生成 7 个路由
+// GET    /users              index
+// GET    /users/create       create
+// POST   /users              store
+// GET    /users/{user}       show
+// GET    /users/{user}/edit  edit
+// PUT    /users/{user}       update
+// DELETE /users/{user}       destroy
+// 限制：Route::resource('users', UserController::class)->only(['index', 'show']);
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `Route::resource` | 7 个标准路由 | RESTful |
+| `->only([...])` | 限制 | 减少暴露 |
+| `->except([...])` | 排除 |  |
+| `->parameters([...])` | 参数名 | 默认 `user` |
+| `Route::apiResource` | 5 个（无 create/edit） | API |
+| `Route::shallow()` | 嵌套路由 | 子资源不带父 ID |
+
+**最佳实践**：
+- ✅ API 路由用 `Route::apiResource` 跳过 create/edit（返回 HTML 表单）。
+- ✅ `Route::resource` 会自动加 `->where('user', '[0-9]+')` 正则吗？**不会**，手动 `->whereAlphaNumeric('user')`。
+- ✅ 嵌套资源 `Route::resource('users.posts', PostController::class)`——父 ID 必传。
+- ✅ `shallow()` 嵌套后 `posts/{post}` 不带 user——减少 URL 长度。
+- ✅ 想加额外动作：`Route::get('users/export', [UserController::class, 'export'])`。
+
+---
+
+### 模式 7：FormRequest 验证（解决"校验逻辑和控制器解耦"）
+
+**问题场景**：业务要"创建订单时校验字段"，写在 Controller 又胖又难测。Laravel 用 FormRequest 类单独承载。
+
+**解决方案代码**：
+
+```php
+// app/Http/Requests/StoreOrderRequest.php
+namespace App\Http\Requests;
+use Illuminate\Foundation\Http\FormRequest;
+class StoreOrderRequest extends FormRequest
+{
+    public function authorize(): bool { return $this->user()->can('create', Order::class); }
+    public function rules(): array
+    {
+        return [
+            'product_id' => ['required', 'integer', 'exists:products,id'],
+            'quantity' => ['required', 'integer', 'min:1', 'max:100'],
+            'address' => ['required', 'string', 'max:500'],
+        ];
+    }
+}
+// Controller
+public function store(StoreOrderRequest $request)
+{
+    $order = Order::create($request->validated());
+    return response()->json($order, 201);
+}
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `rules()` | 校验规则 | 数组 |
+| `authorize()` | 权限 | 默认 true |
+| `messages()` | 自定义错误消息 |  |
+| `attributes()` | 字段名 | 错误消息用 |
+| `validated()` | 取校验后数据 | 排除额外字段 |
+| `failedValidation` | 校验失败抛错 | 422 |
+
+**最佳实践**：
+- ✅ `rules()` 返回数组，**不**要在 `prepareForValidation` 里改原数据。
+- ✅ `Rule::unique('users')->ignore($this->user->id)` 排除自己。
+- ✅ `authorize()` 调 Policy——集中权限点。
+- ✅ 自定义规则：`php artisan make:rule ValidPhone`。
+- ✅ `validated()` 只取校验过的字段——防 mass assign 漏洞。
+
+---
+
+### 模式 8：API Resource + Transformer（解决"JSON 字段过滤"）
+
+**问题场景**：业务要"返回 user 但隐藏 password/email_verified_at"。直接 `Model::all()` 会泄露字段。
+
+**解决方案代码**：
+
+```php
+// app/Http/Resources/UserResource.php
+namespace App\Http\Resources;
+use Illuminate\Http\Resources\Json\JsonResource;
+class UserResource extends JsonResource
+{
+    public function toArray($request): array
+    {
+        return [
+            'id' => $this->id,
+            'name' => $this->name,
+            'email' => $this->when(!$request->user()?->isAdmin(), $this->email),
+            'created_at' => $this->created_at->toIso8601String(),
+            'posts' => PostResource::collection($this->whenLoaded('posts')),
+        ];
+    }
+}
+// Controller
+return UserResource::collection(User::paginate());
+// 单个：return new UserResource($user);
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `toArray($request)` | 序列化 | 返回 array |
+| `$this->when()` | 条件字段 | false 隐藏 |
+| `$this->whenLoaded()` | 关联预加载后才有 | 404 if not loaded |
+| `JsonResource::collection` | 列表 | 自动包 `data` |
+| `additional()` | 元数据 |  |
+| `withResponse()` | 自定义 status |  |
+
+**最佳实践**：
+- ✅ Resource 类放 `app/Http/Resources/`——自动发现。
+- ✅ `whenLoaded('posts')` 防 N+1——关联未加载返回 404。
+- ✅ 日期用 `toIso8601String()` 给前端 JS 解析。
+- ✅ Resource 是**只读**——POST 用 Request 而**不是** Resource。
+- ✅ 改全局包：`JsonResource::wrap('data')` 或 `->withoutWrapping()`。
+
+---
+
+### 模式 9：Middleware 洋葱链（解决"请求/响应双向处理"）
+
+**问题场景**：鉴权、CORS、日志、限流横切关注点需要"请求前/响应后"对称处理。
+
+**解决方案代码**：
+
+```php
+// app/Http/Middleware/CheckApiToken.php
+namespace App\Http\Middleware;
+use Closure;
+use Illuminate\Http\Request;
+class CheckApiToken
+{
+    public function handle(Request $request, Closure $next)
+    {
+        if (!$request->bearerToken()) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+        // 请求前
+        $response = $next($request);
+        // 响应后
+        $response->headers->set('X-Token-Used', '1');
+        return $response;
+    }
+}
+// 路由用法
+Route::middleware(['auth', 'subscribed'])->group(function () {
+    Route::get('/premium', ...);
+});
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `handle($request, $next)` | 主逻辑 | 必填 |
+| `$next($request)` | 下一个 | 必须返回 |
+| Termiable | 响应后 | 旧版机制 |
+| `->terminate()` | 收尾 | 单独方法 |
+| 优先级 | 数组顺序 |  |
+| alias | 'auth'/'subscribed' |  |
+
+**最佳实践**：
+- ✅ 中间件**总是**在 `$next` 前后各一段——洋葱模型。
+- ✅ 全局中间件在 `bootstrap/app.php` 的 `withMiddleware` 注册。
+- ✅ 异步任务/长连接用 `terminate()` 收尾（响应后才跑）。
+- ✅ `Illuminate\Auth\Middleware\Authenticate` 是默认 auth。
+- ✅ 顺序敏感：cors 在 auth 之前。
+
+---
+
+### 模式 10：Jobs + Queue 异步任务（解决"邮件发送阻塞 HTTP 响应"）
+
+**问题场景**：用户下单要发邮件+短信+同步库存，HTTP 响应要 5s+。Laravel 把耗时操作推 Queue。
+
+**解决方案代码**：
+
+```php
+// app/Jobs/SendOrderEmail.php
+namespace App\Jobs;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+class SendOrderEmail implements ShouldQueue
+{
+    use Dispatchable;
+    public function __construct(public Order $order) {}
+    public function handle(): void
+    {
+        Mail::to($this->order->user)->send(new OrderShipped($this->order));
+    }
+}
+// 派发
+SendOrderEmail::dispatch($order);
+// 延迟
+SendOrderEmail::dispatch($order)->delay(now()->addMinutes(10));
+// 链式
+SendOrderEmail::dispatch($order)->chain([
+    new UpdateInventory($order),
+    new NotifyWarehouse($order),
+]);
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `implements ShouldQueue` | 异步 | 默认 sync |
+| `dispatch($job)` | 派发 | 立即或延迟 |
+| `tries` | 重试次数 | 默认 1 |
+| `backoff` | 重试间隔 | 数组或秒数 |
+| `timeout` | 单次超时 | 秒 |
+| `failed()` | 失败回调 |  |
+| `chain` | 链式 | 顺序执行 |
+
+**最佳实践**：
+- ✅ `ShouldQueue` 接口让 Job 异步——**不**实现是 sync。
+- ✅ 重试用 `public int $tries = 3; public int $backoff = [10, 30, 60];`。
+- ✅ 失败回调 `failed(Throwable $e)` 写监控告警。
+- ✅ `Bus::batch([...])` 批量任务 + 部分失败处理。
+- ✅ 队列 worker：`php artisan queue:work --tries=3`。
+
+---
+
+## 三、性能优化：缓存、查询与构建
+
+### 模式 11：Cache 多驱动（解决"读多写少场景加速"）
+
+**问题场景**：业务配置/页面片段读多写少，每次 DB 查询慢。Laravel 用 Cache facade 抽象多驱动。
+
+**解决方案代码**：
+
+```php
+use Illuminate\Support\Facades\Cache;
+// 简单存
+Cache::put('key', 'value', 600);  // 10 分钟
+Cache::remember('users:all', 600, fn() => User::all());
+// 永久
+Cache::forever('config', $config);
+// 原子操作
+Cache::lock('import')->block(10, fn() => doImport());
+// 标记批量失效
+Cache::tags(['users'])->put('user:1', $user, 600);
+Cache::tags(['users'])->flush();
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `put/get` | 简单 KV | 字符串/对象 |
+| `remember` | 读穿透 | 缓存优先 |
+| `add` | 存在则失败 | 锁 |
+| `forever` | 永久 | 直到手动 forget |
+| `lock()` | 分布式锁 | 防并发 |
+| `tags()` | 分组 | Redis 专属 |
+| 驱动 | file/redis/memcached | .env 配 |
+
+**最佳实践**：
+- ✅ `Cache::remember('key', 600, fn() => DB::table(...)->get())` 一行写穿透。
+- ✅ `Cache::lock('import')->block(10, fn() => doImport())` 防止并发导入。
+- ✅ Redis tags 比 file 驱动强 10x（支持批量失效）。
+- ✅ 缓存键用 `prefix:resource:id` 格式（`user:1`）——易管理。
+- ✅ `php artisan cache:clear` 清空——**生产**慎用。
+
+---
+
+### 模式 12：Database Migrations（解决"DB schema 版本化"）
+
+**问题场景**：DB schema 在 dev/staging/prod 同步靠手动 `mysqldump`，出错频繁。
+
+**解决方案代码**：
+
+```php
+// database/migrations/2026_05_25_000000_create_users_table.php
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+return new class extends Migration {
+    public function up(): void
+    {
+        Schema::create('users', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->string('email')->unique();
+            $table->timestamp('email_verified_at')->nullable();
+            $table->timestamps();
+        });
+    }
+    public function down(): void
+    {
+        Schema::dropIfExists('users');
+    }
+};
+// 命令
+// php artisan make:migration create_orders_table
+// php artisan migrate
+// php artisan migrate:rollback --step=1
+// php artisan migrate:fresh  // 危险：清空重跑
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `up()` | 升级 | 必填 |
+| `down()` | 回滚 | 必填 |
+| `Schema::create` | 建表 |  |
+| `Blueprint` | 列定义 | fluent |
+| `timestamps` | created_at/updated_at |  |
+| `softDeletes` | deleted_at |  |
+| `migrate:fresh` | 重建 | **生产**禁用 |
+
+**最佳实践**：
+- ✅ 迁移文件名带时间戳——`2026_05_25_create_users_table` 顺序敏感。
+- ✅ `up()` 和 `down()` 都要写——回滚可逆。
+- ✅ 加字段用 `php artisan make:migration add_status_to_users` 增量改。
+- ✅ 生产**绝不用** `migrate:fresh`——用 `migrate:rollback` + `migrate`。
+- ✅ 复杂 schema 变更：建新表 → 双写 → 切流量 → 删旧表（4 步法）。
+
+---
+
+### 模式 13：Vite + Tailwind 4 资源构建（解决"前后端构建工具统一"）
+
+**问题场景**：Laravel 之前用 Laravel Mix（webpack），配置复杂。11.x 切到 Vite + Tailwind 4。
+
+**解决方案代码**：
+
+```js
+// vite.config.js
+import { defineConfig } from 'vite';
+import laravel from 'laravel-vite-plugin';
+export default defineConfig({
+    plugins: [
+        laravel({
+            input: ['resources/css/app.css', 'resources/js/app.js'],
+            refresh: true,
+        }),
+    ],
+});
+// resources/css/app.css
+@import "tailwindcss";
+@source "../views";
+// 命令
+// npm run dev
+// npm run build
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `laravel-vite-plugin` | 集成 | npm |
+| `input` | 入口 | 多入口 |
+| `refresh: true` | HMR | 开发热更新 |
+| `@vite(['resources/css/app.css'])` | 模板引入 | Blade |
+| `npm run build` | 生产构建 | 静态资源 |
+| `manifest.json` | 入口映射 | 自动生成 |
+
+**最佳实践**：
+- ✅ `npm run dev` 起 Vite 监听——`php artisan serve` 跑 PHP。
+- ✅ `npm run build` 后部署 `public/build/` 目录。
+- ✅ Tailwind 4 零配置：`@import "tailwindcss"` 一行。
+- ✅ Vite 5+ 比 Mix 快 5-10x（HMR 即时）。
+- ✅ 生产**不要**用 `dev` 模式——必须 build。
+
+---
+
+### 模式 14：Eager Loading 防 N+1（解决"100 个用户 101 次查询"）
+
+**问题场景**：循环 100 个用户，每个 user 查 posts，是 1 + 100 = 101 次查询。
+
+**解决方案代码**：
+
+```php
+// 差：N+1
+$users = User::all();
+foreach ($users as $user) {
+    echo $user->posts->count();  // 每用户 1 次查询
+}
+// 好：预加载
+$users = User::with('posts')->get();
+foreach ($users as $user) {
+    echo $user->posts->count();  // 0 次（已加载）
+}
+// 嵌套
+$users = User::with('posts.comments')->get();
+// 条件预加载
+User::with(['posts' => fn($q) => $q->where('status', 'published')])->get();
+// 防止懒加载（开发期）
+Model::preventLazyLoading(!app()->isProduction());
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `with()` | 预加载 | 1 + 1 查询 |
+| `load()` | 已查后预加载 | `$user->load('posts')` |
+| `withCount()` | 计数 | 不加载数据 |
+| `lazyEagerLoad` | 防 N+1 | 全局 |
+| `preventLazyLoading` | 抛错 | dev 环境 |
+| `$with` Model 属性 | 总是预加载 | 默认关联 |
+
+**最佳实践**：
+- ✅ `User::with('posts.comments')` 嵌套预加载。
+- ✅ `User::withCount('posts')->get()` 只要计数。
+- ✅ `Model::preventLazyLoading(!$isProduction)` 生产前默认开。
+- ✅ API Resource `whenLoaded()` 配合——未预加载不返回。
+- ✅ `$with = ['posts']` Model 属性——总是预加载（小心 N+1 反向）。
+
+---
+
+### 模式 15：`php artisan optimize` 缓存（解决"每次请求 50+ 文件 require"）
+
+**问题场景**：Laravel 启动要 `bootstrap/cache/services.php` 等几十个文件，IO 延迟高。
+
+**解决方案代码**：
+
+```php
+// 部署流程
+composer install --no-dev --optimize-autoloader
+php artisan config:cache     // config/*.php → 单文件
+php artisan route:cache      // routes/*.php → 单文件
+php artisan view:cache       // Blade → 编译后 PHP
+php artisan event:cache      // EventServiceProvider
+// 部署结束一行
+php artisan optimize
+// 清缓存（开发期）
+php artisan optimize:clear
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `config:cache` | 配置缓存 | 单文件 |
+| `route:cache` | 路由缓存 | 不支持闭包 |
+| `view:cache` | 视图预编译 | Blade → PHP |
+| `event:cache` | 事件缓存 | 反射缓存 |
+| `optimize` | 一键全跑 | CI/CD 用 |
+| `optimize:clear` | 一键清空 | 部署后回滚 |
+
+**最佳实践**：
+- ✅ **生产**必跑 `php artisan optimize`——延迟降 30-50%。
+- ✅ 路由有闭包不能用 `route:cache`——改成 Controller 方法。
+- ✅ 开发**不要**开缓存——改代码不生效要 `optimize:clear`。
+- ✅ CI/CD 步骤：`composer install` → `optimize` → 重启 PHP-FPM。
+- ✅ 监控 `bootstrap/cache/*.php` 文件 mtime——部署时间戳。
+
+---
+
+## 四、可靠性与生态：测试、监控与治理
+
+### 模式 16：PHPUnit + Feature/Unit 分离（解决"测试金字塔"）
+
+**问题场景**：业务混写单元和功能测试，慢且难定位。Laravel 分 `tests/Feature` 和 `tests/Unit`。
+
+**解决方案代码**：
+
+```php
+// tests/Feature/UserRegistrationTest.php
+namespace Tests\Feature;
+use Tests\TestCase;
+class UserRegistrationTest extends TestCase
+{
+    public function test_user_can_register(): void
+    {
+        $response = $this->post('/register', [
+            'name' => 'John',
+            'email' => 'john@example.com',
+            'password' => 'password',
+        ]);
+        $response->assertStatus(302);
+        $this->assertDatabaseHas('users', ['email' => 'john@example.com']);
+    }
+}
+// tests/Unit/OrderTotalTest.php
+class OrderTotalTest extends TestCase
+{
+    public function test_total_with_tax(): void
+    {
+        $order = new Order(['subtotal' => 100]);
+        $this->assertEquals(113, $order->totalWithTax(0.13));
+    }
+}
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `tests/Feature` | HTTP 集成 | 慢但全面 |
+| `tests/Unit` | 纯逻辑 | 快 |
+| `$this->post()` | 模拟 POST |  |
+| `assertStatus(302)` | 状态码 |  |
+| `assertDatabaseHas` | DB 断言 | SQLite 内存 |
+| `RefreshDatabase` | 每次清库 | 隔离 |
+| `actingAs($user)` | 模拟登录 |  |
+
+**最佳实践**：
+- ✅ Feature 测试用 SQLite 内存库——比 MySQL 快 10x。
+- ✅ 慢的外部 API 用 `Http::fake()` 拦截。
+- ✅ `RefreshDatabase` trait 隔离每次测试。
+- ✅ CI 跑 `php artisan test --parallel`（PHPUnit 10+）。
+- ✅ Pest 替代 PHPUnit：`pestphp.com`——链式断言更简洁。
+
+---
+
+### 模式 17：Horizon + Queue 监控（解决"异步任务无可见性"）
+
+**问题场景**：业务派发 1000 个 Job 到队列，怎么知道哪些失败、卡在哪个 worker？
+
+**解决方案代码**：
+
+```php
+// config/horizon.php
+return [
+    'environments' => [
+        'production' => [
+            'supervisor-default' => [
+                'connection' => 'redis',
+                'queue' => ['default'],
+                'balance' => 'auto',
+                'maxProcesses' => 10,
+                'minProcesses' => 1,
+            ],
+        ],
+    ],
+];
+// 命令
+// php artisan horizon
+// php artisan horizon:terminate
+// 访问 /horizon 看 dashboard
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| `queue:work` | 单进程 worker | 简单 |
+| `horizon` | 多进程 supervisor | Redis 专属 |
+| `balance` | auto/simple | 负载均衡 |
+| `maxProcesses` | 进程数 |  |
+| `maxTime` | 进程最大运行 | 防内存泄漏 |
+| `memory` | 内存限制 | 超限自动重启 |
+| `wait` | 空闲时退出时间 |  |
+
+**最佳实践**：
+- ✅ 生产**用 Horizon 不用 queue:work**——多进程 + 监控面板。
+- ✅ `balanceMaxShift` + `balanceCooldown` 配置负载均衡。
+- ✅ `tries=3` + `backoff=[10,30,60]` 失败重试。
+- ✅ Supervisor 进程崩溃自动重启：`supervisor` + `horizon.conf`。
+- ✅ 监控 `horizon:status` cron 每分钟——挂了告警。
+
+---
+
+### 模式 18：Forge / Vapor 商业部署（解决"PHP-FPM 调优运维"）
+
+**问题场景**：自建 PHP-FPM + Nginx 集群要做版本升级、SSL 自动续期、监控告警，运维成本高。Laravel 官方有 **Laravel Forge**（传统服务器）和 **Vapor**（serverless）。
+
+**解决方案代码**：
+
+```php
+// Forge 提供
+// - DigitalOcean / Linode / AWS EC2 一键 provision
+// - Let's Encrypt 自动 SSL
+// - 推送 GitHub 自动部署
+// - 监控告警集成
+
+// Vapor（Laravel Serverless）
+// vapor.yml
+id: 12345
+name: my-app
+environments:
+    production:
+        memory: 1024
+        cli-memory: 512
+        queue: true
+        database: my-app-db
+        cache: my-app-cache
+// vapor deploy production
+```
+
+**关键参数表**：
+
+| 名称 | 作用 | 备注 |
+|------|------|------|
+| Forge | 传统 VPS 自动化 | 月费 |
+| Vapor | AWS Lambda 部署 | 按请求计费 |
+| Envoyer | 零停机部署 | 配合 Forge |
+| Nova | Admin 后台 | 月费 |
+| Pulse | 性能监控 |  |
+| Breeze | 认证脚手架 | 免费 |
+| Jetstream | 高级脚手架 | 含 Livewire |
+
+**最佳实践**：
+- ✅ 小团队用 Forge 起步——比 K8s 简单 10x。
+- ✅ 大流量或无服务器场景用 Vapor——按需计费省 80%。
+- ✅ Nova 写 Admin 后台比自建快 5x。
+- ✅ Pulse 监控 SQL/Queue 慢查询——免费自托管。
+- ✅ Breeze/Jetstream 替代 `php artisan make:auth`（已废弃）。
+
+---
+
+### 模式 19：Laravel 11/12 精简目录（解决"老项目升级难"）
+
+**问题场景**：Laravel 10 有 `app/Http/Kernel.php`、`app/Console/Kernel.php`、`app/Providers/RouteServiceProvider.php`、`app/Exceptions/Handler.php` 4 个 Kernel 入口。11.x 全部下沉到 `bootstrap/app.php`。
+
+**解决方案代码**：
+
+```php
+// Laravel 10 之前
+// app/Http/Kernel.php
+class Kernel extends HttpKernel
+{
+    protected $middleware = [
+        \App\Http\Middleware\TrustProxies::class,
+        \Illuminate\Http\Middleware\HandleCors::class,
+    ];
+    protected $middlewareGroups = [
+        'web' => [...],
+        'api' => [...],
+    ];
+    protected $middlewareAliases = [
+        'auth' => \App\Http\Middleware\Authenticate::class,
+    ];
+}
+// Laravel 11+
+// bootstrap/app.php
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->web(append: [...]);
+        $middleware->alias(['auth' => Authenticate::class]);
+    })->create();
+```
+
+**关键参数表**：
+
+| 版本 | 主要变化 | 备注 |
+|------|----------|------|
+| 8.x | 引入 Vite 替代 Mix |  |
+| 9.x | 引入 Symfony 6 | PHP 8+ |
+| 10.x | Laravel Pennant 特性开关 |  |
+| 11.x | 砍 4 个 Kernel | 目录瘦身 |
+| 12.x | 引入 Reverb WebSocket |  |
+| 13.x | PHP 8.3+ 强制 | 当前 |
+
+**最佳实践**：
+- ✅ 新项目用 12.x/13.x——**不要**学老 Kernel 结构。
+- ✅ 老项目升级用 Laravel Shift（付费）——自动化迁移。
+- ✅ `bootstrap/app.php` 是**单文件**——找配置不用翻 4 处。
+- ✅ `php artisan make:middleware` 仍生成 `app/Http/Middleware/`。
+- ✅ 升级前看 UPGRADE.md——每版本都有破坏性变更清单。
+
+---
+
+### 模式 20：测试覆盖率 + CI 矩阵（解决"多 PHP 版本兼容"）
+
+**问题场景**：业务代码要在 PHP 8.3/8.4/8.5 三版本 + Laravel 11/12/13 矩阵下测。Laravel 骨架自带 `.github/workflows/tests.yml`。
+
+**解决方案代码**：
 
 ```yaml
-strategy:
-  matrix:
-    php: [8.3, 8.4, 8.5]
-schedule:
-  - cron: '0 0 * * *'
+# .github/workflows/tests.yml
+name: Tests
+on: [push, pull_request]
+jobs:
+    test:
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                php: ['8.3', '8.4', '8.5']
+                dependency-version: [prefer-lowest, prefer-stable]
+        steps:
+            - uses: actions/checkout@v4
+            - uses: shivammathur/setup-php@v2
+              with:
+                  php-version: ${{ matrix.php }}
+                  coverage: xdebug
+            - run: composer require "laravel/framework:^${{ matrix.dependency }}"
+            - run: php artisan test --coverage-clover=coverage.xml
+            - uses: codecov/codecov-action@v3
 ```
 
-**WHY 深度解读**：
+**关键参数表**：
 
-- **PHP 版本矩阵 [8.3, 8.4, 8.5]**：因为 `composer.json` 要求 `php: ^8.3`，所以 CI 覆盖了 8.3（最低）+ 最新 8.5（即将到来的 minor）。`fail-fast: true` 让任一 PHP 版本失败时立刻取消其他版本，节省 CI 分钟。
-- **每日 cron 触发**：`schedule: cron '0 0 * * *'` 让 CI 每天跑一次——用于发现"依赖包在最新版本下崩溃"的退化（dependency rot）。
-- **`shivammathur/setup-php@v2`**：GitHub 社区最流行的 PHP 配方，比官方 `actions/setup-php` 更快（预编译 cache）。
-- **必需扩展 `dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite`**：Laravel + PHPUnit 完整功能所需的最小扩展集。**WHY 显式列**：actions 默认 PHP 镜像只装了几个核心扩展，缺 `mbstring` 会导致 Laravel 多语言功能报错。
-
-### 5.3 设计模式汇总
-
-骨架应用的源码虽少，但**应用的 Laravel 框架本身就是"设计模式博物馆"**：
-
-- **Fluent Builder**（`Application::configure()->...->create()`）— 创建复杂对象时链式可读
-- **Facade**（`Route::get()`、`Schema::create()`）— 静态代理 + 服务定位器
-- **Service Locator**（`app()`、`App::make()`）— 全局容器访问
-- **Pipeline**（middleware）— 责任链模式
-- **Repository**（Eloquent）— 仓储模式
-- **Active Record**（Eloquent）— Model 既是数据也是行为
-- **Observer**（Eloquent events）— 观察者模式
-- **Strategy**（Cache/Queue drivers）— 算法族可替换
-- **Decorator**（middleware wrapping controllers）— 动态添加行为
-- **Template Method**（`Authenticatable` 基类）— 算法骨架在父类，子类填具体
-- **Attribute-based DI**（PHP 8 `#[Fillable]`）— 注解驱动元数据
-
-### 5.4 反模式（值得避开的）
-
-- **`Authenticatable` 默认 User 模型的 `$table = 'users'` 硬编码**——如果你的业务表名不是 `users`，必须显式声明 `$table`，否则 `User::factory()->create()` 会跑到 `users` 表，污染生产。**WHY 反模式**：约定优于配置的代价——一旦约定不匹配，错误是 *运行时*（migration 跑完才发现）而非 *编译时*。
-- **`.env` 文件进 git 是反模式**——`.gitignore` 写了，但 `.env.example` 是模板，开发者复制为 `.env` 后应保持私密。**但本仓库把 `APP_KEY=` 留空是 *正确* 模式**：强制开发者 `php artisan key:generate` 重新生成。
-- **`Schema::create` 在单一 migration 里建 3 张表**（users + password_reset_tokens + sessions）—— 看似"省一个文件"，但 *回滚粒度* 被强制绑定：drop `users` 时 `sessions` 也被删。骨架这样写是 *默认 scaffolding*，但生产项目应拆分为 3 个 migration。
-
-### 5.5 独特看点
-
-- **PHP 8.4 `static::$password ??=` 属性级静态缓存**：`UserFactory::definition()` 里 `static::$password ??= Hash::make('password')` 利用 PHP 8.4 的 *属性赋值表达式* 语法 + 静态属性 + null coalescing assignment，让 "HASH 计算一次" 的意图在三字符内表达。
-- **`health: '/up'`** 是 K8s 友好的"反义"命名（service is *up*），与 HTTP 503 *down* 状态对应。
-- **`Pdo\Mysql` 类引用** 而非整数常量 `1007`，是 Laravel 13.x 的可读性升级。
-
-## 6. 运行机制（Bring It Up）
-
-### 6.1 启动脚本
-
-```bash
-# 一键启动（composer 脚本）
-composer setup
-# 等价于：
-#   composer install
-#   copy .env.example .env
-#   php artisan key:generate
-#   php artisan migrate --force
-#   npm install
-#   npm run build
-
-# 开发模式（concurrently 起 4 个进程）
-composer run dev
-# 进程：php artisan serve | queue:listen | pail (log tail) | npm run dev
-```
-
-### 6.2 本地起服务
-
-```bash
-php artisan serve              # 默认 http://127.0.0.1:8000
-curl http://127.0.0.1:8000/up  # 活探：应返回 200
-curl http://127.0.0.1:8000/    # 渲染 welcome.blade.php
-```
-
-### 6.3 Smoke test
-
-```bash
-php artisan inspire            # 跑内置 inspire 命令
-php artisan route:list         # 列出路由
-php artisan test               # 跑 PHPUnit（Feature + Unit）
-```
-
-```mermaid
-flowchart TD
-    A[composer setup] --> B[生成 .env + APP_KEY]
-    B --> C[php artisan migrate]
-    C --> D[建 users/sessions 等表]
-    D --> E[php artisan serve]
-    E --> F[监听 127.0.0.1:8000]
-    F --> G{请求 /}
-    G --> H[200 welcome.blade]
-    F --> I{请求 /up}
-    I --> J[200 health OK]
-```
-
-## 7. 演进历史（Time Travel）
-
-```mermaid
-gantt
-    title Laravel Skeleton 演进时间线
-    dateFormat YYYY-MM
-    section 早期
-    Laravel 1.x-3.x         :done, 2013-06, 2015-01
-    section 中期
-    Laravel 4-5 (Illuminate) :done, 2015-01, 2017-01
-    Laravel 6 LTS           :done, 2019-09, 2021-09
-    section 近期
-    Laravel 10              :done, 2023-02, 2024-02
-    Laravel 11 目录瘦身     :active, 2024-03, 2025-02
-    section 当前
-    Laravel 12              :active, 2025-02, 2026-02
-    Laravel 13              :active, 2026-02, 2027-02
-    section 未来
-    Laravel 14              :crit, 2027-02, 12M
-```
-
-从 `CHANGELOG.md` 看 v13 系列变更密度：
-- v13.8.0 (2026-05-25): 移除冗余 Tailwind @source
-- v13.7.0 (2026-05-14): default JSON exception for API
-- v13.6.0 (2026-05-11): Pdo/Mysql const workaround
-- v13.5.0 (2026-04-30): Vite font plugin
-- v13.4.0 (2026-04-28): `pao` 默认安装
-- v13.3.0 (2026-04-16): npm audit default
-- v13.2.0 (2026-04-09): 移除 axios
-
-**架构转折点**：Laravel 11 (2024-03) 引入 `bootstrap/app.php` fluent builder，废除 4 个老 Kernel 类——这是 skeleton 文件数从 ~70 砍到 ~60 的根本原因。
-
-## 8. 质量保障（How It Doesn't Break）
-
-| 防线 | 实现 |
-|------|------|
-| **类型安全** | PHP 8.3+ 类型系统，Eloquent 用 PHP 8 attributes 替代魔术属性 |
-| **静态分析** | `laravel/pao` (PHP 8.4 analyzer output) 内置 |
-| **代码风格** | `laravel/pint` PSR-12 + Laravel 自定义规则（间接集成） |
-| **单元/集成测试** | PHPUnit 12.5.12 + Pest plugin allowance + 2 个示例测试 |
-| **CI 矩阵** | GitHub Actions: PHP 8.3 / 8.4 / 8.5 每日定时 |
-| **依赖审计** | `npm audit` 默认开启（v13.3+） |
-| **配置覆盖** | `phpunit.xml` 注入 testing 环境变量（`:memory:` SQLite、array cache、sync queue） |
-| **安全防御** | `APP_KEY` 强制 `key:generate`、`password` cast 自动 hash、CSRF 自动中间件 |
-
-```mermaid
-flowchart LR
-    A[git push] --> B[GH Actions]
-    B --> C{PHP 8.3}
-    B --> D{PHP 8.4}
-    B --> E{PHP 8.5}
-    C --> F[composer install]
-    D --> F
-    E --> F
-    F --> G[cp .env.example .env]
-    G --> H[key:generate]
-    H --> I[php artisan test]
-    I --> J{全部通过?}
-    J -->|是| K[✓ 绿色]
-    J -->|否| L[✗ 阻止合并]
-```
-
-## 9. 生态依赖（Map of the World）
-
-```mermaid
-mindmap
-  root((依赖生态))
-    生产
-      laravel/framework 13.8
-        全栈框架核心
-      laravel/tinker 3.0
-        REPL 交互
-    开发
-      laravel/pail 1.2
-        实时日志 tail
-      laravel/pao 1.0
-        PHP 8.4 analyzer
-      laravel/pint 1.27
-        代码风格
-      mockery/mockery 1.6
-        Mock 框架
-      nunomaduro/collision 8.6
-        错误展示
-      phpunit/phpunit 12.5
-        测试框架
-    前端
-      vite 8.0
-      tailwindcss 4.0
-      @tailwindcss/vite 4.0
-      laravel-vite-plugin 3.1
-      concurrently 9.0
-```
-
-**合规检查**：
-- ✅ License: 全部 MIT 或 Apache-2.0
-- ✅ 无 `npm install` 时代的 `axios` 依赖（v13.2 移除）
-- ✅ PHPUnit 12 + Pest plugin 兼容
-
-## 10. 生产实践（Battle-Tested）
-
-| 维度 | 骨架默认 | 生产建议 |
-|------|---------|---------|
-| 配置热更新 | ❌ 需 `config:cache` 后重启 | 用 `config:cache` + Laravel Octane / Swoole |
-| 优雅停服 | ✅ `maintenance.php` 文件检查 | K8s preStop hook + `php artisan down --retry=60` |
-| 限流 | ❌ 需 `throttle` 中间件 | 骨架加 `throttle:api` 中间件 |
-| 链路追踪 | ❌ 需 `laravel/telescope` 或 OpenTelemetry 包 | 装 OTEL SDK |
-| 健康检查 | ✅ `/up` 路由 | ✅ 已就绪 |
-| 结构化日志 | ⚠️ 默认 `stack` 文本 | 改 JSON formatter + ELK |
-| 多环境 | ⚠️ `.env` 单文件 | 用 [vlucas/phpdotenv-mode](https://github.com/vlucas/phpdotenv) 按 `APP_ENV` 选不同 `.env.{env}` |
-
-## 11. 社区文化（People & Process）
-
-- **治理**：Taylor Otwell（BDFL），核心团队 20+ maintainer，公开 RFC 流程（[laravel/rfcs](https://github.com/laravel/rfcs) 私有）
-- **沟通**：Discord（largest PHP community）、Laracasts 视频、Laravel News 媒体
-- **议题活跃**：GitHub Issues 平均 < 1 天首次响应
-- **AI 集成**：v13 起官方推荐 `laravel/boost` 装 Cursor/Claude Code skill
-- **新功能发布**：每个 minor 版本附带 blog post + Laracasts 系列视频
-
-## 12. 教训总结（What To Steal / What To Avoid）
-
-### 12.1 必偷 3 件
-
-1. **Fluent Builder 用于应用配置**（`bootstrap/app.php`）— 当应用配置项 > 3 个时，链式 API 比 setter / 数组配置更可读、更可 IDE 跳转。
-2. **PHP 8 attributes 替代魔术属性**（Eloquent `#[Fillable]`）— 静态可分析、IDE 友好、重构安全。
-3. **`health` 路由内置**（`/up`）— 容器化部署必备，骨架层级提供优于业务层级自实现。
-
-### 12.2 必避 3 坑
-
-1. **不要在生产用骨架的 SQLite** — `database/database.sqlite` 是开发便利，*生产必须切 MySQL/Postgres*。
-2. **不要用 `Authenticatable` 默认 User 模型直接上生产** — 默认模型 *没有任何业务字段*（手机号、昵称、租户 id 等），至少要 extend 后加字段。
-3. **不要 `composer update` 升级 minor** — 永远在 `composer.lock` 锁版本，重大升级用 `composer outdated` 先看 diff。
-
-### 12.3 7 天复刻路线图
-
-```mermaid
-gantt
-    title 7天复刻 Laravel 骨架路线图
-    dateFormat YYYY-MM-DD
-    section Day 1
-    composer 初始化 + PSR-4 :d1, 2026-06-03, 1d
-    section Day 2
-    bootstrap/app.php fluent builder :d2, after d1, 1d
-    public/index.php + artisan :d3, after d2, 1d
-    section Day 3
-    config/ 12 个配置 :d4, after d3, 1d
-    section Day 4
-    Eloquent User + Factory + Migration :d5, after d4, 1d
-    section Day 5
-    PHPUnit + GitHub Actions :d6, after d5, 1d
-    section Day 6
-    Vite + Tailwind 集成 :d7, after d6, 1d
-    section Day 7
-    文档 + 第一次 git tag :d8, after d7, 1d
-```
-
-### 12.4 打分卡（满分 10）
-
-| 维度 | 评分 | 说明 |
+| 名称 | 作用 | 备注 |
 |------|------|------|
-| 文档完整度 | 10 | README + 官网 + Laracasts 三位一体 |
-| 入门友好 | 10 | 5 分钟跑起来 |
-| 扩展性 | 9 | 大量 ServiceProvider 钩子 |
-| 类型安全 | 8 | PHP 8.3+ + attributes |
-| 测试覆盖 | 7 | 骨架 2 个示例测试，框架自身覆盖率高 |
-| 性能 | 8 | Laravel Octane / Swoole 可达 10x |
-| 生态丰富 | 10 | Forge / Vapor / Nova / Pulse / Inertia / Livewire |
-| 现代化 | 9 | Tailwind 4 + Vite 8 + PHPUnit 12 |
-| **综合** | **9.0** | **PHP 全栈首选** |
+| `matrix.php` | PHP 版本矩阵 | 8.3/8.4/8.5 |
+| `dependency-version` | prefer-lowest/stable | 包兼容 |
+| `coverage-clover` | 覆盖率报告 | XML |
+| `codecov-action` | 覆盖率上传 |  |
+| `parallel` | 并行测试 |  |
+| `fail-fast: false` | 失败继续 | 看全矩阵 |
+| `pull_request` | PR 触发 |  |
 
-## 13. 学习萃取（Cheat Sheet）
+**最佳实践**：
+- ✅ Laravel 骨架 CI 矩阵默认 3 PHP 版本——直接用。
+- ✅ `prefer-lowest` 测最低依赖版本——抓错版本不兼容。
+- ✅ `xdebug` 覆盖率只 CI 装——本地不要。
+- ✅ 并行 `php artisan test --parallel`——4 核 4x 加速。
+- ✅ Codecov/Scrutinizer 覆盖率徽章放 README。
 
-**一句话价值**：Laravel 骨架是 *PHP 全栈框架的最佳实践锚点*，每行代码都是"业务开发者该在哪儿改"的明示。
+---
 
-**3 个核心洞察**：
-1. **Fluent Builder 集中化**（`bootstrap/app.php`）— 把过去 4 个 Kernel 的配置塞进 1 个 22 行文件。
-2. **双入口共享内核**（`public/index.php` + `artisan`）— HTTP 和 CLI 是同一个 `Application` 的两种调用方式。
-3. **PHP 8 attributes 重塑 ORM**（`#[Fillable]`、`#[Hidden]`）— 静态可分析的元数据替代动态魔术属性。
+## 参考
 
-**5 段必读代码**（实际文件名）：
-
-| # | 文件 | 学到什么 |
-|---|------|---------|
-| 1 | `bootstrap/app.php` | Fluent Builder + 命名参数 + 闭包配置 |
-| 2 | `public/index.php` | 维护模式短路 + 共享引导 + `Request::capture()` |
-| 3 | `artisan` | CLI 入口 + Symfony Console 集成 + exit code |
-| 4 | `app/Models/User.php` | PHP 8 attributes + `casts()` 方法 + `hashed` cast |
-| 5 | `config/database.php` | 多 driver 预配置 + `Pdo\Mysql` 类型化常量 + `extension_loaded` 守卫 |
-
-**1 反模式**：单 migration 建多张表（`0001_01_01_000000_create_users_table.php` 同时建 users / password_reset_tokens / sessions）——耦合回滚粒度。
-
-**1 可复用模式**：`withMiddleware(function (Middleware $m) { /* 留空让业务加 */ })` — 框架提供 *能力* 但不替你 *决策*，让业务项目渐进扩展。
-
-**3 立刻能用**：
-1. `composer create-project laravel/laravel my-app` → 5 分钟拿到项目
-2. `php artisan down --secret=my-bypass-token` → 维护模式 + bypass cookie 给内部人员用
-3. `php artisan test --filter=UserTest` → 跑指定测试
-
-## 14. 项目特点速查
-
-**独特看点**：
-- **目录最少的现代 PHP 框架**（v11+ 革命）
-- **PHP 8.3+ 现代特性密度最高**（attributes / named args / static 表达式）
-- **生态最完整的全栈框架**（Forge/Vapor/Nova/Pulse/Envoyer/Cashier/Sanctum/Passport/Socialite/Scout 等 30+ 官方包）
-
-**与同类对比**：
-
-```mermaid
-quadrantChart
-    title PHP 全栈框架对比
-    x-axis 学习曲线 低 --> 高
-    y-axis 功能完整度 弱 --> 强
-    quadrant-1 学习曲线高但功能强
-    quadrant-2 学习曲线高且功能弱
-    quadrant-3 学习曲线低且功能弱
-    quadrant-4 学习曲线低且功能强
-    "Laravel": [0.4, 0.95]
-    "Symfony": [0.8, 0.85]
-    "CodeIgniter": [0.2, 0.4]
-    "Yii": [0.5, 0.65]
-    "Slim": [0.6, 0.3]
-    "CakePHP": [0.5, 0.6]
-```
-
-**为什么 Laravel 是 PHP 事实标准**：
-- 文档最全（10+ 本书、1500+ 视频教程）
-- 社区最大（GitHub 78k stars + Discord 10w+ 用户）
-- 包生态最广（30+ 官方包 + 数万第三方包）
-- 商业化最深（Forge/Vapor 等 SaaS 反哺框架）
-
-## 附：仓库元信息
-
-| 字段 | 值 |
-|------|-----|
-| 路径 | `G:\实战案例\GitHub顶尖项目\laravel\` |
-| 大小 | 骨架本身 ~50KB（不含 vendor） |
-| 总文件 | 61（应用文件） |
-| 解析时间 | 2026-06-02 |
-| 当前版本 | v13.8.0 (2026-05-25) |
-| 关键依赖 | PHP ^8.3 / laravel/framework ^13.8 |
-| 配套框架 | laravel/framework（独立仓库，本仓库为 application skeleton） |
-
-## 一句话总结
-
-**解析 = 计划书 + 框架图 + 核心功能 + 跑起来 + 偷过来。** Laravel 骨架 = PHP 生态最成熟的"开箱即用"模板——`bootstrap/app.php` 的 fluent builder、`public/index.php` 的双入口设计、`app/Models/User.php` 的 PHP 8 attributes、`config/database.php` 的多 driver 预配置，每个文件都体现"约定优于配置 + 主动抽象 + 渐进扩展"的工程哲学。**直接 `composer create-project` 就能上手 5 分钟跑通**，是 *学习现代 PHP 工程化* 的最佳教材。
+- Laravel 官方：https://laravel.com/
+- 骨架仓库：`laravel/laravel` v13.8.0
+- 框架仓库：`laravel/framework`
+- License：MIT
+- 商业生态：Forge / Vapor / Nova / Pulse / Envoyer
+- 文档：https://laravel.com/docs
