@@ -521,3 +521,505 @@ server {
 - [./konga.md](./konga.md) — Kong 是基于 OpenResty 的 API 网关
 - [./redis.md](./redis.md) — Nginx + Redis 实现 LRU 缓存前置
 - [../A-前端框架/next.js.md](../A-前端框架/next.js.md) — Next.js 反向代理到 Nginx
+
+## 六、关键代码（续）
+
+### 6. 静态文件服务与高效缓存
+
+```nginx
+http {
+    # open_file_cache 缓存文件描述符、目录、大小、修改时间
+    open_file_cache max=10000 inactive=20s;
+    open_file_cache_valid 30s;
+    open_file_cache_min_uses 2;
+    open_file_cache_errors on;
+
+    server {
+        listen 80;
+        server_name static.example.com;
+        root /var/www/static;
+
+        # 隐藏点开头的文件
+        location ~ /\. {
+            deny all;
+        }
+
+        # 长缓存：带 hash 文件名（webpack/vite 产物）
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?|ttf)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable, max-age=31536000";
+            add_header X-Content-Type-Options "nosniff" always;
+            try_files $uri =404;
+            access_log off;  # 静态不打日志，省 IO
+        }
+
+        # HTML 短缓存
+        location ~* \.html$ {
+            expires 5m;
+            add_header Cache-Control "public, max-age=300";
+        }
+
+        # favicon
+        location = /favicon.ico {
+            log_not_found off;
+            access_log off;
+        }
+
+        # robots.txt
+        location = /robots.txt {
+            allow all;
+            log_not_found off;
+            access_log off;
+        }
+    }
+}
+```
+
+**解析**：
+- **`immutable`**：告诉浏览器永不重新校验（适合 hash 文件名）
+- **`access_log off`**：静态请求不打 access log，省磁盘 IO
+- **`open_file_cache`**：缓存 fd 和元数据，避免每次 stat() 调用
+
+### 7. Gzip + Brotli 双压缩
+
+```nginx
+http {
+    # Gzip
+    gzip on;
+    gzip_min_length 1024;          # 小于 1KB 不压
+    gzip_comp_level 6;              # 1-9，6 是性价比甜点
+    gzip_vary on;
+    gzip_proxied any;               # 任何响应都压
+    gzip_disable "msie6";
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        application/vnd.ms-fontobject
+        application/x-font-ttf
+        font/opentype
+        image/svg+xml
+        image/x-icon;
+
+    # Brotli（需要 nginx-plus 或 google/ngx_brotli 模块）
+    brotli on;
+    brotli_comp_level 6;
+    brotli_min_length 1024;
+    brotli_types text/plain text/css application/json application/javascript image/svg+xml;
+    brotli_static on;  # 预压缩 .br 文件
+
+    server {
+        listen 80;
+        location / {
+            root /var/www/html;
+        }
+    }
+}
+```
+
+**解析**：
+- **Brotli 压缩率比 Gzip 高 15-20%**，但需客户端支持（Chrome/FF/Safari 近 5 年版本都支持）
+- **`gzip_static on` + `brotli_static on`**：使用预压缩文件（`.gz` / `.br`），避免重复压缩
+- **`gzip_min_length`**：小于 1KB 压缩收益小反而增 CPU
+
+### 8. FastCGI 代理（PHP-FPM）
+
+```nginx
+http {
+    upstream php_backend {
+        server 127.0.0.1:9000 weight=1 max_fails=3 fail_timeout=30s;
+        # 或 unix socket
+        # server unix:/var/run/php-fpm.sock weight=1;
+        keepalive 32;
+    }
+
+    # FastCGI 缓存
+    fastcgi_cache_path /var/cache/nginx/fastcgi
+        levels=1:2
+        keys_zone=php_cache:50m
+        max_size=5g
+        inactive=60m
+        use_temp_path=off;
+
+    fastcgi_cache_key "$scheme$request_method$host$request_uri";
+
+    server {
+        listen 80;
+        server_name php.example.com;
+        root /var/www/php;
+        index index.php;
+
+        # 静态文件直接由 Nginx 处理
+        location / {
+            try_files $uri $uri/ /index.php$is_args$args;
+        }
+
+        # PHP 文件转 FastCGI
+        location ~ \.php$ {
+            try_files $uri =404;
+
+            fastcgi_pass php_backend;
+            fastcgi_index index.php;
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+
+            include fastcgi_params;
+
+            # FastCGI 缓存
+            fastcgi_cache php_cache;
+            fastcgi_cache_valid 200 301 302 10m;
+            fastcgi_cache_valid 404 1m;
+            fastcgi_cache_bypass $cookie_nocache $arg_nocache$arg_comment;
+            fastcgi_no_cache $cookie_nocache $arg_nocache$arg_comment;
+            add_header X-FastCGI-Cache $upstream_cache_status;
+
+            # 超时
+            fastcgi_connect_timeout 5s;
+            fastcgi_send_timeout 30s;
+            fastcgi_read_timeout 30s;
+            fastcgi_buffer_size 16k;
+            fastcgi_buffers 8 16k;
+
+            # 安全
+            fastcgi_hide_header "X-Powered-By";
+        }
+
+        # 禁止执行上传目录的 PHP
+        location ~ ^/uploads/.*\.php$ {
+            deny all;
+        }
+    }
+}
+```
+
+**解析**：
+- **`fastcgi_cache`**：WordPress/Laravel 等 PHP 应用可借此实现页面级缓存，QPS 提升 10x
+- **`$upstream_cache_status`**：HIT/MISS/BYPASS/EXPIRED/STALE
+- **PHP 上传目录禁 PHP 执行**：防止上传 WebShell
+
+### 9. uWSGI 代理（Python / Django / Flask）
+
+```nginx
+http {
+    upstream django {
+        server 127.0.0.1:8001 weight=1;
+        server 127.0.0.1:8002 weight=1;
+        keepalive 32;
+    }
+
+    server {
+        listen 80;
+        server_name py.example.com;
+
+        client_max_body_size 20M;  # Django 大文件上传
+
+        location /static/ {
+            alias /var/www/py/static/;
+            expires 30d;
+        }
+
+        location /media/ {
+            alias /var/www/py/media/;
+        }
+
+        location / {
+            # 1. uwsgi_pass
+            include uwsgi_params;
+            uwsgi_pass django;
+            uwsgi_read_timeout 30s;
+            uwsgi_send_timeout 30s;
+
+            # 2. 或 gunicorn 用 http_pass
+            # proxy_pass http://django;
+            # proxy_set_header Host $host;
+            # proxy_set_header X-Real-IP $remote_addr;
+            # proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            # proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+```
+
+**uwsgi_params 关键参数**：
+```
+uwsgi_param QUERY_STRING $query_string;
+uwsgi_param REQUEST_METHOD $request_method;
+uwsgi_param CONTENT_TYPE $content_type;
+uwsgi_param CONTENT_LENGTH $content_length;
+uwsgi_param REQUEST_URI $request_uri;
+uwsgi_param PATH_INFO $document_uri;
+uwsgi_param SERVER_PROTOCOL $server_protocol;
+uwsgi_param REMOTE_ADDR $remote_addr;
+uwsgi_param REMOTE_PORT $remote_port;
+uwsgi_param SERVER_PORT $server_port;
+uwsgi_param SERVER_NAME $server_name;
+```
+
+### 10. Node.js 反向代理
+
+```nginx
+upstream nodejs {
+    server 127.0.0.1:3000;
+    keepalive 64;
+}
+
+server {
+    listen 80;
+    server_name node.example.com;
+
+    location / {
+        proxy_pass http://nodejs;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+
+        # Node 长连接 + SSE
+        proxy_buffering off;          # SSE 需要立即 flush
+        proxy_cache off;              # API 业务数据不缓存
+        chunked_transfer_encoding on;
+
+        # 超时
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+
+    # 静态资源
+    location /static/ {
+        alias /var/www/node/public/;
+        expires 30d;
+    }
+}
+```
+
+**SSE（Server-Sent Events）** 关键配置：
+- `proxy_buffering off`：必须关闭，否则事件被缓冲
+- `proxy_cache off`：SSE 是流式响应
+- `chunked_transfer_encoding on`：分块传输
+
+### 11. WebSocket 完整配置
+
+```nginx
+# WebSocket 是基于 HTTP 升级的长连接协议，需要正确处理 Upgrade/Connection 头
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+upstream ws_backend {
+    server 10.0.1.10:8080;
+    server 10.0.1.11:8080;
+    ip_hash;  # WebSocket 保持会话到同一节点
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name ws.example.com;
+
+    # WebSocket 路由
+    location /socket.io/ {
+        proxy_pass http://ws_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;  # 注意用 map 变量
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # WebSocket 超时要长
+        proxy_read_timeout 3600s;     # 1 小时
+        proxy_send_timeout 3600s;
+        proxy_connect_timeout 5s;
+
+        # 不缓存
+        proxy_buffering off;
+        proxy_cache off;
+
+        # 禁用 keepalive 心跳检测
+        proxy_set_header Keep-Alive "";
+    }
+
+    # 业务 HTTP API
+    location /api/ {
+        proxy_pass http://ws_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+**WebSocket 关键点深度解析**：
+
+第一，关于 `Upgrade` 头处理。客户端发起 WebSocket 连接时，会先发送一个普通的 HTTP 请求，在请求头中携带 `Upgrade: websocket` 和 `Connection: Upgrade` 字段。Nginx 在收到这样的请求后，必须将这两个头原样转发到上游服务器，否则上游无法识别这是一个 WebSocket 握手请求。我们的配置中使用了 `map` 指令将 `$http_upgrade` 变量映射到 `$connection_upgrade`，这样无论客户端是否发送了 `Upgrade` 头，都能正确处理。当 `$http_upgrade` 为空字符串时，Nginx 会将 `Connection` 头设为 `close`，这是普通 HTTP 短连接的行为；当 `$http_upgrade` 不为空时，会将 `Connection` 头设为 `upgrade`，表示这是协议升级请求。
+
+第二，关于超时设置。WebSocket 是长连接协议，连接一旦建立，可以保持数小时甚至数天不中断。普通的 HTTP 代理超时设置（如 60 秒）会导致 WebSocket 连接在 60 秒后被 Nginx 主动断开。因此，必须将 `proxy_read_timeout` 和 `proxy_send_timeout` 设置为较大的值，比如 3600 秒（一小时）甚至更长。如果 WebSocket 应用有自己的心跳机制（如 ping/pong 帧），可以适当缩短超时时间。
+
+第三，关于 `proxy_buffering off`。WebSocket 是双向流式通信，客户端发送的消息必须立即转发到上游服务器，上游服务器的响应也必须立即转发给客户端。如果启用了 `proxy_buffering`，Nginx 会先将响应缓存到内存中，达到一定大小后再一次性发送给客户端，这会严重影响实时性。禁用缓冲后，Nginx 会立即将数据原样转发，实现真正的实时通信。
+
+第四，关于 `ip_hash` 负载均衡策略。WebSocket 连接建立后，客户端与服务器之间会保持长连接，传输期间会有大量数据交互。如果使用普通的轮询或最少连接策略，可能会出现某次新连接被分配到其他节点的情况，导致用户在聊天或游戏中突然掉线。使用 `ip_hash` 后，相同 IP 的所有请求都会路由到同一台后端服务器，保证会话的一致性。
+
+第五，关于 `keepalive 32`。在 upstream 块中配置 `keepalive 32`，表示 Nginx 会在内存中维持最多 32 个到上游服务器的空闲长连接。当新的 WebSocket 连接建立时，Nginx 会从空闲连接池中取出一个连接复用，避免每次都进行 TCP 三次握手。这对于频繁建立短连接的应用（如聊天室的退出再进入）非常有效，可以显著降低延迟。
+
+### 12. gRPC 代理
+
+```nginx
+http {
+    # gRPC 需要 HTTP/2
+    upstream grpc_backend {
+        server 10.0.1.10:50051;
+        server 10.0.1.11:50051;
+        keepalive 32;
+    }
+
+    server {
+        listen 80 http2;  # gRPC 必须 HTTP/2
+        server_name grpc.example.com;
+
+        # gRPC 路由
+        location /helloworld.Greeter/ {
+            grpc_pass grpc://grpc_backend;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+            # gRPC 超时
+            grpc_connect_timeout 5s;
+            grpc_read_timeout 30s;
+            grpc_send_timeout 30s;
+
+            # 不缓存流
+            grpc_buffering off;
+        }
+
+        # 监控端点（gRPC Health）
+        location /grpc.health.v1.Health/ {
+            grpc_pass grpc://grpc_backend;
+            grpc_connect_timeout 1s;
+            access_log off;
+        }
+    }
+}
+```
+
+**gRPC 代理特殊说明**：
+
+gRPC 是基于 HTTP/2 的高性能 RPC 框架，由 Google 开发。Nginx 通过 `grpc_pass` 指令（从 1.13.10 版本开始支持）可以将 gRPC 请求反向代理到上游 gRPC 服务器。gRPC 代理有几个特殊点需要特别注意。
+
+第一，必须使用 HTTP/2。gRPC 协议强依赖 HTTP/2 的多路复用、流控、头部压缩等特性，HTTP/1.1 无法承载 gRPC。在 Nginx 中，需要在 `listen` 指令中加上 `http2` 参数，启用 HTTP/2 支持。
+
+第二，`grpc_set_header` 与 `proxy_set_header` 的区别。gRPC 代理使用 `grpc_set_header` 指令设置头信息，而不是 `proxy_set_header`。两者的语法类似，但作用范围不同：`proxy_set_header` 用于普通 HTTP 代理，`grpc_set_header` 用于 gRPC 代理。
+
+第三，`grpc_buffering off` 必须设置。gRPC 支持四种通信模式：一元调用、服务器流、客户端流、双向流。除了第一种，其他三种都是流式通信，必须禁用缓冲才能保证实时性。
+
+第四，关于 TLS 加密。gRPC 流量通常包含敏感的 RPC 调用参数和返回值，建议在公网上使用 TLS 加密。Nginx 可以通过标准的 SSL 配置来终止 gRPC 的 TLS 连接。
+
+### 13. CORS 跨域配置
+
+```nginx
+# CORS 跨域资源共享完整配置
+map $http_origin $cors_origin {
+    default "";
+    "~^https://(www\.)?example\.com$" "$http_origin";
+    "~^https://app\.example\.com$" "$http_origin";
+    "~^http://localhost(:[0-9]+)?$" "$http_origin";
+}
+
+server {
+    listen 80;
+    server_name api.example.com;
+
+    # 预检请求（OPTIONS）直接返回
+    location / {
+        if ($request_method = 'OPTIONS') {
+            add_header Access-Control-Allow-Origin $cors_origin;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, PATCH, OPTIONS";
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With, X-CSRF-Token";
+            add_header Access-Control-Allow-Credentials "true";
+            add_header Access-Control-Max-Age 86400;
+            add_header Content-Length 0;
+            add_header Content-Type "text/plain";
+            return 204;  # 204 No Content
+        }
+
+        # 正常请求
+        add_header Access-Control-Allow-Origin $cors_origin always;
+        add_header Access-Control-Allow-Credentials "true" always;
+        add_header Access-Control-Expose-Headers "X-Total-Count, X-Request-Id" always;
+
+        proxy_pass http://backend_pool;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+**CORS 配置深度解析**：
+
+CORS（Cross-Origin Resource Sharing，跨域资源共享）是浏览器的一种安全机制，用于限制网页中的 JavaScript 跨域访问其他域的资源。当前端应用部署在一个域名下，后端 API 部署在另一个域名下时，就会触发 CORS 限制。Nginx 作为反向代理，可以统一处理 CORS 相关的头信息，避免后端应用重复处理。
+
+第一，关于 `Access-Control-Allow-Origin` 头。这个头的值指定了允许访问资源的源（origin），即协议+域名+端口。常见的三种配置方式有：使用通配符 `*` 表示允许所有源（但不能携带 Cookie）、使用具体的源（最安全）、使用动态源（根据请求头动态返回）。我们的配置中使用了 `map` 指令动态返回，仅允许预先配置的几个源，这种方式最安全。
+
+第二，关于 `Access-Control-Allow-Credentials`。这个头设置为 `true` 时，表示允许跨域请求携带 Cookie（如 session ID）。但是，启用此选项后，`Access-Control-Allow-Origin` 不能是通配符 `*`，必须是具体的源。同时，浏览器还要求 `Access-Control-Allow-Headers` 中不能包含通配符。
+
+第三，关于预检请求（Preflight）。当跨域请求是"非简单请求"时（如使用 PUT/DELETE 方法、携带自定义头、Content-Type 是 application/json 等），浏览器会先发送一个 OPTIONS 请求到服务器，询问是否允许该跨域请求。这个 OPTIONS 请求就叫做预检请求。服务器必须正确响应预检请求，否则真正的请求不会发送。在 Nginx 中，我们通过 `if ($request_method = 'OPTIONS')` 来拦截预检请求，并返回适当的 CORS 头和 204 状态码。
+
+第四，关于 `Access-Control-Max-Age`。这个头指定了预检请求的缓存时间，单位是秒。在这个时间内，浏览器不需要再次发送预检请求，直接发送真正的请求。设置合理的缓存时间（如 86400 秒 = 24 小时）可以减少预检请求的数量，提升性能。
+
+第五，关于 `Access-Control-Expose-Headers`。默认情况下，浏览器只允许 JavaScript 访问 7 个标准的响应头（Cache-Control、Content-Language、Content-Type、Expires、Last-Modified、Pragma），其他自定义头需要通过 `Access-Control-Expose-Headers` 显式暴露。
+
+### 14. 防盗链（Referer 校验）
+
+```nginx
+map $http_referer $is_valid_referer {
+    default 0;
+    "~^https://(www\.)?example\.com/" 1;
+    "~^https://cdn\.example\.com/" 1;
+    "" 1;  # 直接访问（无 Referer）
+}
+
+server {
+    listen 80;
+    server_name img.example.com;
+    root /var/www/images;
+
+    location ~* \.(jpg|jpeg|png|gif|webp|svg)$ {
+        valid_referers none blocked server_names
+                      *.example.com
+                      example.com;
+
+        if ($is_valid_referer = 0) {
+            return 403;
+        }
+
+        # 也可返回占位图
+        # rewrite ^/ /forbidden.jpg break;
+
+        expires 30d;
+        add_header Cache-Control "public";
+    }
+}
+```
+
+**防盗链配置深度解析**：
+
+防盗链是指防止其他网站直接引用本站的图片、视频等静态资源，避免消耗服务器带宽和流量。Nginx 通过检查 HTTP 请求头中的 `Referer` 字段来实现防盗链，原理是：合法用户的浏览器在请求资源时会自动带上 `Referer` 头，标识请求来自哪个页面；而盗链网站通常会直接构造资源 URL，绕过来源页面。
+
+第一，关于 `valid_referers` 指令。这个指令用于定义合法的 Referer 来源。它支持以下几种参数：`none` 表示无 Referer（如直接访问、书签、搜索引擎爬虫等），`blocked` 表示 Referer 被防火墙或代理删除（用 `Referer:` 或 `Referer: unknown` 表示），`server_names` 表示当前服务器的域名（可以有多个），还支持通配符和正则表达式。
+
+第二，关于 `if` 指令的使用。`if` 在 Nginx 中是一个"邪恶"的指令，因为它的行为与直觉不符，可能导致各种难以调试的问题。但在这个场景下，它是检查 `valid_referers` 结果的唯一方式。如果 `$invalid_referer` 为空字符串，说明 Referer 是合法的；如果不为空，说明是盗链。
+
+第三，关于性能影响。防盗链检查会消耗一定的 CPU 资源（主要是字符串匹配），对于图片服务器这种高并发场景，建议使用 `map` 指令将检查结果缓存到变量中，避免每次请求都执行完整的字符串比较。我们的配置中使用了 `map` 配合正则，将 Referer 检查结果预计算为 `$is_valid_referer` 变量，性能更优。
+
+第四，关于爬虫和 SEO 防护。搜索引擎爬虫（如 Googlebot、Baiduspider）通常会带特定的 User-Agent，但 Referer 可能是空的或搜索引擎的域名。我们的配置中 `none` 参数允许无 Referer 的请求通过，这样爬虫可以正常抓取图片。如果不希望被搜索引擎索引，可以加上爬虫白名单或黑名单。
+
+第五，关于 HTTPS 站点的盗链。如果站点启用了 HTTPS，那么合法的 Referer 也必须是 HTTPS 开头，HTTP 的 Referer 会被浏览器或中间代理修改为不安全的值。配置时需要注意协议匹配。
