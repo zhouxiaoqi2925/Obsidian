@@ -1,0 +1,765 @@
+Chat with Stripe sales
+8
+sales reps available
+We're here to discuss your business needs.
+Chat now
+with sales
+Sessions 2026
+Products
+Solutions
+Developers
+Resources
+Pricing
+Dashboard
+Sign in
+Sign in
+Contact sales
+Back
+Products
+Solutions
+Developers
+Resources
+Pricing
+Dashboard
+Sign in
+Sign in
+Payments
+Payments
+Online payments
+Managed Payments
+Merchant of record solution
+Payment links
+No-code payments
+Checkout
+Prebuilt payment UIs
+Elements
+Flexible UI components
+Payment methods
+Access to 100+
+Terminal
+In-person payments
+Radar
+Fraud prevention
+Authorization Boost
+Acceptance optimizations
+Link
+Accelerated checkout
+Revenue
+Billing
+Recurring revenue
+Usage-based billing
+Metered billing
+Subscriptions
+Subscription management
+Invoicing
+One-time or recurring
+Tax
+Sales tax & VAT automation
+Revenue Recognition
+Accounting automation
+Stripe Sigma
+Custom reports
+Data Pipeline
+Data sync
+Money Management
+Treasury
+Business finances
+Global Payouts
+Payouts to third parties
+Capital
+Business financing
+Crypto
+Wallet, stablecoin issuing, and card infrastructure
+Crypto Onramp
+Embeddable crypto purchases
+Platforms and marketplaces
+Connect
+Payments for platforms
+Capital for platforms
+Customer financing
+Treasury for platforms
+Embedded financial services
+Issuing
+Physical and virtual cards
+More
+Product roadmap
+See what’s ahead
+Atlas
+Startup incorporation
+Climate
+Carbon removal
+Identity
+Online identity verification
+Financial Connections
+Linked financial account data
+Stripe Sessions 2026
+See how Stripe is building the economic infrastructure for AI.
+Watch now
+By stage
+Enterprises
+Startups
+By use case
+Agentic commerce
+Crypto
+Ecommerce
+Embedded finance
+Finance automation
+Global businesses
+In-app payments
+Marketplaces
+Platforms
+SaaS
+By industry
+AI companies
+Creator economy
+Hospitality, travel, and leisure
+Insurance
+Media and entertainment
+Nonprofits
+Retail
+Ecosystem
+Partners
+Stripe App Marketplace
+Documentation
+Stripe docs
+API reference
+Libraries and SDKs
+Stripe Apps
+Guides
+Accept online payments
+Implement a prebuilt checkout
+Build a platform or marketplace
+Manage subscriptions
+Offer usage-based billing
+Issue stablecoin-backed cards
+Resources
+App integrations
+Code samples
+Developers blog
+API status
+Learn
+Blog
+Customer stories
+Guides
+Support
+Get support
+Managed support plans
+Professional services
+Company
+Product roadmap
+Sessions annual conference
+Jobs
+Newsroom
+Stripe Press
+Contact
+Contact sales
+Become a partner
+Start now
+Contact sales
+Payments
+Payments
+Online payments
+Managed Payments
+Merchant of record solution
+Payment links
+No-code payments
+Checkout
+Prebuilt payment UIs
+Elements
+Flexible UI components
+Payment methods
+Access to 100+
+Terminal
+In-person payments
+Radar
+Fraud prevention
+Authorization Boost
+Acceptance optimizations
+Link
+Accelerated checkout
+Revenue
+Billing
+Recurring revenue
+Usage-based billing
+Metered billing
+Subscriptions
+Subscription management
+Invoicing
+One-time or recurring
+Tax
+Sales tax & VAT automation
+Revenue Recognition
+Accounting automation
+Stripe Sigma
+Custom reports
+Data Pipeline
+Data sync
+Money Management
+Treasury
+Business finances
+Global Payouts
+Payouts to third parties
+Capital
+Business financing
+Crypto
+Wallet, stablecoin issuing, and card infrastructure
+Crypto Onramp
+Embeddable crypto purchases
+Platforms and marketplaces
+Connect
+Payments for platforms
+Capital for platforms
+Customer financing
+Treasury for platforms
+Embedded financial services
+Issuing
+Physical and virtual cards
+More
+Product roadmap
+See what’s ahead
+Atlas
+Startup incorporation
+Climate
+Carbon removal
+Identity
+Online identity verification
+Financial Connections
+Linked financial account data
+Stripe Sessions 2026
+See how Stripe is building the economic infrastructure for AI.
+Watch now
+By stage
+Enterprises
+Startups
+By use case
+Agentic commerce
+Crypto
+Ecommerce
+Embedded finance
+Finance automation
+Global businesses
+In-app payments
+Marketplaces
+Platforms
+SaaS
+By industry
+AI companies
+Creator economy
+Hospitality, travel, and leisure
+Insurance
+Media and entertainment
+Nonprofits
+Public sector
+Retail
+Ecosystem
+Partners
+Stripe App Marketplace
+Documentation
+Stripe docs
+API reference
+Libraries and SDKs
+Stripe Apps
+Guides
+Accept online payments
+Implement a prebuilt checkout
+Build a platform or marketplace
+Manage subscriptions
+Offer usage-based billing
+Issue stablecoin-backed cards
+Resources
+App integrations
+Code samples
+Developers blog
+API status
+Learn
+Blog
+Customer stories
+Guides
+Support
+Get support
+Managed support plans
+Professional services
+Company
+Product roadmap
+Sessions annual conference
+Jobs
+Newsroom
+Stripe Press
+Contact
+Contact sales
+Become a partner
+2026
+2025
+2024
+2023
+2022
+2021
+Sessions 2026
+Register for Sessions 2027
+Opening remarks and product keynote
+Stripe CEO Patrick Collison opens the show before President of Product and Business Will Gaybrick takes you through the latest products designed for revenue growth.
+View talk
+Main stage
+Opening remarks and product keynote
+Stripe CEO Patrick Collison opens the show before President of Product and Business Will Gaybrick takes you through the latest products designed for revenue growth.
+View talk
+Indexing the economy
+Stripe cofounder John Collison shares a data-driven look at the state of the global economy—what’s happening today, how it’s shifting, and what it means for different business models and markets.
+Speakers
+John Collison
+, Cofounder and President, Stripe
+View talk
+A conversation with Sam Altman
+Sam Altman cofounded OpenAI in 2015 and became its CEO in 2019. He joins Patrick Collison to talk about what’s next for AI and the internet economy.
+View talk
+A conversation with Daniel Gross and Nat Friedman
+Two of tech's most active AI investors join John and Patrick Collison to discuss how frontier technologies are reshaping the global economy.
+View talk
+Breakout talks
+Filter by
+Advancing developer craft
+Charting the future of payments
+Designing adaptive revenue models
+Growing platform economies
+Optimizing the economics of risk
+Reaching global markets with stablecoins and crypto
+Clear all
+Use this dropdown to filter the posts that appear below
+Charting the future of payments
+Agentic commerce under the hood
+Agentic commerce is an entirely new type of sales channel—one where algorithms evaluate your products, initiate transactions, and return as customers. Learn about the production challenges in making catalogs legible to agents, embedding customer context into agent-mediated flows, and re-architecting fraud and pricing models for autonomous buyers. You’ll see concrete patterns from teams already shipping with Stripe—and the trade-offs they’ve experienced.
+View talk
+Charting the future of payments
+Agentic payments: The next frontier of digital transactions
+Join Soha Hohnecker, global head of sales and marketing at Amazon Agentic Payments, and Kalyani Koppisetti, Principal Partner Solution Architect at AWS, for a look at how agentic commerce is reshaping payments. As agents begin purchasing on behalf of consumers, the infrastructure around them needs to catch up—from new authorization models and agent authentication to merchant APIs and fraud detection. This session covers what needs to change and what merchants and payments leaders should be building toward now.
+View talk
+Designing adaptive revenue models
+All accounted for: What it takes to centralize revenue operations
+Learn what it takes to build finance systems at scale and automate your revenue operations—including tax, compliance, accounting, and data—and why it’s worth it. See the implementation choices that matter and the ongoing benefits in day-to-day operations.
+View talk
+Charting the future of payments
+Auth for the agentic era
+Stripe is building the financial rails for agents, but rails need guardrails. Most agents today are still authenticated with static API keys and shared credentials built for humans. As agents begin to transact autonomously on behalf of users, the identity layer needs to keep pace. In this session, Clerk CEO Colin Sidoti explores what agent-native authentication looks like: how delegated identity and scoped permissions need to evolve, so agents can act securely without inheriting human credential models.
+View talk
+Reaching global markets with stablecoins and crypto
+Best of both rails: Fiat infrastructure meets stablecoin speed
+Cross-border payments and banking often require trade-offs: speed or cost, reach or reliability. Learn how fintech companies are combining Stripe’s fiat infrastructure with the speed and efficiency of stablecoins to reach users in more markets, move money faster across borders, and optimize yield and foreign exchange, often powering these gains with their own custom stablecoin.
+View talk
+Charting the future of payments
+Beyond authentication: How biometric recognition is reshaping commerce
+Biometric identity is moving commerce from authentication to recognition—enabling faster checkout, stronger security, and more personalized experiences. In this session, Verifone explores how identity-based experiences are reshaping checkout, and what it takes to support them at scale—from enrollment to device-level security to consent, governance, and regulatory considerations such as age verification.
+View talk
+Charting the future of payments
+Beyond checkout: Where agentic commerce actually starts
+Most agentic commerce discussions start at checkout. But the structural shift begins earlier, in how agents discover products, evaluate options, and act on behalf of consumers. In this session, Klarna will examine what full-journey agentic commerce requires, from structured discovery data and payment credentials to returns and refunds. Explore emerging architectural and commercial questions as agents move from checkout tool to end-to-end buyer.
+View talk
+Advancing developer craft
+Building security-first Stripe integrations
+This session covers the most common security pitfalls when building Stripe integrations—exposed keys, misconfigured webhooks, authentication gaps—and how to design with a secure-by-default approach using Stripe’s latest primitives.
+View talk
+Charting the future of payments
+Building trust in agent‑driven commerce
+As agents move from discovery to decision‑making and execution, trust becomes the foundation of agent‑driven commerce. In this fireside conversation, Mastercard explores how financial ecosystems can enable secure, scalable agent payments without sacrificing choice, transparency, or control.
+See how trust is established when a consumer delegates purchasing authority to an agent and get a clearer understanding of the trust infrastructure required for agentic commerce.
+View talk
+Optimizing the economics of risk
+Calculated risks: A blueprint for scaling safely
+For SaaS platforms, risk management is often thought of as a brake on growth. It doesn’t have to be. Learn how a new approach to risk can help you onboard users faster, enter markets with confidence, and automate decisions. Explore how to match friction to actual risk, tier access based on risk signals, and build systems that scale without scaling your exposure.
+View talk
+Charting the future of payments
+Checkout, BNPL, and agentic commerce: What’s changing
+Businesses across the Stripe ecosystem are using buy now, pay later (BNPL) payment methods to increase conversion, unify online and in-store checkout, and expand globally with flexible financing. In this session, Affirm shares what’s working and why, drawing on examples from Stripe. You’ll also see how agents are changing the way purchase decisions happen, and why real-time, transaction-based financing is becoming central to the future of checkout.
+View talk
+Advancing developer craft
+Developer keynote
+Many developers now start an integration with an AI editor, not a docs page. When there’s an agent between you and the API, everything changes: how products are discovered, behavior is verified, and trust is enforced. Learn how Stripe is making products legible to agents, building deterministic tools so agent actions are predictable and auditable, and designing auth and safety patterns that keep humans in control.
+View talk
+Reaching global markets with stablecoins and crypto
+Digital wallets as global money accounts
+Whether your users are in Lagos or Los Angeles, digital wallets enable you to offer a full financial experience directly inside your product—balances, yield, payouts, cards. And it’s all powered by open rails and stablecoin infrastructure that don’t require users to know a thing about crypto. Learn how to integrate these capabilities to expand product value, create new revenue streams, and grow your addressable market globally.
+View talk
+Charting the future of payments
+Economists on AI: Labor markets and structural shifts
+AI is already reshaping how companies operate, but the bigger shifts are macroeconomic—changes to labor markets, financial systems, and how entire industries are structured. Stripe’s Ernie Tedeschi hosts a conversation with leading economists on what the transformation looks like and what it means for the businesses building through it.
+View talk
+Advancing developer craft
+Extensibility with Scripts and Workflows
+Scripts and Workflows let you build inside Stripe, not just on top of it. See how to program custom logic—from discount models to event-driven automations—with live demos and debugging strategies. Learn when to reach for each tool, when to code, when to configure, and how to extend Stripe’s capabilities.
+View talk
+Designing adaptive revenue models
+Finding the formula: The new economics of SaaS pricing
+AI compute costs can complicate seat-based pricing. This session covers how SaaS companies are moving to hybrid models—when to charge per seat, based on usage, or both—and the operational trade-offs that come with each. Plus, hear lessons from OpenRouter’s own AI pricing story.
+View talk
+Growing platform economies
+From integration to optimization: How support plans drive results for platforms
+A payment flow that’s costing more than it should. An authorization rate that could be higher. A feature that’s been sitting unused. Businesses on Stripe that work with their technical account managers (TAMs) often find optimizations hiding in plain sight. Hear from a panel of users and a TAM about fixes that made measurable differences—and how they found them.
+View talk
+Growing platform economies
+Getting payments pricing right for your SaaS platform
+How you price payments can shape how your SaaS platform grows. Learn about designing pricing strategies across customer segments, testing new models without breaking what’s working, and iterating as you scale. See industry benchmarking data and a real-world case study from a platform putting these tactics to work.
+View talk
+Charting the future of payments
+Global by default
+Building a global business from the outset requires managing localized checkout experiences, cross-border payments, and tax compliance across multiple jurisdictions. Learn from companies that launched internationally from the start—their expansion strategies, the challenges they faced, and the lessons that shaped their growth.
+View talk
+Optimizing the economics of risk
+How AI changes the fight against fraud
+As AI evolves, so does fraud. Companies face new threats, from free trial abuse to risks associated with agentic commerce. Learn about emerging fraud patterns, how to defend against them, and how AI-driven fraud tools can help you safeguard your business without blocking legitimate customers.
+View talk
+Designing adaptive revenue models
+How Anthropic treats pricing as a product
+AI is reshaping how companies monetize. Usage-based pricing makes spend and value inseparable, and customers expect real-time visibility, predictability, and control. Hear how Anthropic and PwC are approaching this shift—and what it takes to build monetization infrastructure that keeps pace with product innovation.
+View talk
+Designing adaptive revenue models
+How Lovable turned pricing into a growth strategy
+Lovable, one of the fastest-growing AI companies, adjusted their pricing ten times in one year. Elena Verna, Head of Growth, explains why—and how. From adopting usage-based billing to building and testing entirely new pricing models with live customers, Lovable treats pricing as a core part of their growth strategy, not something to set and forget. Learn how they align pricing to customer value, run experiments without eroding trust, and build the flexible billing infrastructure to move at the speed their market demands.
+View talk
+Charting the future of payments
+How Transformco unified home service payments from booking to front door
+Home service businesses juggle booking, dispatch, and field payments across disconnected systems. Transformco is pulling those pieces together—collecting payment at booking, giving technicians mobile payment tools on-site, and turning a fragmented cost center into a revenue driver. Learn how the company is rethinking the payment flow, from scheduling to front door.
+View talk
+Charting the future of payments
+Inside the AI economy: What Stripe’s data reveals
+AI companies are growing faster, selling globally by default, and monetizing earlier. See the data behind the growth: how AI has collapsed the cost of launching, how the fastest-growing companies are adapting their pricing, and the role agents are starting to play in commerce. Guillermo Rauch, CEO of Vercel, shares what he’s seeing as AI companies scale on his platform.
+View talk
+Growing platform economies
+Launch and scale a financing program with Stripe Capital
+Learn how to add financing to your platform and scale it effectively—from choosing the right integration approach to identifying which user segments drive the best results to optimizing your program over time. Get industry benchmarks, learn expected outcomes at each scaling stage, and hear from platform leaders who’ve done it well.
+View talk
+Charting the future of payments
+Lowering the barrier to first charge: How agents are growing the economy
+The distance between an idea and a first charge is shrinking fast, and that has implications for the entire economy. Experienced engineers are shipping in hours what used to take weeks. First-time builders with no coding background are turning ideas into businesses. Hear from both, and see what's possible with Replit—from  natural language prompt, to working storefront, to real transaction, in minutes.
+View talk
+Advancing developer craft
+Machine payments and the protocols behind agentic commerce
+Agents are already economic actors. They consume tokens, call paid APIs, and transact on behalf of customers. A new type of agentic infrastructure is emerging to support them, from protocols such as MCP for tool discovery and UCP for checkout to MPP and x402 for machine payments. This session breaks down how these protocols fit together and goes deep on the mechanics of machine payments.
+View talk
+Growing platform economies
+Managing money at scale: Treasury as a feature, not a department
+Managing money across borders, currencies, and providers is complex. And the landscape keeps shifting—from stablecoins and new rails to multicurrency demands. Stripe’s treasurer discusses how to accept, manage, and move money globally across currencies and stablecoins, and what the infrastructure behind this process actually looks like.
+View talk
+Growing platform economies
+Maximizing payments adoption for platforms
+The success of an embedded payments business depends on adoption, but many of the most effective tactics are underused. Learn how leading platforms are driving attach rates with new features, strategic pricing, and marketing that converts—and how to apply these approaches to your own business.
+View talk
+Growing platform economies
+Meet the new marketplace: AI, embedded finance, and borderless payouts
+More businesses are adopting a marketplace model to reach new customers. But the model itself is changing. Marketplaces aren’t just connecting buyers and sellers anymore; they’re becoming financial ecosystems by embedding wallets, lending, and cards. Hear from Depop, DoorDash, and SeatGeek on how they’re expanding and building loyalty with monetization, and get an inside look at Stripe’s emerging products built to power marketplaces.
+View talk
+Charting the future of payments
+More PSPs, more problems? When adding multiple processors pays off
+Adding a second processor seems like an easy path to savings, but integration costs, reliability risks, and operational overhead often follow. Building products like Stripe Orchestration has meant working closely with businesses running multiprocessor setups. This session shares the trade-offs that companies need to assess, the decisions that matter most, and what separates setups that pay off from ones that don’t.
+View talk
+Growing platform economies
+New channels on the block: Agentic commerce for platforms
+Hear perspectives from leading platforms in the agentic commerce space on how they’re reshaping product discovery, branding, and checkout experiences.
+View talk
+Charting the future of payments
+Open for agents: The programmable storefront
+Your next website visitor might not scroll, click menus, or read your content. They might be an agent parsing your catalog and attempting to check out, or a customer expecting to converse in natural language. This session shows what agent-ready ecommerce looks like in practice—with live demos and real things you can do today to make your stack agent-ready. We also introduce the emergence of "commerce runtimes" that let merchants expose policies, business logic, and intelligent surfaces for both humans and AI.
+View talk
+Charting the future of payments
+Preparing for agent-to-agent commerce
+Today, agents help people shop. Soon, they’ll buy from other agents, negotiating, comparing, and completing purchases autonomously. See use cases emerging across industries and learn how to ready your business for agent-driven commerce.
+View talk
+Designing adaptive revenue models
+Prime time: Building infrastructure for the next era of streaming
+Learn how media companies are staying agile as they face the shift to direct-to-consumer models, increased pressure for profitability, and the fight against churn. Plus, get a behind-the-scenes look at how FOX One built a new streaming platform from scratch with Stripe.
+View talk
+Charting the future of payments
+Product roadmap: Payments and Radar
+Hear about the latest updates to Stripe’s payments and fraud products—new capabilities to help you sell everywhere, maximize revenue, and reduce fraud and risk.
+View talk
+Designing adaptive revenue models
+Product roadmap: Revenue
+Get a first look at what’s next for our billing, invoicing, tax, revenue recognition and reporting products. Discover how we’re building the Stripe Revenue suite for the AI economy—supporting flexible usage-based pricing and any go-to-market motion, from self-serve to sales-led. We’ll also cover how a unified revenue platform can help you monetize new products, simplify global expansion, and reduce compliance overhead.
+View talk
+Growing platform economies
+Product roadmap: SaaS platforms
+New ways to manage risk. New ways to monetize. New ways to move faster. Learn about our latest platform product launches, and see what’s coming next.
+View talk
+Advancing developer craft
+Programmable Stripe: Custom objects, custom apps, zero infrastructure
+Your business has its own language—vehicles, not products; rentals, not payments. Until now, bridging that gap meant metadata workarounds and external databases. Not anymore. In this session, we build a full-stack application for a car rental company entirely on Stripe. See how custom objects let you define typed, validated data models with first-class APIs, how full-page Stripe Apps turn the Dashboard into an ops console tailored to your team, and how actions let you deploy business logic that runs on Stripe’s infrastructure.
+View talk
+Charting the future of payments
+Retail rewired: Unified commerce for the age of AI and instant gratification
+Consumers now move across six or more touchpoints before purchase, expecting experiences to feel connected and contextual. But fragmented systems—disconnected inventory, payment, and customer data—make that hard to deliver. See how unified commerce closes the gap—and how real-time inventory visibility, flexible fulfillment, and AI-powered personalization drive revenue, reduce costs, and prepare operations for what’s ahead.
+View talk
+Reaching global markets with stablecoins and crypto
+Rethinking customer loyalty with stablecoins
+Learn how stablecoins open up loyalty programs and boost retention by turning rewards into programmable money that customers can move freely across brands.
+View talk
+Designing adaptive revenue models
+Room to grow: Building a tax function that scales with you
+The tax function looks different at every stage of growth for an enterprise. A startup automating sales tax faces different challenges than a company scaling across new markets or an enterprise managing obligations in dozens of jurisdictions. PwC breaks down how companies at each stage approach tax in today's regulatory and business environment, what automation can handle, when to invest in people and processes, and how to build a tax function that grows with your business without getting ahead of it.
+View talk
+Advancing developer craft
+Splitting the check: Architecting multiparty payment flows
+Marketplaces, platforms, and multiparty products share common architectural challenges. This session covers how to build payment flows that split funds among recipients, route transfers based on custom logic, and scale across geographies.
+View talk
+Reaching global markets with stablecoins and crypto
+Stablecoins and the new regulatory reality
+Stablecoin regulation is moving fast. Around the world, new rules are emerging for how stablecoins can be issued, held, and used. Learn how increasing regulatory clarity is driving adoption, which new use cases are emerging, and how evolving regulatory frameworks might alter the current trajectory.
+View talk
+Charting the future of payments
+The agentic front office: From funnel to growth engine
+Marketing generates and converts demand. Sales closes it. Service helps customers. Those boundaries made sense when humans ran every step—but the division of labor is shifting. As front-office work becomes agent-driven, the handoffs leak revenue and the customer relationship gets harder to manage holistically. Join Ian Kahn, principal at PwC, and Tyler Bryson, CRO of the Americas at Stripe, to see what a unified, agent-powered front office looks like in practice. Agents handle repetitive work. Humans focus on judgment and relationships. Every interaction feeds a shared system that gets smarter over time. Get a framework for what needs to change in your go-to-market operations, and where to start.
+View talk
+Charting the future of payments
+The agentic shift: New research from BCG
+Hear what Boston Consulting Group has found about the shift to agentic commerce—who’s shopping, why, and what it means for businesses trying to sell to them. Explore research about how consumers are behaving, what it means for payments, and the strategic choices businesses face as agentic commerce moves from experiment to expectation.
+View talk
+Charting the future of payments
+The payments balancing act
+Authorization rates, transaction costs, fraud prevention—optimizing too much for one can impact the others, and these relationships shift as your business grows and markets change. Hear how to benchmark your payments performance against industry standards, understand optimization trade-offs, and see how Stripe can help you balance all three.
+View talk
+Reaching global markets with stablecoins and crypto
+The stablecoin advantage: Faster growth, fewer borders
+Global businesses are using stablecoins to accept payments globally, pay out sellers in seconds, and provide borderless financial services. Hear from companies leading the way in using stablecoins to drive growth, reduce costs, and acquire new customers.
+View talk
+Charting the future of payments
+The truth about 3DS and conversion
+3DS is required in some markets and optional in others—and its impact on conversion isn’t always straightforward. Using global Stripe data, this session unpacks regional differences in 3DS performance and consumer behavior. Get strategies to optimize authentication, reduce friction, and make the right trade-offs based on where your customers are located.
+View talk
+Advancing developer craft
+Tracking customer spend across processors
+Learn how to build systems that track spending patterns across providers and payment methods. See how Payment Account Reference (PAR) works, how to implement it, and how to keep the customer journey intact even as accounts change.
+View talk
+Charting the future of payments
+Turning disputes into recovered revenue
+See how you can improve dispute management, from prevention to resolution, with AI. Walk through how to automate disputes and boost retention, and you learn how to tailor disputes strategy by industry, business model, and segment. Plus, explore how passthroughs and markup streams can turn disputes into a source of revenue for platforms.
+View talk
+Charting the future of payments
+Under one roof: Unifying the guest experience
+Guests don’t think in channels. They book online, check in at a kiosk, order room service from their phone, and expect it all to feel like one experience. Hear how hospitality and travel businesses are unifying their financial infrastructure to meet customer expectations, boost revenue, and adapt for the rise of AI-assisted guest journeys.
+View talk
+Growing platform economies
+Unified commerce for vertical SaaS platforms
+Simplified hardware logistics. Consistent customer experiences. Global reach. This session explores how one platform achieved all three by deploying Stripe’s unified commerce stack across online and in-person channels.
+View talk
+Charting the future of payments
+What Stripe data tells us about the AI consumer
+There’s a shift happening in consumer behavior that most businesses haven’t named yet. It’s showing up in Link data, in Stripe Atlas registrations, and in how people spend. Dan Hill, head of Link consumer product at Stripe, shares what the data is telling us, demonstrates the new capabilities Stripe is building because of it, and pressure-tests the implications live with Anthropic’s Kate Jensen.
+View talk
+Reaching global markets with stablecoins and crypto
+When AI starts spending: Payments for the agentic era
+Today’s payment rails were built for humans, for banks, and for batch settlement, not software transacting around the clock. But agents are negotiating prices, moving funds across borders, and paying other agents all without human input. Coinbase explores why stablecoins are emerging as the programmable financial layer for agentic commerce and how to build payments infrastructure for a world that never logs off.
+View talk
+Join us at Sessions 2027
+See what's next. Sessions 2027 will go deeper on the ideas and technologies reshaping commerce—with more programming and more ways to connect. Register with code S27ONDEMAND to get an additional $200 off early-bird admission.
+Register now
+Looking for more information? Contact us.
+Access a complete payments platform with simple, pay-as-you-go pricing, or contact us to design a custom package for your business.
+Get in touch
+Ready to get started?
+Create an account and start accepting payments—no contracts or banking details required.
+Get started now
+Companies of all sizes use Stripe
+Stripe is trusted by ambitious startups and enterprises of every size.
+Learn more
+United States (English)
+Australia
+English
+Austria
+Deutsch
+English
+Belgium
+Nederlands
+Français
+Deutsch
+English
+Brazil
+Português
+English
+Bulgaria
+English
+Canada
+English
+Français
+Croatia
+English
+Italiano
+Cyprus
+English
+Czech Republic
+English
+Denmark
+English
+Estonia
+English
+Finland
+English
+Svenska
+France
+Français
+English
+Germany
+Deutsch
+English
+Gibraltar
+English
+Greece
+English
+Hong Kong
+English
+简体中文
+Hungary
+English
+India
+English
+Ireland
+English
+Italy
+Italiano
+English
+Japan
+日本語
+English
+Latvia
+English
+Liechtenstein
+Deutsch
+English
+Lithuania
+English
+Luxembourg
+Français
+Deutsch
+English
+Malaysia
+English
+简体中文
+Malta
+English
+Mexico
+Español
+English
+Netherlands
+Nederlands
+English
+New Zealand
+English
+Norway
+English
+Poland
+English
+Portugal
+Português
+English
+Romania
+English
+Singapore
+English
+简体中文
+Slovakia
+English
+Slovenia
+English
+Italiano
+Spain
+Español
+English
+Sweden
+Svenska
+English
+Switzerland
+Deutsch
+Français
+Italiano
+English
+Thailand
+ไทย
+English
+United Arab Emirates
+English
+United Kingdom
+English
+United States
+English
+Español
+简体中文
+Products & pricing
+Pricing
+Atlas
+Authorization Boost
+Billing
+Capital
+Checkout
+Climate
+Connect
+Crypto
+Data Pipeline
+Elements
+Financial Connections
+Identity
+Invoicing
+Issuing
+Link
+Managed Payments
+Payment links
+Payments
+Payouts
+Radar
+Revenue Recognition
+Stripe Sigma
+Tax
+Terminal
+Treasury
+Solutions
+Enterprises
+Startups
+Agentic commerce
+Crypto
+Ecommerce
+Embedded finance
+Finance automation
+Global businesses
+In-app payments
+Marketplaces
+Platforms
+SaaS
+AI companies
+Creator economy
+Hospitality, travel, and leisure
+Insurance
+Media and entertainment
+Nonprofits
+Public sector
+Retail
+Integrations & custom solutions
+Stripe App Marketplace
+Stripe Partner ecosystem
+Professional services
+Developers
+Documentation
+API reference
+API status
+API changelog
+Libraries and SDKs
+Developer blog
+Resources
+Guides
+Customer stories
+Blog
+Sessions annual conference
+Privacy & terms
+Prohibited & restricted businesses
+Licenses
+Sitemap
+Cookie settings
+Your privacy choices
+More resources
+Company
+Product roadmap
+Jobs
+Newsroom
+Stripe Press
+Contact sales
+Support
+Get support
+Managed support plans
+CA residents:
++1 888 926 2289
+Sign in
+© 2026 Stripe, LLC
