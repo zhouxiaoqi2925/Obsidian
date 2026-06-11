@@ -1,0 +1,750 @@
+## 22. 完整单元测试设计：守住计费正确性的最后一道防线
+
+> 计费系统最大的风险不是"宕机"，而是"算错钱"。**一次少扣 1% 不会被发现，一次多扣 1% 立刻被告**。所以单元测试不是"加分项"，是"生死线"。本章给出 5,000+ 字的完整测试设计。
+
+### 22.1 测试金字塔：计费系统的正确配比
+
+计费系统的测试分层应该遵循 "70-20-10" 黄金比例：
+
+```
+        /\
+       /  \         E2E（端到端）
+      / 10%\        - 真实请求→数据库→上游
+     /------\       - 跑通完整业务流
+    /        \
+   /   20%    \     集成测试
+  /  接口测试  \    - 模块间协作
+ /--------------\   - 数据库/缓存/MQ
+/                \
+/       70%       \ 单元测试
+/  函数级测试       \- 纯函数、边界值
+--------------------  - 覆盖率 > 80%
+```
+
+**为什么不是 100% 单元测试？**
+- 计费涉及真实的金额、真实的钱包、真实的扣费链路
+- 单元测试只能证明"单个函数正确"，不能证明"整条链路不丢钱"
+- 必须有少量"高价值"的集成测试和 E2E 测试兜底
+
+### 22.2 Go 单元测试：从 0 到 1
+
+#### 22.2.1 基础测试：扣费函数
+
+```go
+// billing_test.go
+package billing
+
+import (
+    "context"
+    "testing"
+    "time"
+)
+
+// TestDeductQuota_Success 测试正常扣费
+func TestDeductQuota_Success(t *testing.T) {
+    db := setupTestDB(t)
+    defer db.Close()
+    
+    user := createTestUser(t, db, 1000)  // 初始 1000 quota
+    
+    err := DeductQuota(context.Background(), db, user.ID, 100, "test")
+    if err != nil {
+        t.Fatalf("扣费失败: %v", err)
+    }
+    
+    quota := getUserQuota(t, db, user.ID)
+    if quota != 900 {
+        t.Errorf("扣费后余额错误: 期望 900, 实际 %d", quota)
+    }
+}
+
+// TestDeductQuota_Insufficient 测试余额不足
+func TestDeductQuota_Insufficient(t *testing.T) {
+    db := setupTestDB(t)
+    defer db.Close()
+    
+    user := createTestUser(t, db, 50)  // 初始 50
+    
+    err := DeductQuota(context.Background(), db, user.ID, 100, "test")
+    if err != ErrInsufficientQuota {
+        t.Errorf("应返回余额不足错误, 实际: %v", err)
+    }
+    
+    quota := getUserQuota(t, db, user.ID)
+    if quota != 50 {
+        t.Errorf("失败扣费不应改变余额: 实际 %d", quota)
+    }
+}
+```
+
+#### 22.2.2 表驱动测试：批量覆盖边界
+
+```go
+func TestDeductQuota_TableDriven(t *testing.T) {
+    tests := []struct {
+        name     string
+        initial  int64
+        deduct   int64
+        wantErr  error
+        wantLeft int64
+    }{
+        {"正常扣费", 1000, 100, nil, 900},
+        {"刚好扣完", 1000, 1000, nil, 0},
+        {"扣费溢出", 1000, 1001, ErrInsufficientQuota, 1000},
+        {"扣 0", 1000, 0, ErrInvalidAmount, 1000},
+        {"扣负数", 1000, -100, ErrInvalidAmount, 1000},
+        {"边界 MAX_INT", 1000, math.MaxInt64, ErrInsufficientQuota, 1000},
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            db := setupTestDB(t)
+            defer db.Close()
+            user := createTestUser(t, db, tt.initial)
+            
+            err := DeductQuota(context.Background(), db, user.ID, tt.deduct, "test")
+            
+            if !errors.Is(err, tt.wantErr) {
+                t.Errorf("错误不匹配: 期望 %v, 实际 %v", tt.wantErr, err)
+            }
+            
+            quota := getUserQuota(t, db, user.ID)
+            if quota != tt.wantLeft {
+                t.Errorf("余额错误: 期望 %d, 实际 %d", tt.wantLeft, quota)
+            }
+        })
+    }
+}
+```
+
+#### 22.2.3 并发测试：1000 个 goroutine 抢余额
+
+```go
+func TestDeductQuota_Concurrent(t *testing.T) {
+    db := setupTestDB(t)
+    defer db.Close()
+    user := createTestUser(t, db, 100)  // 初始 100
+    
+    var wg sync.WaitGroup
+    errCount := int32(0)
+    successCount := int32(0)
+    
+    // 启动 1000 个 goroutine，每个扣 1
+    for i := 0; i < 1000; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            err := DeductQuota(context.Background(), db, user.ID, 1, "concurrent")
+            if err == nil {
+                atomic.AddInt32(&successCount, 1)
+            } else {
+                atomic.AddInt32(&errCount, 1)
+            }
+        }()
+    }
+    wg.Wait()
+    
+    // 必须有且仅有 100 个成功（不能多扣）
+    if successCount != 100 {
+        t.Errorf("并发扣费计数错误: 期望 100 个成功, 实际 %d", successCount)
+    }
+    if errCount != 900 {
+        t.Errorf("并发失败计数错误: 期望 900 个失败, 实际 %d", errCount)
+    }
+    
+    quota := getUserQuota(t, db, user.ID)
+    if quota != 0 {
+        t.Errorf("并发后余额错误: 期望 0, 实际 %d", quota)
+    }
+}
+```
+
+#### 22.2.4 退款测试：幂等性验证
+
+```go
+func TestRefund_Idempotent(t *testing.T) {
+    db := setupTestDB(t)
+    defer db.Close()
+    user := createTestUser(t, db, 1000)
+    
+    paymentID := createTestPayment(t, db, user.ID, 500)
+    
+    // 第一次退款
+    err1 := Refund(context.Background(), db, paymentID, "user request")
+    if err1 != nil { t.Fatal(err1) }
+    
+    quota1 := getUserQuota(t, db, user.ID)
+    if quota1 != 1500 {
+        t.Errorf("退款后余额错误: 期望 1500, 实际 %d", quota1)
+    }
+    
+    // 第二次退款（幂等）
+    err2 := Refund(context.Background(), db, paymentID, "duplicate")
+    if err2 != ErrAlreadyRefunded {
+        t.Errorf("重复退款应返回已退款错误, 实际: %v", err2)
+    }
+    
+    // 余额不能变成 2000！
+    quota2 := getUserQuota(t, db, user.ID)
+    if quota2 != 1500 {
+        t.Errorf("重复退款导致余额翻倍: 实际 %d", quota2)
+    }
+}
+```
+
+### 22.3 Python 单元测试：业务逻辑层
+
+#### 22.3.1 pytest 基础测试
+
+```python
+# test_billing.py
+import pytest
+from decimal import Decimal
+from billing.calculator import (
+    calculate_cost,
+    apply_discount,
+    calculate_refund,
+    BillingError,
+)
+
+class TestCalculateCost:
+    def test_basic_calculation(self):
+        """基础计费：1000 input + 500 output @ $3/$15 per 1M"""
+        cost = calculate_cost(
+            model="gpt-4o",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        # 1000/1M * 3 + 500/1M * 15 = 0.003 + 0.0075 = 0.0105
+        assert cost == Decimal("0.0105")
+    
+    def test_zero_tokens(self):
+        """0 token 应该返回 0，不应该报错"""
+        assert calculate_cost("gpt-4o", 0, 0) == Decimal("0")
+    
+    def test_negative_tokens(self):
+        """负数 token 应该报错"""
+        with pytest.raises(BillingError, match="token.*不能为负"):
+            calculate_cost("gpt-4o", -100, 0)
+    
+    def test_huge_tokens(self):
+        """超大 token 不会溢出"""
+        cost = calculate_cost("gpt-4o", 10**12, 10**12)
+        # (10^12 / 10^6) * (3 + 15) = 18000
+        assert cost == Decimal("18000")
+    
+    def test_unknown_model(self):
+        """未知模型应该报错，不能静默按默认价"""
+        with pytest.raises(BillingError, match="未知模型"):
+            calculate_cost("gpt-99", 1000, 500)
+
+class TestApplyDiscount:
+    def test_vip_user_gets_discount(self):
+        cost = apply_discount(
+            original_cost=Decimal("100"),
+            user_tier="VIP",
+            promotion=None,
+        )
+        # VIP 默认 9 折
+        assert cost == Decimal("90")
+    
+    def test_promotion_stacks_with_tier(self):
+        """VIP 9 折 + 活动 8 折 = 7.2 折"""
+        cost = apply_discount(
+            original_cost=Decimal("100"),
+            user_tier="VIP",
+            promotion={"rate": Decimal("0.8")},
+        )
+        assert cost == Decimal("72.00")
+    
+    def test_expired_promotion_ignored(self):
+        cost = apply_discount(
+            original_cost=Decimal("100"),
+            user_tier="VIP",
+            promotion={
+                "rate": Decimal("0.5"),
+                "valid_to": "2020-01-01",  # 已过期
+            },
+        )
+        assert cost == Decimal("90")  # 只剩 VIP 折扣
+
+class TestRefund:
+    def test_full_refund(self):
+        result = calculate_refund(
+            original_amount=Decimal("100"),
+            usage_amount=Decimal("0"),
+            used_bonus=Decimal("0"),
+        )
+        assert result == Decimal("100")
+    
+    def test_partial_refund(self):
+        """用了一半，退一半（按比例）"""
+        result = calculate_refund(
+            original_amount=Decimal("100"),
+            usage_amount=Decimal("50"),
+            used_bonus=Decimal("0"),
+        )
+        assert result == Decimal("50")
+    
+    def test_bonus_not_refundable(self):
+        """赠送部分不退（用户用 $100 实付 + $10 赠送 = $110）"""
+        result = calculate_refund(
+            original_amount=Decimal("100"),  # 实付
+            usage_amount=Decimal("55"),       # 已用 55（含 5 赠送）
+            used_bonus=Decimal("10"),
+            bonus_granted=Decimal("10"),
+        )
+        # 退实付部分：100 - 50（已用的实付部分）= 50
+        assert result == Decimal("50")
+```
+
+#### 22.3.2 Mock 上游：避免真实扣费
+
+```python
+# test_with_mocks.py
+from unittest.mock import AsyncMock, patch
+import pytest
+
+@pytest.mark.asyncio
+async def test_upstream_failure_refunds_user():
+    """上游调用失败 → 自动退款给用户"""
+    user_id = "user_123"
+    initial_quota = 1000
+    
+    # Mock 上游 API：模拟超时
+    with patch("upstream.openai.ChatCompletion.acreate") as mock:
+        mock.side_effect = TimeoutError("upstream timeout")
+        
+        with pytest.raises(UpstreamError):
+            await relay_request(
+                user_id=user_id,
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+    
+    # 用户余额应原封不动（预扣的 quota 被回滚）
+    final_quota = await get_user_quota(user_id)
+    assert final_quota == initial_quota
+
+@pytest.mark.asyncio
+async def test_upstream_success_deducts_quota():
+    """上游成功 → 正常扣费"""
+    with patch("upstream.openai.ChatCompletion.acreate") as mock:
+        mock.return_value = {
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50}
+        }
+        
+        await relay_request(
+            user_id="user_123",
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    
+    # 100 input + 50 output @ 3/15 per 1M = 0.00105 USD
+    # 0.00105 * 100（汇率）= 0.105 quota（按 1 USD = 100 quota 算）
+    quota_used = get_used_quota("user_123")
+    assert quota_used == pytest.approx(0.105, rel=1e-3)
+```
+
+#### 22.3.3 模糊测试：随机输入找出崩溃
+
+```python
+# test_fuzz.py
+from hypothesis import given, settings, strategies as st
+import pytest
+
+@given(
+    input_tokens=st.integers(min_value=0, max_value=10**8),
+    output_tokens=st.integers(min_value=0, max_value=10**8),
+    model=st.sampled_from(["gpt-4o", "claude-3.5-sonnet", "gpt-4o-mini"]),
+)
+@settings(max_examples=500, deadline=1000)
+def test_calculate_cost_no_crash(input_tokens, output_tokens, model):
+    """随机生成参数，函数不应该崩溃或返回负数"""
+    cost = calculate_cost(model, input_tokens, output_tokens)
+    assert cost >= 0
+    assert cost.is_finite()
+    assert cost < 10**10  # 单次成本不应该超过 1 亿美元
+
+@given(
+    amount=st.decimals(min_value=0, max_value=10**6, places=4),
+    used=st.decimals(min_value=0, max_value=10**6, places=4),
+)
+def test_refund_no_crash(amount, used):
+    """退款计算不应该崩溃，且不退超过原金额"""
+    refund = calculate_refund(amount, used, Decimal("0"))
+    assert refund >= 0
+    assert refund <= amount
+```
+
+### 22.4 数据库集成测试：真实环境验证
+
+```go
+// integration_test.go
+//go:build integration
+
+package billing
+
+import (
+    "context"
+    "database/sql"
+    "os"
+    "testing"
+    "time"
+)
+
+func setupTestDB(t *testing.T) *sql.DB {
+    dsn := os.Getenv("TEST_DATABASE_URL")
+    if dsn == "" {
+        t.Skip("TEST_DATABASE_URL not set, skipping integration test")
+    }
+    
+    db, err := sql.Open("postgres", dsn)
+    if err != nil { t.Fatal(err) }
+    
+    // 每个测试用独立的 schema，避免数据污染
+    schemaName := fmt.Sprintf("test_%d", time.Now().UnixNano())
+    if _, err := db.Exec(fmt.Sprintf("CREATE SCHEMA %s", schemaName)); err != nil {
+        t.Fatal(err)
+    }
+    t.Cleanup(func() {
+        db.Exec(fmt.Sprintf("DROP SCHEMA %s CASCADE", schemaName))
+        db.Close()
+    })
+    
+    // 跑迁移
+    runMigrations(t, db, schemaName)
+    return db
+}
+
+func TestTransactionRollback(t *testing.T) {
+    if testing.Short() {
+        t.Skip("skipping in short mode")
+    }
+    db := setupTestDB(t)
+    
+    user := createTestUser(t, db, 1000)
+    
+    tx, err := db.BeginTx(context.Background(), nil)
+    if err != nil { t.Fatal(err) }
+    
+    // 事务内扣费
+    _, err = tx.Exec("UPDATE users SET quota = quota - 100 WHERE id = $1", user.ID)
+    if err != nil { t.Fatal(err) }
+    
+    // 模拟业务失败，rollback
+    tx.Rollback()
+    
+    // 余额应该恢复
+    quota := getUserQuota(t, db, user.ID)
+    if quota != 1000 {
+        t.Errorf("rollback 失败: 实际 %d", quota)
+    }
+}
+
+func TestDeadlockRetry(t *testing.T) {
+    if testing.Short() { t.Skip() }
+    db := setupTestDB(t)
+    
+    // 触发死锁，验证自动重试机制
+    user1 := createTestUser(t, db, 1000)
+    user2 := createTestUser(t, db, 1000)
+    
+    var wg sync.WaitGroup
+    var errors []error
+    var mu sync.Mutex
+    
+    for i := 0; i < 10; i++ {
+        wg.Add(1)
+        go func(from, to int64) {
+            defer wg.Done()
+            err := TransferQuotaWithRetry(context.Background(), db, from, to, 10)
+            if err != nil {
+                mu.Lock()
+                errors = append(errors, err)
+                mu.Unlock()
+            }
+        }(user1.ID, user2.ID)
+        
+        wg.Add(1)
+        go func(from, to int64) {
+            defer wg.Done()
+            err := TransferQuotaWithRetry(context.Background(), db, from, to, 10)
+            if err != nil {
+                mu.Lock()
+                errors = append(errors, err)
+                mu.Unlock()
+            }
+        }(user2.ID, user1.ID)
+    }
+    wg.Wait()
+    
+    // 所有重试应该都成功（最多 3 次）
+    if len(errors) > 0 {
+        t.Errorf("死锁重试失败: %v", errors)
+    }
+}
+```
+
+### 22.5 性能基准测试：找出性能瓶颈
+
+```go
+// benchmark_test.go
+package billing
+
+import (
+    "context"
+    "testing"
+)
+
+func BenchmarkDeductQuota(b *testing.B) {
+    db := setupTestDB(&testing.T{})
+    defer db.Close()
+    user := createTestUser(&testing.T{}, db, 10**12)
+    
+    ctx := context.Background()
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        for pb.Next() {
+            err := DeductQuota(ctx, db, user.ID, 1, "bench")
+            if err != nil { b.Fatal(err) }
+        }
+    })
+    
+    b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "ops/sec")
+}
+
+// 期望：PostgreSQL 上单条扣费 >= 5000 ops/sec
+// 如果不达标，需要排查：
+// 1. 是否缺少索引？
+// 2. 是否每次都开事务？
+// 3. 是否用了 SELECT FOR UPDATE？
+
+func BenchmarkBatchSettle(b *testing.B) {
+    db := setupTestDB(&testing.T{})
+    defer db.Close()
+    
+    // 准备 10000 条待结算记录
+    prepareSettleRecords(b, db, 10000)
+    
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        err := BatchSettle(context.Background(), db, 1000)
+        if err != nil { b.Fatal(err) }
+    }
+}
+
+// 批量结算期望：1000 条 < 200ms
+```
+
+```python
+# bench_billing.py
+import pytest
+import time
+from billing.calculator import calculate_cost
+
+def test_calculate_cost_performance(benchmark):
+    """计费计算应该 < 10μs/次"""
+    result = benchmark(
+        calculate_cost,
+        "gpt-4o",
+        1000,
+        500,
+    )
+    assert result is not None
+
+def test_batch_calculate_performance(benchmark):
+    """批量计费 10000 次应该 < 1 秒"""
+    def batch():
+        total = 0
+        for i in range(10000):
+            cost = calculate_cost("gpt-4o", 100, 50)
+            total += int(cost * 10**8)
+        return total
+    
+    result = benchmark(batch)
+    assert result > 0
+```
+
+### 22.6 端到端测试：完整链路
+
+```python
+# e2e/test_complete_flow.py
+import pytest
+from decimal import Decimal
+
+@pytest.mark.e2e
+async def test_user_full_lifecycle(test_db, test_redis, http_client):
+    """完整用户生命周期：注册→充值→调用→退款"""
+    # 1. 注册
+    resp = await http_client.post("/api/register", json={
+        "username": "testuser",
+        "email": "test@example.com",
+        "password": "password123",
+    })
+    assert resp.status_code == 201
+    user_id = resp.json()["user_id"]
+    
+    # 2. 充值 $10
+    resp = await http_client.post("/api/recharge", json={
+        "user_id": user_id,
+        "amount": Decimal("10"),
+        "method": "stripe",
+    })
+    assert resp.status_code == 200
+    
+    quota = await get_user_quota(user_id)
+    assert quota == 1000  # $10 = 1000 quota（1:100 汇率）
+    
+    # 3. 发起 API 调用
+    resp = await http_client.post("/v1/chat/completions", 
+        headers={"Authorization": f"Bearer {get_api_key(user_id)}"},
+        json={
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+    )
+    assert resp.status_code == 200
+    
+    # 4. 验证扣费
+    quota_after = await get_user_quota(user_id)
+    assert quota_after < quota  # 扣了费
+    
+    # 5. 退款剩余
+    resp = await http_client.post("/api/refund", json={
+        "user_id": user_id,
+        "amount": quota_after,
+        "reason": "user request",
+    })
+    assert resp.status_code == 200
+    
+    final_quota = await get_user_quota(user_id)
+    assert final_quota == 0  # 全退
+
+@pytest.mark.e2e
+async def test_concurrent_requests_no_double_spend(test_db, test_redis, http_client):
+    """100 个并发请求，余额不能扣成负数"""
+    user_id = await create_user_with_quota(100)
+    api_key = await get_api_key(user_id)
+    
+    async def make_request():
+        return await http_client.post("/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    
+    # 100 个并发请求
+    responses = await asyncio.gather(*[make_request() for _ in range(100)])
+    
+    success_count = sum(1 for r in responses if r.status_code == 200)
+    quota = await get_user_quota(user_id)
+    
+    # 关键断言：余额不能是负数
+    assert quota >= 0, f"余额被扣成负数: {quota}"
+    # 成功的请求数 * 单价 <= 初始余额
+    assert success_count <= 100
+```
+
+### 22.7 测试覆盖率的正确打开方式
+
+**覆盖率数字本身不重要，重要的是"什么没被覆盖到"**。
+
+```bash
+# Go 覆盖率
+go test -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out | grep -v 100.0
+
+# Python 覆盖率
+pytest --cov=billing --cov-report=term-missing
+```
+
+**计费系统的覆盖率硬性要求**：
+
+| 模块 | 最低覆盖率 | 原因 |
+|---|---|---|
+| 扣费/退款核心 | 95% | 算错钱 = 直接亏损 |
+| 套餐/折扣计算 | 90% | 涉及金额 |
+| 充值/支付回调 | 85% | 涉及第三方 |
+| 对账/对账逻辑 | 80% | 漏单 = 客户投诉 |
+| 管理后台/查询 | 60% | 读操作风险低 |
+| 工具函数 | 50% | 看情况 |
+
+**"100% 覆盖率"是反模式**：
+- 有些代码是配置加载、日志输出，根本无法触发错误路径
+- 为了凑覆盖率写无意义的测试，是浪费时间
+- 应该追求"核心逻辑全覆盖"，而不是"行数全覆盖"
+
+### 22.8 CI/CD 中的测试流水线
+
+```yaml
+# .github/workflows/test.yml
+name: Tests
+on: [push, pull_request]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Unit Tests (Go)
+        run: |
+          go test -short -race -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -1
+      
+      - name: Unit Tests (Python)
+        run: |
+          pytest tests/unit -x --tb=short --timeout=30
+      
+      - name: Coverage Gate
+        run: |
+          coverage=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | sed 's/%//')
+          if (( $(echo "$coverage < 80" | bc -l) )); then
+            echo "Coverage $coverage% below 80%, failing build"
+            exit 1
+          fi
+  
+  integration-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ['5432:5432']
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+    steps:
+      - uses: actions/checkout@v3
+      - name: Integration Tests
+        run: |
+          TEST_DATABASE_URL=postgres://... go test -tags=integration ./...
+  
+  e2e-tests:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'  # 只在 main 分支跑
+    steps:
+      - name: E2E Tests
+        run: pytest tests/e2e -x --tb=short
+```
+
+### 22.9 测试数据的 5 条军规
+
+1. **每个测试用例独立**：用 `t.Cleanup` 清理数据，不依赖其他测试的状态
+2. **不用真实用户 ID**：`test_user_001` 而不是 `real_user_12345`
+3. **不用生产数据脱敏**：自己造数据，不引用线上
+4. **测试金额用最小单位**：`1000 quota` 而不是 `1e-5 USD`（避免浮点误差）
+5. **不要在测试里调真实上游**：永远 mock OpenAI/Anthropic 的调用
+
+### 22.10 计费测试的 5 条反直觉经验
+
+1. **"100% 覆盖率"反而危险**——会逼着团队写无意义的测试，掩盖真正该测的逻辑
+2. **集成测试比单元测试更能发现问题**——80% 的生产 bug 出在"两个模块之间"
+3. **并发测试必须真的并发**——单线程跑 1000 次没问题，并发跑 1000 次可能就崩
+4. **不要 mock 数据库**——数据库行为是计费正确性的关键，必须用真库
+5. **E2E 测试要少而精**——一次完整的"注册→充值→消费→退款"链路，价值 > 100 个单元测试
+
