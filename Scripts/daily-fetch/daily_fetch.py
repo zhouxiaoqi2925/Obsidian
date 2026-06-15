@@ -24,7 +24,8 @@ def get_today():
 def get_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 
 
 def set_target_date(d):
@@ -423,10 +424,22 @@ def write_digest(all_sources):
         elif it["_src"] == "Lobsters":
             s = it.get("comments", 0) * 1.0
         elif it["_src"] == "arXiv":
-            # arXiv 越新越好，给个保底分
             s = 50 + (10 if it.get("published") == TODAY else 0)
+        elif it["_src"] in TECH_FEEDS:
+# 技术深源：按发布时间新度给分（0天=130, 1周=123, 30天=100）
+            from email.utils import parsedate_to_datetime
+            pub = it.get("pub", "")
+            try:
+                dt = parsedate_to_datetime(pub).replace(tzinfo=None) if pub else None
+                days = max(0, (datetime.now() - dt).days) if dt else 30
+            except Exception:
+                days = 30
+            s = 100 + max(0, 30 - days)
+
         return s
 
+    # 深源（arXiv + 8 个技术 RSS）每源顶部归一后获得加成，确保在 top 20 中有席位
+    DEEP_SOURCES = {"arXiv"} | set(TECH_FEEDS.keys())
     # 同一源内做 min-max 归一化
     src_min_max = {}
     for src, items in all_sources.items():
@@ -439,8 +452,11 @@ def write_digest(all_sources):
     def norm_score(it):
         lo, hi = src_min_max.get(it["_src"], (0, 1))
         if hi == lo:
-            return 0.5
-        return (raw(it) - lo) / (hi - lo)
+            base = 0.5
+        else:
+            base = (raw(it) - lo) / (hi - lo)
+        # 深源 +0.1，避免被 HN/GH 高分源挤出精选
+        return base + (0.1 if it["_src"] in DEEP_SOURCES else 0)
 
     pool.sort(key=norm_score, reverse=True)
     topN = pool[:DIGEST_SIZE]
@@ -451,7 +467,7 @@ def write_digest(all_sources):
         "tags: [每日精选, Digest, 每日抓取]",
         f"count: {len(topN)}", "---", "",
         f"# 每日精选 {DIGEST_SIZE} 条 ({TODAY})", "",
-        "> 自动从 7 个数据源综合评分选出。每条都有原文链接 + 所属源。", "",
+"> 自动从 14 个数据源综合评分选出。每条都有原文链接 + 所属源。", "",
         "## 思维导图", "", "```mermaid", "mindmap", f"  root((今日 {DIGEST_SIZE} 选 {TODAY}))",
     ]
     for it in topN:
@@ -642,6 +658,20 @@ DESIGN_FEEDS = {
     },
 }
 
+# ===================== 技术深源（高技术含量） =====================
+TECH_FEEDS = {
+    "Cloudflare":   {"url": "https://blog.cloudflare.com/rss/",        "label": "Cloudflare Blog",         "emoji": "☁️"},
+    "InfoQ-CN":     {"url": "https://www.infoq.cn/feed.xml",           "label": "InfoQ 中文站",            "emoji": "📰"},
+    "Charity":      {"url": "https://charity.wtf/feed/",            "label": "Charity Majors (observability)", "emoji": "🛰️"},
+    "Phoronix":     {"url": "https://www.phoronix.com/rss.php",        "label": "Phoronix",                "emoji": "⚙️"},
+    "OpenAI":       {"url": "https://openai.com/blog/rss.xml",         "label": "OpenAI News",             "emoji": "🤖"},
+    "DanLuu":       {"url": "https://danluu.com/atom.xml",             "label": "Dan Luu",                 "emoji": "🔍"},
+    "LilianWeng":   {"url": "https://lilianweng.github.io/index.xml",  "label": "Lil'Log",                 "emoji": "🧪"},
+    "LWN":          {"url": "https://lwn.net/headlines/rss",           "label": "LWN.net (Linux kernel)",  "emoji": "🐧"},
+
+}
+
+
 NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "dc": "http://purl.org/dc/elements/1.1/",
@@ -652,10 +682,11 @@ NS = {
 def fetch_rss(name, cfg, limit=8):
     """通用 RSS 抓取（兼容 RSS 2.0 + Atom），按发布日期倒序取最新 limit 条"""
     try:
-        r = requests.get(cfg["url"], headers={"User-Agent": UA}, timeout=12)
+        r = requests.get(cfg["url"], headers={"User-Agent": UA, "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8"}, timeout=20)
         if r.status_code != 200:
             print(f"[{name}] 状态 {r.status_code}")
             return []
+
         root = ET.fromstring(r.text)
     except Exception as e:
         print(f"[{name}] 失败: {e}")
@@ -711,20 +742,30 @@ def fetch_nng(limit=5):       return fetch_rss("NNg",          DESIGN_FEEDS["NNg
 def fetch_stripe(limit=5):    return fetch_rss("StripeDesign", DESIGN_FEEDS["StripeDesign"], limit)
 def fetch_material(limit=5):  return fetch_rss("Material",     DESIGN_FEEDS["Material"],     limit)
 
+def fetch_cloudflare(limit=8):  return fetch_rss("Cloudflare",   TECH_FEEDS["Cloudflare"],   limit)
+def fetch_infoq_cn(limit=8):    return fetch_rss("InfoQ-CN",     TECH_FEEDS["InfoQ-CN"],     limit)
+def fetch_charity(limit=6):      return fetch_rss("Charity",      TECH_FEEDS["Charity"],      limit)
+def fetch_phoronix(limit=6):    return fetch_rss("Phoronix",     TECH_FEEDS["Phoronix"],     limit)
+def fetch_openai(limit=6):      return fetch_rss("OpenAI",       TECH_FEEDS["OpenAI"],       limit)
+def fetch_danluu(limit=5):      return fetch_rss("DanLuu",       TECH_FEEDS["DanLuu"],       limit)
+def fetch_lilian(limit=5):      return fetch_rss("LilianWeng",   TECH_FEEDS["LilianWeng"],   limit)
+def fetch_lwn(limit=8):         return fetch_rss("LWN",          TECH_FEEDS["LWN"],          limit)
+
+
 
 def _strip_html(s):
     return re.sub(r"<[^>]+>", "", s or "").strip()
 
 
-def write_design(key, items):
-    """写单个设计源到 Inbox。key 是 DESIGN_FEEDS 的 key。"""
+def write_rss_source(key, items, feeds_dict, default_tag="设计"):
+    """通用 RSS 源写入 Inbox。feeds_dict 是 DESIGN_FEEDS 或 TECH_FEEDS。"""
     if not items:
         return
-    cfg = DESIGN_FEEDS[key]
+    cfg = feeds_dict[key]
     fp = os.path.join(INBOX, f"{key}-{TODAY}.md")
     lines = [
         "---", f"date: {TODAY}", f"timestamp: {TIMESTAMP}",
-        f"tags: [设计, {cfg['label']}, 每日抓取, 抓取]",
+        f"tags: [{default_tag}, {cfg['label']}, 每日抓取, 抓取]",
         f"source: {cfg['url']}",
         f"count: {len(items)}", "---", "",
         f"# {cfg['emoji']} {cfg['label']} Top {len(items)} ({TODAY})", "",
@@ -747,6 +788,11 @@ def write_design(key, items):
     with open(fp, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print(f"  [OK] {cfg['label']}: {len(items)} -> {fp}")
+
+
+def write_design(key, items):  return write_rss_source(key, items, DESIGN_FEEDS, default_tag="设计")
+def write_tech(key, items):    return write_rss_source(key, items, TECH_FEEDS,    default_tag="技术")
+
 
 
 def write_design_digest(all_design):
@@ -895,10 +941,61 @@ def main():
     all_design["StripeDesign"] = st
     time.sleep(1)
 
-    print("\n[13/13] Material Design...")
+    print("\n[13/21] Material Design...")
     md = fetch_material(5)
     write_design("Material", md)
     all_design["Material"] = md
+    time.sleep(1)
+
+    # ============ 技术深源（高技术含量）============
+    print("\n[14/21] Cloudflare Blog...")
+    cf = fetch_cloudflare(8)
+    write_tech("Cloudflare", cf)
+    all_sources["Cloudflare"] = cf
+    time.sleep(1)
+
+    print("\n[15/21] InfoQ 中文站...")
+    iq = fetch_infoq_cn(8)
+    write_tech("InfoQ-CN", iq)
+    all_sources["InfoQ-CN"] = iq
+    time.sleep(1)
+
+    print("\n[16/21] Charity Majors (observability)...")
+    cm = fetch_charity(6)
+    write_tech("Charity", cm)
+    all_sources["Charity"] = cm
+
+    time.sleep(1)
+
+    print("\n[17/21] Phoronix...")
+    ph = fetch_phoronix(6)
+    write_tech("Phoronix", ph)
+    all_sources["Phoronix"] = ph
+    time.sleep(1)
+
+    print("\n[18/21] OpenAI News...")
+    oa = fetch_openai(6)
+    write_tech("OpenAI", oa)
+    all_sources["OpenAI"] = oa
+    time.sleep(1)
+
+    print("\n[19/21] Dan Luu...")
+    dl = fetch_danluu(5)
+    write_tech("DanLuu", dl)
+    all_sources["DanLuu"] = dl
+    time.sleep(1)
+
+    print("\n[20/21] Lilian Weng (Lil'Log)...")
+    lw = fetch_lilian(5)
+    write_tech("LilianWeng", lw)
+    all_sources["LilianWeng"] = lw
+    time.sleep(1)
+
+    print("\n[21/21] LWN.net (Linux kernel)...")
+    lwn = fetch_lwn(8)
+    write_tech("LWN", lwn)
+    all_sources["LWN"] = lwn
+
 
     # 综合精选 N 条（开发）
     if not args.no_digest:
@@ -912,12 +1009,18 @@ def main():
 
     total = sum(len(v) for v in all_sources.values())
     total_design = sum(len(v) for v in all_design.values())
-    print(f"\n=== 完成: 开发 {total} 条 + 设计 {total_design} 条 ===")
+
+
+    print(f"\n=== 完成: 开发 {total} 条 + 设计 {total_design} 条 + 技术 {sum(len(all_sources[k]) for k in TECH_FEEDS if k in all_sources)} 条 ===")
     print(f"开发分布: HN={len(hn)} HN-Best={len(hn_b)} GH={len(gh)} "
           f"掘金={len(jj)} dev.to={len(dv)} Lobsters={len(lb)} arXiv={len(ax)}")
+    print(f"技术分布: " + " ".join(
+        f"{TECH_FEEDS[k]['label']}={len(all_sources.get(k, []))}" for k in TECH_FEEDS
+    ))
     print(f"设计分布: " + " ".join(
         f"{DESIGN_FEEDS[k]['label']}={len(all_design.get(k, []))}" for k in DESIGN_FEEDS
     ))
+
 
 
 if __name__ == "__main__":
