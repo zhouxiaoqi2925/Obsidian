@@ -414,3 +414,23 @@ To github.com:zhouxiaoqi2925/Obsidian.git
  Obsidian Vault Auto Backup 
  周二 2026/06/16 12:00:07 
 ==================================== 
+warning: unable to access 'Databases/.gitattributes': Permission denied
+warning: unable to access 'Databases/.gitattributes': Permission denied
+fatal: renaming pack to '.git/objects/pack/pack-0a7950f9ec17e69cb3de3402b0c2e7df356d6e00.pack' failed: File exists
+error: failed to perform geometric repack
+error: task 'geometric-repack' failed
+[main dafdad1d2] auto: backup 周二 2-26-06 120012
+ 1 file changed, 4 insertions(+)
+[INFO] Commit created: auto: backup 周二 2-26-06 120012 
+warning: unable to access 'Databases/.gitattributes': Permission denied
+warning: unable to access 'Databases/.gitattributes': Permission denied
+To github.com:zhouxiaoqi2925/Obsidian.git
+   3740a4a24..dafdad1d2  main -> main
+[SUCCESS] Pushed to origin/main. 
+[INFO] Done: 12:01:21.82 
+==================================== 
+ 
+==================================== 
+ Obsidian Vault Auto Backup 
+ 周二 2026/06/16 18:00:05 
+==================================== 
