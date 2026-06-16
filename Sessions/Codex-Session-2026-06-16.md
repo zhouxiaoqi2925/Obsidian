@@ -131,3 +131,26 @@ tags: [codex, integration, session-log]
 - 触发：每日 03:00
 - 状态：Ready
 - 日志：`G:\Obsidian Vault\Databases\rebuild.log`
+
+---
+
+## 第五阶段：所有权边界明确化
+
+主人提示："数据库和知识库是不一样的"。明确边界：
+
+### 决策
+- `Databases/` **留在** Obsidian 库内（与 `.obsidian/` 平级作为工具目录）
+- 不搬出库，但**所有权写死**在文档里
+
+### 改动
+- `AGENTS.md` 顶部新增"所有权边界"表 + Codex 禁区清单
+- `Databases/README.md` 顶部加红框 ⚠️ 约束声明
+- 新增 `mpc/audit_db.py` —— 字段长度 + 知识特征审计
+  - 检查 22 个字段的限额
+  - 检查中文字符密度 + 段落特征
+  - 现状：✅ clean
+
+### 当前 DB 纯度
+- 7 张表全部通过审计
+- 无超长字段、无知识密度异常
+- 主人任何时候可重跑：`python mpc/audit_db.py`
