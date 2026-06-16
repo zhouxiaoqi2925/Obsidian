@@ -1,0 +1,39 @@
+{
+  "name": "Codex × Obsidian Vault",
+  "folders": [
+    {
+      "path": "G:\\Obsidian Vault",
+      "name": "📚 Obsidian Vault"
+    },
+    {
+      "path": "C:\\Users\\15389\\Documents\\Codex\\2026-06-16\\mpc",
+      "name": "🤖 Codex Workspace"
+    }
+  ],
+  "settings": {
+    "files.associations": {
+      "*.base": "yaml",
+      "*.canvas": "json"
+    },
+    "files.exclude": {
+      "**/.obsidian/workspace.json": true,
+      "**/.obsidian/cache": true,
+      "**/.git": true
+    },
+    "markdown.preview.fontSize": 16,
+    "editor.wordWrap": "on",
+    "editor.minimap.enabled": false
+  },
+  "extensions": {
+    "recommendations": [
+      "yzhang.markdown-all-in-one",
+      "foam.foam-vscode",
+      "dart-lang.dart",
+      "ms-python.python"
+    ]
+  },
+  "launch": {
+    "configurations": [],
+    "compounds": []
+  }
+}

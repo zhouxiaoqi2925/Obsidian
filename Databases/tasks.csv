@@ -1,0 +1,6 @@
+﻿id,created_at,text,source_note,status,priority,due_date,completed_at
+1,2026-06-16 01:50:55,[Codex 测试] 验证数据库任务流 [P2],Databases/README.md,done,P2,,2026-06-16 01:51:35
+2,2026-06-16 01:50:58,整理 Inbox 中的 OpenAI 文章,,open,P1,,
+3,2026-06-16 01:50:58,把 DeepSeek API key 移到加密区,Claude Code + Obsidian 使用指南.md,open,P1,,
+4,2026-06-16 01:51:33,[Codex 测试] 验证数据库任务流 [P2],Databases/README.md,open,P2,,
+5,2026-06-16 01:51:53,测试带 source_note 的任务,README.md,open,P3,,
