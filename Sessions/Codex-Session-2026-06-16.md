@@ -154,3 +154,38 @@ tags: [codex, integration, session-log]
 - 7 张表全部通过审计
 - 无超长字段、无知识密度异常
 - 主人任何时候可重跑：`python mpc/audit_db.py`
+
+---
+
+## 第六阶段：数据库物理迁移到 `G:\Obsidian 数据库\`
+
+主人要求"路径只能在 G:\Obsidian 里面"，原计划 `G:\Obsidian` 被 Obsidian 应用程序占用，改用 `G:\Obsidian 数据库\`（与 vault 同盘但不同目录）。
+
+### 移动内容
+- 从 `G:\Obsidian Vault\Databases/` → `G:\Obsidian 数据库/`
+- 文件：codex.db + 6 个 CSV + README.md + inbox_archive_suggestions.md + rebuild.log
+
+### Git 处理
+- vault 仓库：`git rm -r --cached Databases/` + 提交（commit `9e5439b18`）
+- 新仓库：`git init` 在 `G:\Obsidian 数据库\` + 初始提交（commit `0755f9f`）
+
+### 路径更新（脚本）
+- `init_database.py` —— `DB_DIR = Path(r"G:\Obsidian 数据库")`
+- `codex_db.py` / `audit_db.py` —— DB_PATH 更新
+- `obsidian-helpers.ps1` —— `$script:DbPath` 更新
+- 删 `rebuild_index.bat`（cmd.exe 中文路径乱码），改用 `rebuild_index.ps1`（PowerShell 原生支持 Unicode）
+
+### Scheduled Task 重建
+- 删除旧 task，重新注册：`Codex\Obsidian-DB-Rebuild`
+- Action：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File rebuild_index.ps1`
+- 用 UTF-8 BOM 保存 ps1，确保 PowerShell 正确解码中文路径
+
+### 经验
+- G:\ 盘是 exFAT/FAT32（非 NTFS），不支持 8.3 短名和 junction
+- cmd.exe 默认 GBK 编码，中文路径乱码——bat 改用 ps1 解决
+- `init_database.py` 里用 `VAULT / "Databases"` 拼接路径，批量字符串替换匹配不到，必须手动改
+
+### 最终状态
+- DB 在 `G:\Obsidian 数据库\codex.db` ✅
+- 887 notes / 434 tags / 137 inbox_items（含 19 processed）
+- Scheduled Task：明日 03:00 运行

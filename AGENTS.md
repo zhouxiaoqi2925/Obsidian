@@ -18,7 +18,7 @@
 | 类别 | 是什么 | 谁拥有 | 写权限 |
 |------|--------|--------|--------|
 | **知识库** | Obsidian 库内全部 `.md` 笔记（`00-Inbox`/`Inbox`/`Daily`/`Projects`/`Knowledge`/`Wiki`/`实战案例`/`开发手册`/`Sessions` 等） | **周潇齐** | 仅主人；AI Agent 需明确指令才动 |
-| **元数据库** | `Databases/codex.db` + `Databases/*.csv` | **Codex CLI** | Codex 自由读写，但**仅限元数据** |
+| **元数据库** | `G:\Obsidian 数据库\codex.db` + `G:\Obsidian 数据库\*.csv` | **Codex CLI** | Codex 自由读写，但**仅限元数据** |
 
 **Codex 的禁区（碰了就违规）：**
 - ❌ 把笔记正文 / 段落 / 摘要 / 概念解释写入 `codex.db` 任何字段
@@ -77,8 +77,8 @@
 - MCP：obsidian（REST 27124）/ obsidian-brain（直读）/ hex-line（代码编辑）
 
 ## Codex 掌管的元数据库（不是知识库）
-- 位置：`Databases/codex.db` (SQLite) + `Databases/*.csv` (镜像)
-- 详见 `Databases/README.md`
+- 位置：`G:\Obsidian 数据库\codex.db` (SQLite) + `G:\Obsidian 数据库\*.csv` (镜像)
+- 详见 `G:\Obsidian 数据库\README.md`
 - Codex 是元数据库**唯一管家**：schema 演进、索引重建、备份都由 Codex 执行
 - Claude Code 暂以只读方式使用，写操作需主人授权
 - **关键约束：DB 内仅存元数据，不存知识内容**（见上方"所有权边界"）
