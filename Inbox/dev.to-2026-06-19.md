@@ -1,6 +1,6 @@
 ---
 date: 2026-06-19
-timestamp: 2026-06-19 10:40
+timestamp: 2026-06-19 12:30
 tags: [devto, 文章, 每日抓取, 抓取]
 source: dev.to
 count: 15
@@ -17,12 +17,12 @@ mindmap
     Congrats to the Gemma 4 C
     Congrats to the Hermes Ag
     Tower Before Dusk: I Buil
+    I'm not a developer, but 
     Building an agentic PR re
     The Winner of the AI-Poca
-    I'm not a developer, but 
     Technical Writing Advice
     Someone was wrong on the 
-    I Thought I Was Catalogin
+    Pointers and Tuning and L
     Codewars did not teach me
     Weekly Dev Log 2026-W10
     Our Competitor Had an AI 
@@ -35,21 +35,21 @@ mindmap
 ### 1. Who Here Has Worked with Legacy? The Longer You Wait, the Worse It Gets
 - **链接**: [https://dev.to/sylwia-lask/who-here-has-worked-with-legacy-the-longer-you-wait-the-worse-it-gets-58bk](https://dev.to/sylwia-lask/who-here-has-worked-with-legacy-the-longer-you-wait-the-worse-it-gets-58bk)
 - **作者**: Sylwia Laskowska | **阅读**: 9min
-- **反应**: 55 | **评论**: 27
+- **反应**: 57 | **评论**: 27
 - **标签**: `javascript`, `webdev`, `programming`, `architecture`
 - **简介**: I promised myself that starting this week I'd switch to lighter topics. But on Monday, my JSNation...
 
 ### 2. Congrats to the Gemma 4 Challenge Winners!
 - **链接**: [https://dev.to/devteam/congrats-to-the-gemma-4-challenge-winners-4fgc](https://dev.to/devteam/congrats-to-the-gemma-4-challenge-winners-4fgc)
 - **作者**: Jess Lee | **阅读**: 3min
-- **反应**: 35 | **评论**: 9
+- **反应**: 37 | **评论**: 15
 - **标签**: `devchallenge`, `gemmachallenge`, `gemma`
 - **简介**: We are so excited to announce the winners of the Gemma 4 Challenge!  This is officially our most...
 
 ### 3. Congrats to the Hermes Agent Challenge Winners!
 - **链接**: [https://dev.to/devteam/congrats-to-the-hermes-agent-challenge-winners-3on0](https://dev.to/devteam/congrats-to-the-hermes-agent-challenge-winners-3on0)
 - **作者**: Jess Lee | **阅读**: 3min
-- **反应**: 13 | **评论**: 3
+- **反应**: 14 | **评论**: 4
 - **标签**: `hermesagentchallenge`, `devchallenge`, `agents`
 - **简介**: We are thrilled to announce the winners of the Hermes Agent Challenge! Over the past few weeks, the...
 
@@ -60,26 +60,26 @@ mindmap
 - **标签**: `devchallenge`, `gamechallenge`, `gamedev`, `ai`
 - **简介**: This is a submission for the June Solstice Game Jam  It's interesting how the most exciting ideas...
 
-### 5. Building an agentic PR reviewer with Antigravity SDK
+### 5. I'm not a developer, but I built a calendar app to fix my most annoying work task
+- **链接**: [https://dev.to/googleai/im-not-a-developer-but-i-built-a-calendar-app-to-fix-my-most-annoying-work-task-dj4](https://dev.to/googleai/im-not-a-developer-but-i-built-a-calendar-app-to-fix-my-most-annoying-work-task-dj4)
+- **作者**: Aria Heller | **阅读**: 2min
+- **反应**: 10 | **评论**: 0
+- **标签**: `ai`, `productivity`, `beginners`, `discuss`
+- **简介**: I’m not a developer! I’ve never coded anything in my life. As far as I’m concerned, a Cloudtop is...
+
+### 6. Building an agentic PR reviewer with Antigravity SDK
 - **链接**: [https://dev.to/googleai/building-an-agentic-pr-reviewer-with-antigravity-sdk-3b0i](https://dev.to/googleai/building-an-agentic-pr-reviewer-with-antigravity-sdk-3b0i)
 - **作者**: Remigiusz Samborski | **阅读**: 6min
 - **反应**: 10 | **评论**: 0
 - **标签**: `antigravity`, `gemini`, `ai`, `programming`
 - **简介**: As announced in this blog post on June 18, 2026, Gemini CLI and Gemini Code Assist IDE extensions...
 
-### 6. The Winner of the AI-Pocalypse? The Full-Stack Generalist (But Probably Later Instead of Sooner)
+### 7. The Winner of the AI-Pocalypse? The Full-Stack Generalist (But Probably Later Instead of Sooner)
 - **链接**: [https://dev.to/linkbenjamin/the-winner-of-the-ai-pocalypse-the-full-stack-generalist-but-probably-later-instead-of-sooner-12n3](https://dev.to/linkbenjamin/the-winner-of-the-ai-pocalypse-the-full-stack-generalist-but-probably-later-instead-of-sooner-12n3)
 - **作者**: Ben Link | **阅读**: 5min
 - **反应**: 4 | **评论**: 10
 - **标签**: `careerdevelopment`, `beginners`, `devops`, `ai`
 - **简介**: We've been told since late 2022 that "within 6 months, we won't need software engineers anymore". I...
-
-### 7. I'm not a developer, but I built a calendar app to fix my most annoying work task
-- **链接**: [https://dev.to/googleai/im-not-a-developer-but-i-built-a-calendar-app-to-fix-my-most-annoying-work-task-dj4](https://dev.to/googleai/im-not-a-developer-but-i-built-a-calendar-app-to-fix-my-most-annoying-work-task-dj4)
-- **作者**: Aria Heller | **阅读**: 2min
-- **反应**: 9 | **评论**: 0
-- **标签**: `ai`, `productivity`, `beginners`, `discuss`
-- **简介**: I’m not a developer! I’ve never coded anything in my life. As far as I’m concerned, a Cloudtop is...
 
 ### 8. Technical Writing Advice
 - **链接**: [https://dev.to/pauljlucas/technical-writing-advice-28a6](https://dev.to/pauljlucas/technical-writing-advice-28a6)
@@ -95,17 +95,17 @@ mindmap
 - **标签**: `temporal`, `selfhosted`, `codesamples`, `durableexecution`
 - **简介**: How Shy Ruparel built a Temporal Docker Desktop extension by identifying a gap and making it available for the community
 
-### 10. I Thought I Was Cataloging Ways AI Agents Fail. I Was Describing Cross-Layer Coherence.
-- **链接**: [https://dev.to/zep1997/i-thought-i-was-cataloging-ways-ai-agents-fail-i-was-describing-cross-layer-coherence-1bh1](https://dev.to/zep1997/i-thought-i-was-cataloging-ways-ai-agents-fail-i-was-describing-cross-layer-coherence-1bh1)
-- **作者**: Self-Correcting Systems | **阅读**: 7min
-- **反应**: 4 | **评论**: 4
-- **标签**: `ai`, `agents`, `llm`, `architecture`
-- **简介**: My uncle once left me on a basketball court with a sheet of drills and walked off. Before he did, he...
+### 10. Pointers and Tuning and Loops! Oh My!
+- **链接**: [https://dev.to/pauljlucas/pointers-and-tuning-and-loops-oh-my-5e09](https://dev.to/pauljlucas/pointers-and-tuning-and-loops-oh-my-5e09)
+- **作者**: Paul J. Lucas | **阅读**: 5min
+- **反应**: 0 | **评论**: 0
+- **标签**: `c`, `cpp`
+- **简介**: A small case study in compiler optimization of loops using pointers calling functions.
 
 ### 11. Codewars did not teach me JavaScript. My job did.
 - **链接**: [https://dev.to/shannonianthe/codewars-did-not-teach-me-javascript-my-job-did-379k](https://dev.to/shannonianthe/codewars-did-not-teach-me-javascript-my-job-did-379k)
 - **作者**: Shannon Mettry | **阅读**: 3min
-- **反应**: 3 | **评论**: 3
+- **反应**: 4 | **评论**: 4
 - **标签**: `career`, `codenewbie`, `javascript`, `learning`
 - **简介**: Why your brain learns faster by doing than by studying, and the neuroscience that explains...
 
