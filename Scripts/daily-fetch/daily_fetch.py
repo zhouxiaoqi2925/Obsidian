@@ -9,7 +9,9 @@ import time
 import json
 import re
 import requests
+import trafilatura
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree as ET
 
 VAULT = r"G:\Obsidian Vault"
@@ -17,6 +19,24 @@ INBOX = os.path.join(VAULT, "Inbox")
 # 由 CLI 参数控制；缺省 = 今天
 _TARGET_DATE = None
 DIGEST_SIZE = 20
+# 是否抓取原文（保留代码块/表格/链接）
+FETCH_FULL_CONTENT = True
+# 每个源最多抓全文的条数
+CONTENT_TOP_N = 3
+# 单条全文最大字符数（避免单文件过大）
+CONTENT_MAX_CHARS = 4000
+# 全文缓存（同一进程内 URL -> markdown）
+_CONTENT_CACHE = {}
+# 全局 scraper（带 Cloudflare 绕过）
+try:
+    import cloudscraper
+    _SCRAPER = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "desktop": True})
+except Exception:
+    _SCRAPER = None
+
+def _have_scraper():
+    return _SCRAPER is not None
+
 
 def get_today():
     return _TARGET_DATE or datetime.now().strftime("%Y-%m-%d")
@@ -39,6 +59,64 @@ def _set_today():
     global TODAY, TIMESTAMP
     TODAY = get_today()
     TIMESTAMP = get_timestamp()
+
+
+def fetch_full_content(url, timeout=10):
+    """用 trafilatura 抓正文 markdown（保留代码块/表格/链接）。失败返回 None。
+    优先用 cloudscraper 绕过 Cloudflare 验证，失败回退到 requests。"""
+    if not url or not FETCH_FULL_CONTENT:
+        return None
+    if url in _CONTENT_CACHE:
+        return _CONTENT_CACHE[url]
+
+    # 1) cloudscraper 优先（能处理 Cloudflare challenge）
+    try:
+        r = _SCRAPER.get(url, timeout=timeout, allow_redirects=True)
+        if r.status_code == 200 and len(r.text) > 200:
+            md = trafilatura.extract(
+                r.text,
+                output_format="markdown",
+                include_links=True,
+                include_images=False,
+                include_tables=True,
+                include_formatting=True,
+                favor_precision=True,
+            )
+            if md and len(md.strip()) >= 80:
+                if len(md) > CONTENT_MAX_CHARS:
+                    md = md[:CONTENT_MAX_CHARS] + f"\n\n...（截断，原文 {len(md)}+ 字符）"
+                _CONTENT_CACHE[url] = md.strip()
+                return _CONTENT_CACHE[url]
+    except Exception:
+        pass
+
+    # 2) 回退到普通 requests
+    try:
+        r = requests.get(url, headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml"},
+                         timeout=timeout, allow_redirects=True)
+        if r.status_code != 200 or len(r.text) < 200:
+            _CONTENT_CACHE[url] = None
+            return None
+        md = trafilatura.extract(
+            r.text,
+            output_format="markdown",
+            include_links=True,
+            include_images=False,
+            include_tables=True,
+            include_formatting=True,
+            favor_precision=True,
+        )
+        if not md or len(md.strip()) < 80:
+            _CONTENT_CACHE[url] = None
+            return None
+        if len(md) > CONTENT_MAX_CHARS:
+            md = md[:CONTENT_MAX_CHARS] + f"\n\n...（截断，原文 {len(md)}+ 字符）"
+        result = md.strip()
+        _CONTENT_CACHE[url] = result
+        return result
+    except Exception:
+        _CONTENT_CACHE[url] = None
+        return None
 
 
 def fetch_hn(limit=30):
@@ -679,8 +757,9 @@ NS = {
 }
 
 
-def fetch_rss(name, cfg, limit=8):
-    """通用 RSS 抓取（兼容 RSS 2.0 + Atom），按发布日期倒序取最新 limit 条"""
+def fetch_rss(name, cfg, limit=8, with_content=False, content_top_n=CONTENT_TOP_N):
+    """通用 RSS 抓取（兼容 RSS 2.0 + Atom），按发布日期倒序取最新 limit 条
+    with_content=True 时对前 content_top_n 条额外抓正文 markdown（保留代码块）"""
     try:
         r = requests.get(cfg["url"], headers={"User-Agent": UA, "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8"}, timeout=20)
         if r.status_code != 200:
@@ -732,24 +811,39 @@ def fetch_rss(name, cfg, limit=8):
     def pub_key(x):
         return x.get("pub") or ""
     raw_items.sort(key=pub_key, reverse=True)
-    return raw_items[:limit]
+    items = raw_items[:limit]
+
+    # 抓正文 markdown（保留代码块/表格/链接）
+    if with_content and FETCH_FULL_CONTENT:
+        for i, it in enumerate(items):
+            if i >= content_top_n:
+                break
+            if not it.get("url"):
+                continue
+            content = fetch_full_content(it["url"])
+            if content:
+                it["content"] = content
+                print(f"  [{name}] +全文 {len(content)}字: {it['title'][:40]}")
+            time.sleep(0.4)
+
+    return items
 
 
-def fetch_smashing(limit=8):  return fetch_rss("SmashingMag",  DESIGN_FEEDS["SmashingMag"],  limit)
+def fetch_smashing(limit=8):  return fetch_rss("SmashingMag",  DESIGN_FEEDS["SmashingMag"],  limit, with_content=True, content_top_n=2)
 def fetch_awwwards(limit=8):  return fetch_rss("Awwwards",     DESIGN_FEEDS["Awwwards"],     limit)
-def fetch_ux(limit=8):        return fetch_rss("UXCollective", DESIGN_FEEDS["UXCollective"], limit)
+def fetch_ux(limit=8):        return fetch_rss("UXCollective", DESIGN_FEEDS["UXCollective"], limit, with_content=True, content_top_n=2)
 def fetch_nng(limit=5):       return fetch_rss("NNg",          DESIGN_FEEDS["NNg"],          limit)
-def fetch_stripe(limit=5):    return fetch_rss("StripeDesign", DESIGN_FEEDS["StripeDesign"], limit)
+def fetch_stripe(limit=5):    return fetch_rss("StripeDesign", DESIGN_FEEDS["StripeDesign"], limit, with_content=True, content_top_n=2)
 def fetch_material(limit=5):  return fetch_rss("Material",     DESIGN_FEEDS["Material"],     limit)
 
-def fetch_cloudflare(limit=8):  return fetch_rss("Cloudflare",   TECH_FEEDS["Cloudflare"],   limit)
-def fetch_infoq_cn(limit=8):    return fetch_rss("InfoQ-CN",     TECH_FEEDS["InfoQ-CN"],     limit)
-def fetch_charity(limit=6):      return fetch_rss("Charity",      TECH_FEEDS["Charity"],      limit)
-def fetch_phoronix(limit=6):    return fetch_rss("Phoronix",     TECH_FEEDS["Phoronix"],     limit)
-def fetch_openai(limit=6):      return fetch_rss("OpenAI",       TECH_FEEDS["OpenAI"],       limit)
-def fetch_danluu(limit=5):      return fetch_rss("DanLuu",       TECH_FEEDS["DanLuu"],       limit)
-def fetch_lilian(limit=5):      return fetch_rss("LilianWeng",   TECH_FEEDS["LilianWeng"],   limit)
-def fetch_lwn(limit=8):         return fetch_rss("LWN",          TECH_FEEDS["LWN"],          limit)
+def fetch_cloudflare(limit=8):  return fetch_rss("Cloudflare",   TECH_FEEDS["Cloudflare"],   limit, with_content=True, content_top_n=3)
+def fetch_infoq_cn(limit=8):    return fetch_rss("InfoQ-CN",     TECH_FEEDS["InfoQ-CN"],     limit, with_content=True, content_top_n=3)
+def fetch_charity(limit=6):      return fetch_rss("Charity",      TECH_FEEDS["Charity"],      limit, with_content=True, content_top_n=2)
+def fetch_phoronix(limit=6):    return fetch_rss("Phoronix",     TECH_FEEDS["Phoronix"],     limit, with_content=True, content_top_n=3)
+def fetch_openai(limit=6):      return fetch_rss("OpenAI",       TECH_FEEDS["OpenAI"],       limit, with_content=True, content_top_n=2)
+def fetch_danluu(limit=5):      return fetch_rss("DanLuu",       TECH_FEEDS["DanLuu"],       limit, with_content=True, content_top_n=2)
+def fetch_lilian(limit=5):      return fetch_rss("LilianWeng",   TECH_FEEDS["LilianWeng"],   limit, with_content=True, content_top_n=2)
+def fetch_lwn(limit=8):         return fetch_rss("LWN",          TECH_FEEDS["LWN"],          limit, with_content=True, content_top_n=3)
 
 
 
@@ -758,23 +852,27 @@ def _strip_html(s):
 
 
 def write_rss_source(key, items, feeds_dict, default_tag="设计"):
-    """通用 RSS 源写入 Inbox。feeds_dict 是 DESIGN_FEEDS 或 TECH_FEEDS。"""
+    """通用 RSS 源写入 Inbox。feeds_dict 是 DESIGN_FEEDS 或 TECH_FEEDS。
+    items 中如有 'content' 字段，会以 <details> 折叠块附加全文（保留代码）。"""
     if not items:
         return
     cfg = feeds_dict[key]
     fp = os.path.join(INBOX, f"{key}-{TODAY}.md")
+    full_count = sum(1 for it in items if it.get("content"))
     lines = [
         "---", f"date: {TODAY}", f"timestamp: {TIMESTAMP}",
         f"tags: [{default_tag}, {cfg['label']}, 每日抓取, 抓取]",
         f"source: {cfg['url']}",
-        f"count: {len(items)}", "---", "",
+        f"count: {len(items)}",
+        f"full_content: {full_count}",
+        "---", "",
         f"# {cfg['emoji']} {cfg['label']} Top {len(items)} ({TODAY})", "",
         "## 思维导图", "", "```mermaid", "mindmap",
         f"  root(({cfg['label']}))",
     ]
     for it in items[:14]:
         lines.append(f"    {_strip_html(it['title'])[:25]}")
-    lines += ["```", "", f"## 列表（{len(items)} 条）", ""]
+    lines += ["```", "", f"## 列表（{len(items)} 条，{full_count} 条含全文）", ""]
     for i, it in enumerate(items, 1):
         lines.append(f"### {i}. {_strip_html(it['title'])}")
         lines.append(f"- **链接**: [{it['url']}]({it['url']})")
@@ -784,11 +882,17 @@ def write_rss_source(key, items, feeds_dict, default_tag="设计"):
             lines.append(f"- **发布**: {it['pub']}")
         if it.get("desc"):
             lines.append(f"- **简介**: {it['desc'][:220]}")
+        if it.get("content"):
+            lines.append("")
+            lines.append(f"<details><summary>📄 全文（{len(it['content'])} 字符，点击展开）</summary>")
+            lines.append("")
+            lines.append(it["content"])
+            lines.append("")
+            lines.append("</details>")
         lines.append("")
     with open(fp, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print(f"  [OK] {cfg['label']}: {len(items)} -> {fp}")
-
+    print(f"  [OK] {cfg['label']}: {len(items)} 条 ({full_count} 含全文) -> {fp}")
 
 def write_design(key, items):  return write_rss_source(key, items, DESIGN_FEEDS, default_tag="设计")
 def write_tech(key, items):    return write_rss_source(key, items, TECH_FEEDS,    default_tag="技术")
