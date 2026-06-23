@@ -489,3 +489,47 @@ To github.com:zhouxiaoqi2925/Obsidian.git
  Obsidian Vault Auto Backup 
  周二 2026/06/23 18:00:05 
 ==================================== 
+fatal: could not write multi-pack-index: Permission denied
+error: failed to perform geometric repack
+error: task 'geometric-repack' failed
+[main 390250759] auto: backup 周二 2-26-06 180009
+ 29 files changed, 3864 insertions(+)
+ create mode 100644 Inbox/Awwwards-2026-06-23.md
+ create mode 100644 Inbox/Charity-2026-06-23.md
+ create mode 100644 Inbox/Cloudflare-2026-06-23.md
+ create mode 100644 Inbox/DanLuu-2026-06-23.md
+ create mode 100644 Inbox/GitHub-Trending-2026-06-23.md
+ create mode 100644 Inbox/HN-2026-06-23.md
+ create mode 100644 Inbox/HN-Best-2026-06-23.md
+ create mode 100644 Inbox/InfoQ-CN-2026-06-23.md
+ create mode 100644 Inbox/LWN-2026-06-23.md
+ create mode 100644 Inbox/LilianWeng-2026-06-23.md
+ create mode 100644 Inbox/Lobsters-2026-06-23.md
+ create mode 100644 Inbox/Material-2026-06-23.md
+ create mode 100644 Inbox/NNg-2026-06-23.md
+ create mode 100644 Inbox/OpenAI-2026-06-23.md
+ create mode 100644 Inbox/Phoronix-2026-06-23.md
+ create mode 100644 Inbox/SmashingMag-2026-06-23.md
+ create mode 100644 Inbox/StripeDesign-2026-06-23.md
+ create mode 100644 Inbox/UXCollective-2026-06-23.md
+ create mode 100644 Inbox/arXiv-2026-06-23.md
+ create mode 100644 Inbox/dev.to-2026-06-23.md
+ create mode 100644 "Inbox/\346\216\230\351\207\221\347\203\255\346\246\234-2026-06-23.md"
+ create mode 100644 "Inbox/\346\257\217\346\227\245\347\262\276\351\200\211-2026-06-23.md"
+ create mode 100644 "Inbox/\350\256\276\350\256\241\347\201\265\346\204\237-2026-06-23.md"
+ create mode 100644 "platforms-architecture/ai-live-platform/00-AI\347\233\264\346\222\255\345\271\263\345\217\260\345\205\250\346\265\201\347\250\213\346\213\206\350\247\243\346\200\273\347\264\242\345\274\225.md"
+ create mode 100644 "platforms-architecture/ai-live-platform/01-\345\211\215\347\253\257\345\274\200\345\217\221\345\205\250\346\265\201\347\250\213 \302\267 \346\236\201\350\207\264\346\267\261\345\272\246\346\213\206\350\247\243.md"
+ create mode 100644 "platforms-architecture/ai-live-platform/02-\347\275\221\351\241\265\345\274\200\345\217\221\345\205\250\346\265\201\347\250\213 \302\267 \346\236\201\350\207\264\346\267\261\345\272\246\346\213\206\350\247\243.md"
+ create mode 100644 "platforms-architecture/ai-live-platform/05-\347\247\273\345\212\250\347\253\257\345\274\200\345\217\221\345\205\250\346\265\201\347\250\213 \302\267 \346\236\201\350\207\264\346\267\261\345\272\246\346\213\206\350\247\243(\351\241\271\347\233\256\350\267\263\350\277\207\350\257\264\346\230\216).md"
+ create mode 100644 "platforms-architecture/ai-live-platform/06-\350\277\220\347\273\264DevOps\345\205\250\346\265\201\347\250\213 \302\267 \346\236\201\350\207\264\346\267\261\345\272\246\346\213\206\350\247\243.md"
+[INFO] Commit created: auto: backup 周二 2-26-06 180009 
+To github.com:zhouxiaoqi2925/Obsidian.git
+   2400f34ed..390250759  main -> main
+[SUCCESS] Pushed to origin/main. 
+[INFO] Done: 18:01:27.00 
+==================================== 
+ 
+==================================== 
+ Obsidian Vault Auto Backup 
+ 周二 2026/06/23 23:30:05 
+==================================== 
