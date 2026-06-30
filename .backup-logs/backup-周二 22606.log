@@ -549,3 +549,33 @@ To github.com:zhouxiaoqi2925/Obsidian.git
  Obsidian Vault Auto Backup 
  周二 2026/06/30 12:00:06 
 ==================================== 
+fatal: could not write multi-pack-index: Permission denied
+error: failed to perform geometric repack
+error: task 'geometric-repack' failed
+[main d1ee8e795] auto: backup 周二 2-26-06 120009
+ 15 files changed, 3244 insertions(+)
+ create mode 100644 "Projects/platforms-architecture/01-OpenLive-\345\276\256\345\206\205\346\240\270-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/02-OpenLive-Phase2-\347\256\227\345\212\233\347\256\241\347\272\277\344\270\216\351\230\262\345\260\201-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/03-OpenLive-Phase2-\350\220\275\345\234\260\350\257\201\346\230\216-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/04-OpenLive-Phase3-\347\253\257\344\276\247\347\224\237\346\200\201-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/05-OpenLive-Phase3-MVP\350\220\275\345\234\260\350\257\201\346\230\216-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/06-OpenLive-Phase3.2-\350\223\235\345\233\276\350\212\202\347\202\271\346\263\250\345\206\214\350\241\250-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/07-OpenLive-Phase3.2-\350\223\235\345\233\276\350\212\202\347\202\271\346\263\250\345\206\214\350\241\250-MVP\350\220\275\345\234\260\350\257\201\346\230\216-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/08-OpenLive-Phase3.3-\345\244\232\345\252\222\344\275\223\347\274\226\350\247\243\347\240\201TS\345\261\202-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/09-OpenLive-Phase3.3-\345\244\232\345\252\222\344\275\223\347\274\226\350\247\243\347\240\201TS\345\261\202-MVP\350\220\275\345\234\260\350\257\201\346\230\216-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/10-OpenLive-Phase3.4-\347\241\254\344\273\266\351\251\261\345\212\250\344\270\216\345\205\274\345\256\271\345\261\202-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/11-OpenLive-Phase3.4-\347\241\254\344\273\266\351\251\261\345\212\250\344\270\216\345\205\274\345\256\271\345\261\202-MVP\350\220\275\345\234\260\350\257\201\346\230\216-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/12-OpenLive-Phase4-\346\270\227\351\200\217\346\265\213\350\257\225\344\270\216ITDD\345\256\241\350\256\241-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/13-OpenLive-Phase4-\346\270\227\351\200\217\346\265\213\350\257\225\344\270\216ITDD\345\256\241\350\256\241-MVP\350\220\275\345\234\260\350\257\201\346\230\216-9\303\2277-\351\252\250\346\236\266.md"
+ create mode 100644 "Projects/platforms-architecture/14-OpenLive-Phase1-\345\215\225\346\265\213\344\270\216\346\267\267\346\262\214\350\220\275\345\234\260\350\257\201\346\230\216-9\303\2277-\351\252\250\346\236\266.md"
+[INFO] Commit created: auto: backup 周二 2-26-06 120009 
+To github.com:zhouxiaoqi2925/Obsidian.git
+   51ae126dd..d1ee8e795  main -> main
+[SUCCESS] Pushed to origin/main. 
+[INFO] Done: 12:02:50.58 
+==================================== 
+ 
+==================================== 
+ Obsidian Vault Auto Backup 
+ 周二 2026/06/30 18:00:04 
+==================================== 
