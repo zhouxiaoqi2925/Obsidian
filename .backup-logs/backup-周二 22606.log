@@ -610,3 +610,15 @@ error: task 'geometric-repack' failed
  Obsidian Vault Auto Backup 
  周二 2026/06/30 23:30:05 
 ==================================== 
+fatal: renaming pack to '.git/objects/pack/pack-62859b31fe2dc80ce7f68b9af9a8596322d623a2.pack' failed: File exists
+error: failed to perform geometric repack
+error: task 'geometric-repack' failed
+[main 52e407017] auto: backup 周二 2-26-06 233006
+ 1 file changed, 31 insertions(+)
+[INFO] Commit created: auto: backup 周二 2-26-06 233006 
+To github.com:zhouxiaoqi2925/Obsidian.git
+   d1ee8e795..52e407017  main -> main
+[SUCCESS] Pushed to origin/main. 
+[INFO] Done: 23:32:22.47 
+==================================== 
+ 
