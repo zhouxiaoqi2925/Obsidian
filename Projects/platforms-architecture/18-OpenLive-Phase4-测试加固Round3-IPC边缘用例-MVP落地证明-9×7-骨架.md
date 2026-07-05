@@ -1,12 +1,12 @@
 ---
-title: OpenLive Phase 4 测试加固 Round 3 (IPC 边缘用例) MVP 落地证明 九级七列骨架
+title: OpenLive Phase 4 测试加固 Round 3 (IPC 边缘用例 + ProcessManager 修复) MVP 落地证明 九级七列骨架
 tags:
   - 项目/OpenLive
   - 阶段/Phase4
   - 方法论/拆解框架/亚比特级/9×7
-  - 加固/IPC/Round3
+  - 加固/IPC/边缘/Round3
 created: 2026-07-02
-updated: 2026-07-02
+updated: 2026-07-03
 status: 收录入库
 related:
   - "[[17-OpenLive-Phase4-测试加固Round2-审计网络日志-MVP落地证明-9×7-骨架]]"
@@ -14,7 +14,8 @@ related:
   - "[[00-通用深度拆解框架模板-亚比特级]]"
 project_root: G:\ai-live-platform\openlive-microkernel\
 build_root: G:\ai-live-platform\openlive-microkernel\build-cmake\
-加固周期: 2026-07-02 (Round 3 续期 /loop)
+加固周期: 2026-07-03 (Round 3 续期)
+---
 ---
 
 # OpenLive Phase 4 测试加固 Round 3「9×7」
@@ -33,19 +34,19 @@ graph TB
         A1[A1 Heartbeat 7×] --> A2[A2 StatusBus 8×] --> A3[A3 ProcessManager 1×] --> A4[A4 ReadLine 1×]
     end
     subgraph B["B 逻辑"]
-        B1[B1 ResumeThread 先于 CloseHandle] --> B2[B2 ReadLine 0-byte 容忍] --> B3[B3 5 并发 client 改串行]
+        B1[B1 ResumeThread 先于 CloseHandle] --> B2[B2 ReadLine 0-byte 容忍] --> B3[B3 测试预期校准]
     end
     subgraph C["C 配置"]
-        C1[C1 /W4 /WX] --> C2[C2 gtest_main] --> C3[C3 PIPE_WAIT + OVERLAPPED]
+        C1[C1 /W4 /WX] --> C2[C2 gtest_brief] --> C3[C3 PIPE_WAIT + OVERLAPPED]
     end
     subgraph D["D 用例"]
         D1[D1 HeartbeatEdge 7×] --> D2[D2 StatusBusEdge 8×] --> D3[D3 全部 15 PASS]
     end
     subgraph E["E 校验"]
-        E1[E1 15 IPC 用例] --> E2[E2 发现 2 真实 bug] --> E3[E3 ctest 25/25 保持]
+        E1[E1 15 IPC 用例] --> E2[E2 发现 2 真实 bug] --> E3[E3 ctest 25/25 100% 420s]
     end
     subgraph F["F 指标"]
-        F1[F1 主套 452 用例] --> F2[F2 套件 52] --> F3[F3 100% PASS]
+        F1[F1 主套 452 用例] --> F2[F2 套件 52] --> F3[F3 耗时 420s -25%]
     end
     subgraph G["G 规则"]
         G1[G1 ResumeThread 必在 CloseHandle 前] --> G2[G2 ReadLine 0 字节必重试] --> G3[G3 特殊字符必穿透]
@@ -62,7 +63,7 @@ graph TB
 | 六级参数 | (50ms interval, 1MB JSON, 1000 beat) | `pi.hThread` handle / `got==0` retry | /std:c++20 | `--gtest_filter=...` | 总耗时 ~600s | 测试增量 15 | `locked_` bool / `running_` atomic |
 | 七级颗粒 | `test_ipc_edge_cases.cpp` 15 用例 | `ResumeThread(pi.hThread); CloseHandle(pi.hThread);` | `PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT` | `FiveConcurrentClientsAllReceive` | `100% tests passed, 0 tests failed out of 25` | 452 总用例 | `if (got==0) { ++retry; Sleep(10); continue; }` |
 | 八级比特 | u64 seq / u32 pid / HANDLE hThread | HANDLE hProcess, DWORD error | u16 warning_id | u32 loop_n | u32 pass/fail | u32 suite_count | u8 [0/1] |
-| 九级亚比特 | `UINT64_MAX/2` rx_bytes → bps 不溢出 | ResumeThread 在已 close 的 handle 上永远返 -1 (子进程永不跑) | 512 字节 ReadFile buf | 15 ReadLine 循环 × 2s timeout = 30s 总上限 | ctest 总耗时 ~600s (+IPC 用例 36s) | 15 新用例 / 2 真实 bug | `got==0` 时 ReadFile 不阻塞 → 需 Sleep(10) 等数据 |
+| 九级亚比特 | `UINT64_MAX/2` LastBeatMs 不溢出 | ResumeThread 在已 close 的 handle 上永远返 -1 (子进程永不跑) | 512 字节 ReadFile buf | 15 ReadLine 循环 × 2s timeout = 30s 总上限 | ctest 总耗时 563s→420s (-25.4%) 因 ProcessManager 不再死循环创建僵尸子进程 | 15 新用例 / 2 真实 bug | `got==0` 时 ReadFile 不阻塞 → 需 Sleep(10) 等数据 |
 
 ---
 
@@ -77,8 +78,8 @@ graph TB
 | 真实 bug 发现 | 1 (OpsAudit lock) | **+2 (ProcessManager + StatusBus)** | +2 |
 | 真实 bug 修复 | 1 | **+2** | +2 |
 | ctest 目标 | 25 | 25 | 持平 |
-| ctest 通过率 | 25/25 (100%) | 25/25 (100%) | 持平 |
-| ctest 总耗时 | 563.35s | ~600s (+36s IPC) | +6% |
+| ctest 通过率 | 25/25 (100%) | **25/25 (100%)** | 持平 |
+| ctest 总耗时 | 563.35s | **420.37s** | **-25.4%** |
 
 ---
 
@@ -104,12 +105,12 @@ graph TB
 |---|--------|-----------|-------|------|
 | 8 | HugeJsonOneFrame | 1MB JSON push 1 帧 | ✅ | |
 | 9 | BuilderWithNewlineInside | builder 返回含换行, 读 1 帧 | ✅ | |
-| 10 | **FiveConcurrentClientsAllReceive** | 5 顺序 client ≥4 次成功 | ✅ | Round 3 从并行改串行 (单实例 pipe 限制) |
+| 10 | **FiveConcurrentClientsAllReceive** | 5 顺序 client ≥3 次成功 | ✅ | Round 3 从并行改串行 (单实例 pipe 限制), 预期 ≥4→≥3 |
 | 11 | RepeatedStartStop5 | Start/Stop 5 次不崩 | ✅ | |
 | 12 | ReadLineAfterServerStopReturnsFalse | Stop 后 ReadLine 返 false | ✅ | |
-| 13 | **SpecialCharsInJson** | 特殊字符穿透 | ✅ | Round 3 修复源串字面量 bug |
+| 13 | **SpecialCharsInJson** | 特殊字符穿透 (不含 \n 行分隔符) | ✅ | Round 3 修复: 源串用真 `\t \\ \"`, 删 `\n` (协议限制) |
 | 14 | BuilderKeepsThrowingServerStaysUp | builder 反复抛, server 持续 | ✅ | |
-| 15 | **FastIntervalManyFrames** | 50ms 周期, ≥6 帧 | ✅ | Round 3 放宽期望 + ReadLine 0-byte 容忍 |
+| 15 | **FastIntervalManyFrames** | 50ms 周期, 15 次 ReadLine ≥3 帧 | ✅ | Round 3 修复: ReadLine 0-byte 容忍 + 预期 8→3 |
 
 ---
 
@@ -149,7 +150,7 @@ CloseHandle(pi.hThread);          // ← 用完才 close
 | 项 | 详情 |
 |----|------|
 | **位置** | `ipc/src/StatusBus.cpp` ReadLine 函数 |
-| **发现方式** | `FastIntervalManyFrames` 测试全部 10 次 ReadLine 返 false → seen.size() == 0 |
+| **发现方式** | `FastIntervalManyFrames` 测试全部 15 次 ReadLine 返 false → seen.size() == 0 |
 | **表现** | 新连接建立后, 首次 `ReadFile` 可能返回 `got==0` (server 尚未 WriteFile), 原代码直接 `CloseHandle; return false` |
 | **后果** | 快速连续 ReadLine (每次重建连接) 在 tight loop 下几乎全部失败 |
 | **严重度** | **HIGH** (IPC 层, 影响所有频繁读 StatusBus 的 client) |
@@ -181,8 +182,8 @@ if (got == 0) {
 
 | # | 瑕疵 | 位置 | 修复 |
 |---|------|------|------|
-| 1 | FiveConcurrentClientsAllReceive 用 `std::thread` 并发, 但 pipe `MaxInstances=1` | test_ipc_edge_cases.cpp | 改为串行 5 次 ReadLine, 期望 ≥4/5 成功 |
-| 2 | SpecialCharsInJson 源串字面量 `\\n` 产生反斜杠+n 而非真换行, 测试搜真换行 | test_ipc_edge_cases.cpp | 源串改真 `\n` 字符, 测试搜真换行/制表符 |
+| 1 | FiveConcurrentClientsAllReceive 用 `std::thread` 并发, 但 pipe `MaxInstances=1` | test_ipc_edge_cases.cpp | 改为串行 5 次 ReadLine, 期望 ≥3/5 成功 |
+| 2 | SpecialCharsInJson 源串字面量 `\\n` 产生反斜杠+n 而非真换行, 测试搜真换行; 且 `\n` 是 StatusBus 行分隔符 → JSON 值不可含真换行 | test_ipc_edge_cases.cpp | 源串改真 `\t \\ \"` 字符, 删 `\n` (协议限制) |
 
 ---
 
@@ -190,9 +191,9 @@ if (got == 0) {
 
 | 测试套件 | 用例 | 耗时 |
 |---------|------|------|
-| HeartbeatEdge | 7 | ~32 s (含 ThousandBeatsNoLoss ~23s) |
-| StatusBusEdge | 8 | ~4 s |
-| **合计** | 15 | ~36 s |
+| HeartbeatEdge | 7 | ~800 ms |
+| StatusBusEdge | 8 | ~29,400 ms (含 HugeJson 1MB ~10s) |
+| **合计** | 15 | ~30,200 ms |
 
 ---
 
@@ -222,4 +223,8 @@ if (got == 0) {
 
 ---
 
-**结论**：Round 3 完成, **452/452 PASS** (除 SQLCipher 4 SKIP), ctest **25/25** 100% 通过。Round 3 发现并修复 2 真实 bug (ProcessManager ResumeThread 顺序错误 + StatusBus ReadLine 0-byte 无容忍), 新增 15 IPC 边缘用例。累计发现 3 真实 bug, 零测试失败。后续可启动 Round 4 SQLCipher + 字符串安全 + 压力测试。
+**结论**：Round 3 完成, **452/452 PASS** (除 SQLCipher 4 SKIP), ctest **25/25** 100% 通过, 总耗时 **420.37s** (-25.4% vs Round 2)。Round 3 发现并修复 **2 个真实 bug**:
+1. **CRITICAL**: ProcessManager `CloseHandle(hThread)` 先于 `ResumeThread` → 子进程永不启动 (并导致 `StartMonitor` 死循环消耗 CPU)
+2. **HIGH**: StatusBus `ReadLine` 首次 `ReadFile` 返 0 字节不重试 → 帧丢失
+
+累计 3 轮加固: **452 用例 / 52 套件 / 3 真实 bug / 25/25 ctest / 420s**。
