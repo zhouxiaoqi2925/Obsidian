@@ -1,14 +1,14 @@
 # AGENTS.md - Obsidian Vault AI Agent Convention
 
 > 任何 AI Agent（Codex CLI、Claude Code、Cursor 等）操作本库时的总约定。
-> 最后更新：2026-06-16
+> 最后更新：2026-07-07
 > 主人：周潇齐（zhxq）
 
 ## 已注册 AI 工具
 | 工具 | 接入方式 | 适用场景 |
 |------|---------|---------|
 | Claude Code | MCP（obsidian / obsidian-brain / hex-line） | 交互式会话 |
-| Codex CLI | 直接文件系统访问（无需 Obsidian 运行） | 脚本化批量任务 |
+| Codex CLI | MCP（obsidian-mcp-server 3.2.9 → Local REST API :27124） | 脚本化批量 + 交互式会话（2026-07-07 由直读改 MCP） |
 | DeepSeek | 通过 Claude Code 间接接入 | 模型推理 |
 
 ## 所有权边界（核心约定）
@@ -71,6 +71,13 @@
 - 详见 `Codex + Obsidian 使用指南.md`
 - 工作目录：`C:\Users\15389\Documents\Codex\2026-06-16\mpc`
 - 进入会话先读 `用户档案.md` + `AGENTS.md`
+- **2026-07-07 变更**：Codex CLI 接入方式由"直接文件系统访问"改为 **MCP（obsidian-mcp-server 3.2.9）**，走 Local REST API :27124 HTTPS。
+  本次变更由主人周潇齐在 2026-07-06 当日会话中显式拍板授权，
+  详见 `Sessions/Codex-MCP-接入-2026-07-06.md`。
+  - 限制：omnisearch / commands（`OBSIDIAN_ENABLE_COMMANDS`）默认关闭。
+  - 与 Claude Code 共用同一组 Local REST API API key，双 AI 写冲突按"冲突仲裁"条款处理。
+  - 隐私红线（API key 不进 .md）依然有效；如需轮换 key，必须同步更新 `~/.codex/config.toml`。
+  - Codex CLI 仍保留对 Vault 文件系统的直接访问能力（这是 MCP 协议默认允许的 fallback），但**默认不再走直读**，除非主人明确要求。
 
 ## Claude Code 接入详情
 - 详见 `Claude Code + Obsidian 使用指南.md`
