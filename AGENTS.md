@@ -146,3 +146,58 @@ Codex 桌面端在以下场景**自动触发** obsidian-second-brain:
 接管初期,Codex 桌面端**误判**了 vault 位置,把 C:\Users\15389\Documents\Obsidian Vault(空测试 vault)当成了主 vault,建了一份冗余 AGENTS.md。
 经主人周潇齐指出,已删除错位文件,统一以本 G 盘 vault 为准。
 教训:每次进入 vault 前,先用 Get-ChildItem G:\ -Filter '.obsidian' -Recurse -Depth 3 确认真实路径,而不是猜。
+
+
+---
+
+## 2026-07-09 更新:第二大脑基础设施(Codex 桌面端)
+
+本会话在 vault 内建了完整的"第二大脑"基础设施,部署在 `.codex-rag/`(gitignored)。
+
+### 组件
+
+| 组件 | 路径 | 状态 |
+|---|---|---|
+| RAG 索引 | `.codex-rag/data/chroma/` (ChromaDB) | ⏳ 后台首次全量索引中 |
+| 嵌入模型 | paraphrase-multilingual-MiniLM-L12-v2 | ✅ 已下载(本地) |
+| Watcher | `.codex-rag/scripts/watcher.py` (pythonw 常驻) | ✅ 1 对进程在跑 |
+| 定时任务 | Codex-SecondBrain-{ScanInbox,CheckDaily,VaultSnapshot,Port27124} | ✅ 4 个 Ready |
+| MCP | `[mcp_servers.rag]` in `~/.codex/config.toml` | ✅ 已配(重启 Codex 后生效) |
+| 元数据脚本 | `.codex-rag/scripts/tasks/` | ✅ 4 个 |
+| README | `.codex-rag/README.md` | ✅ 6 KB |
+
+### Codex 桌面端用法
+
+#### 语义搜索(MCP)
+
+重启 Codex 桌面端后,可在会话内调:
+`
+mcp__rag__rag_search(query="上次关于 RAG 的讨论", top_k=5)
+mcp__rag__rag_search(query="Nexus Terminal 架构", path_prefix="Projects/")
+`
+
+#### 文件搜索(CLI,本会话内可用)
+
+`powershell
+& "G:\Obsidian Vault\.codex-rag\.venv\Scripts\python.exe" 
+  "G:\Obsidian Vault\.codex-rag\scripts\search.py" "关键词" -n 5
+& "G:\Obsidian Vault\.codex-rag\.venv\Scripts\python.exe" 
+  "G:\Obsidian Vault\.codex-rag\scripts\search.py" "关键词" --path-prefix "Projects/"
+`
+
+#### 重新索引(增量)
+
+`powershell
+ = "https://hf-mirror.com"
+& "G:\Obsidian Vault\.codex-rag\.venv\Scripts\python.exe" 
+  "G:\Obsidian Vault\.codex-rag\scripts\index.py" --incremental
+`
+
+### 边界(不做什么)
+
+- 不动 `G:\Obsidian 数据库\codex.db` 任何字段(Codex CLI 领地,桌面端不碰)
+- 不删 vault 笔记
+- 不写 `40-Archive/`
+- 不读 `attachments/`
+
+详见 `.codex-rag/README.md` 和 `Sessions/Codex-Session-2026-07-09-Infrastructure.md`。
