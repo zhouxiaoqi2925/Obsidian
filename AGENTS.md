@@ -1,7 +1,7 @@
 # AGENTS.md - Obsidian Vault AI Agent Convention
 
 > 任何 AI Agent（Codex CLI、Claude Code、Cursor 等）操作本库时的总约定。
-> 最后更新：2026-07-07
+> 最后更新：**2026-07-09**(Codex 桌面端第二大脑接管)
 > 主人：周潇齐（zhxq）
 
 ## 已注册 AI 工具
@@ -89,3 +89,60 @@
 - Codex 是元数据库**唯一管家**：schema 演进、索引重建、备份都由 Codex 执行
 - Claude Code 暂以只读方式使用，写操作需主人授权
 - **关键约束：DB 内仅存元数据，不存知识内容**（见上方"所有权边界"）
+
+---
+
+## 2026-07-09 更新:Codex 桌面端第二大脑接管
+
+本次会话由 Codex 桌面端(用户主动要求)对 vault 进行"第二大脑"接管。**不是新建规则,是补充声明**——以原有 AGENTS.md 为准。
+
+### 接管方式
+
+- **Codex 桌面端**(MiniMax-M3 模型,Ark 推理)新增全局 skill obsidian-second-brain
+- 接管后 Codex 的默认行为:
+  1. 任务开始时,先读本 AGENTS.md + 用户档案.md 建立上下文
+  2. 默认走**直接文件系统访问**(不强制要求 Obsidian 开启)
+  3. 当端口 27124 监听时,自动升级为 Local REST API HTTPS 访问
+  4. 严格遵守上方"所有权边界":只动 .md 文件,**绝不写 G:\Obsidian 数据库\codex.db 任何字段**
+
+### 与原 MCP 接入的兼容
+
+- 原配置:obsidian-mcp-server 3.2.9 → Local REST API :27124(Claude Code + Codex CLI 共用)
+- 本次接管**没有动**该 MCP 配置,也没有动 ~/.codex/config.toml 的 [mcp_servers] 节
+- Codex 桌面端**优先用文件系统直读**(避免与 Codex CLI 的 MCP 接入产生工具命名冲突)
+- 当用户明确说"走 MCP"时,Codex 桌面端也可调用 
+ode_repl + curl 走 HTTPS 27124
+
+### 接管前后差异(2026-07-09)
+
+| 项 | 接管前(2026-07-07 之前) | 接管后(2026-07-09 起) |
+|---|---|---|
+| Codex 桌面端 skill | 无 | obsidian-second-brain(已装) |
+| 工作区 AGENTS.md | 指向 C 盘(错) | 指向 G 盘(已修正) |
+| 默认 vault 路径 | 未声明 | G:\Obsidian Vault |
+| 启动顺序 | 任意 | 先读本 AGENTS.md + 用户档案.md |
+| 写权限 | 散乱 | 严格遵守上方"所有权边界" |
+
+### Skill 触发表
+
+Codex 桌面端在以下场景**自动触发** obsidian-second-brain:
+- 用户说:"记一下 / save this / 写到 Obsidian / remember"
+- 用户说:"上次 / 之前 / 你记不记得 / last time"
+- 用户提到:Obsidian / 笔记 / 知识库 / 第二大脑 / 长期记忆 / [[双链]] / MOC
+- 工作区 AGENTS.md 引用了本 vault
+
+### 操作前置必读(再次强调)
+
+每次 Codex 桌面端会话开始,按顺序读:
+1. 本文件 AGENTS.md(完整)
+2. 用户档案.md(了解主人身份、项目、技术栈)
+3. Codex + Obsidian 使用指南.md(了解工具差异)
+4. Obsidian MCP 端口 27124 修复记录.md(了解 27124 端口坑)
+
+读完之后再开干。
+
+### 道歉与更正
+
+接管初期,Codex 桌面端**误判**了 vault 位置,把 C:\Users\15389\Documents\Obsidian Vault(空测试 vault)当成了主 vault,建了一份冗余 AGENTS.md。
+经主人周潇齐指出,已删除错位文件,统一以本 G 盘 vault 为准。
+教训:每次进入 vault 前,先用 Get-ChildItem G:\ -Filter '.obsidian' -Recurse -Depth 3 确认真实路径,而不是猜。

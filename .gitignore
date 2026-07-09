@@ -57,3 +57,10 @@ $RECYCLE.BIN/
 *.db-journal
 *.db-shm
 *.db-wal
+
+# ============== Codex Desktop 第二大脑(RAG + watcher) ==============
+.codex-rag/.venv/
+.codex-rag/data/
+.codex-rag/logs/
+.codex-rag/data/chroma/
+.codex-rag/.state/
