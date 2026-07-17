@@ -22,9 +22,9 @@ DIGEST_SIZE = 20
 # 是否抓取原文（保留代码块/表格/链接）
 FETCH_FULL_CONTENT = True
 # 每个源最多抓全文的条数
-CONTENT_TOP_N = 3
+CONTENT_TOP_N = 8
 # 单条全文最大字符数（避免单文件过大）
-CONTENT_MAX_CHARS = 4000
+CONTENT_MAX_CHARS = 12000
 # 全文缓存（同一进程内 URL -> markdown）
 _CONTENT_CACHE = {}
 # 全局 scraper（带 Cloudflare 绕过）
@@ -829,21 +829,21 @@ def fetch_rss(name, cfg, limit=8, with_content=False, content_top_n=CONTENT_TOP_
     return items
 
 
-def fetch_smashing(limit=8):  return fetch_rss("SmashingMag",  DESIGN_FEEDS["SmashingMag"],  limit, with_content=True, content_top_n=2)
+def fetch_smashing(limit=8):  return fetch_rss("SmashingMag",  DESIGN_FEEDS["SmashingMag"],  limit, with_content=True, content_top_n=limit)
 def fetch_awwwards(limit=8):  return fetch_rss("Awwwards",     DESIGN_FEEDS["Awwwards"],     limit)
-def fetch_ux(limit=8):        return fetch_rss("UXCollective", DESIGN_FEEDS["UXCollective"], limit, with_content=True, content_top_n=2)
+def fetch_ux(limit=8):        return fetch_rss("UXCollective", DESIGN_FEEDS["UXCollective"], limit, with_content=True, content_top_n=limit)
 def fetch_nng(limit=5):       return fetch_rss("NNg",          DESIGN_FEEDS["NNg"],          limit)
-def fetch_stripe(limit=5):    return fetch_rss("StripeDesign", DESIGN_FEEDS["StripeDesign"], limit, with_content=True, content_top_n=2)
+def fetch_stripe(limit=5):    return fetch_rss("StripeDesign", DESIGN_FEEDS["StripeDesign"], limit, with_content=True, content_top_n=limit)
 def fetch_material(limit=5):  return fetch_rss("Material",     DESIGN_FEEDS["Material"],     limit)
 
-def fetch_cloudflare(limit=8):  return fetch_rss("Cloudflare",   TECH_FEEDS["Cloudflare"],   limit, with_content=True, content_top_n=3)
-def fetch_infoq_cn(limit=8):    return fetch_rss("InfoQ-CN",     TECH_FEEDS["InfoQ-CN"],     limit, with_content=True, content_top_n=3)
-def fetch_charity(limit=6):      return fetch_rss("Charity",      TECH_FEEDS["Charity"],      limit, with_content=True, content_top_n=2)
-def fetch_phoronix(limit=6):    return fetch_rss("Phoronix",     TECH_FEEDS["Phoronix"],     limit, with_content=True, content_top_n=3)
-def fetch_openai(limit=6):      return fetch_rss("OpenAI",       TECH_FEEDS["OpenAI"],       limit, with_content=True, content_top_n=2)
-def fetch_danluu(limit=5):      return fetch_rss("DanLuu",       TECH_FEEDS["DanLuu"],       limit, with_content=True, content_top_n=2)
-def fetch_lilian(limit=5):      return fetch_rss("LilianWeng",   TECH_FEEDS["LilianWeng"],   limit, with_content=True, content_top_n=2)
-def fetch_lwn(limit=8):         return fetch_rss("LWN",          TECH_FEEDS["LWN"],          limit, with_content=True, content_top_n=3)
+def fetch_cloudflare(limit=8):  return fetch_rss("Cloudflare",   TECH_FEEDS["Cloudflare"],   limit, with_content=True, content_top_n=limit)
+def fetch_infoq_cn(limit=8):    return fetch_rss("InfoQ-CN",     TECH_FEEDS["InfoQ-CN"],     limit, with_content=True, content_top_n=limit)
+def fetch_charity(limit=6):      return fetch_rss("Charity",      TECH_FEEDS["Charity"],      limit, with_content=True, content_top_n=limit)
+def fetch_phoronix(limit=6):    return fetch_rss("Phoronix",     TECH_FEEDS["Phoronix"],     limit, with_content=True, content_top_n=limit)
+def fetch_openai(limit=6):      return fetch_rss("OpenAI",       TECH_FEEDS["OpenAI"],       limit, with_content=True, content_top_n=limit)
+def fetch_danluu(limit=5):      return fetch_rss("DanLuu",       TECH_FEEDS["DanLuu"],       limit, with_content=True, content_top_n=limit)
+def fetch_lilian(limit=5):      return fetch_rss("LilianWeng",   TECH_FEEDS["LilianWeng"],   limit, with_content=True, content_top_n=limit)
+def fetch_lwn(limit=8):         return fetch_rss("LWN",          TECH_FEEDS["LWN"],          limit, with_content=True, content_top_n=limit)
 
 
 
@@ -851,48 +851,181 @@ def _strip_html(s):
     return re.sub(r"<[^>]+>", "", s or "").strip()
 
 
+def _safe_title(text, limit=28):
+    text = _strip_html(text).replace("\n", " ").strip()
+    return text[:limit]
+
+
+def _split_markdown_sections(md):
+    if not md:
+        return []
+    parts = re.split(r"\n(?=#{1,6}\s)", md)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _extract_code_blocks(md):
+    if not md:
+        return []
+    blocks = []
+    for match in re.finditer(r"```([^\n`]*)\n(.*?)```", md, re.S):
+        lang = (match.group(1) or "").strip() or "text"
+        code = (match.group(2) or "").strip()
+        if code:
+            blocks.append({"lang": lang, "code": code})
+    return blocks
+
+
+def _infer_code_points(blocks):
+    notes = []
+    for block in blocks[:3]:
+        code = block["code"]
+        lang = block["lang"]
+        if re.search(r"\bclass\s+\w+|\bdef\s+\w+|\bfunction\s+\w+|\bfunc\s+\w+", code):
+            notes.append(f"- `{lang}`: 包含函数或类定义，适合直接抽成可复用实现。")
+        elif re.search(r"\bSELECT\b|\bFROM\b|\bWHERE\b", code, re.I):
+            notes.append(f"- `{lang}`: 这段更像查询逻辑，重点看过滤条件、聚合方式和性能影响。")
+        elif re.search(r"\bapi\b|\brequest\b|\bresponse\b|\bjson\b", code, re.I):
+            notes.append(f"- `{lang}`: 更偏接口调用示例，适合作为接入或联调样例。")
+        else:
+            notes.append(f"- `{lang}`: 代码片段可作为实现参考，建议结合上下文确认输入输出和边界条件。")
+    return notes
+
+
+def _build_structured_sections(item):
+    desc = _strip_html(item.get("desc", ""))
+    content = item.get("content", "") or ""
+    sections = _split_markdown_sections(content)
+    code_blocks = _extract_code_blocks(content)
+    source_excerpt = content[:3000].strip() if content else ""
+
+    intro = []
+    if desc:
+        intro.append(desc[:260])
+    if item.get("author"):
+        intro.append(f"作者：{item['author']}")
+    if item.get("pub"):
+        intro.append(f"发布时间：{item['pub']}")
+    if not intro:
+        intro.append("本条未提供稳定摘要，建议直接结合下方原文整理。")
+
+    text_desc = []
+    if sections:
+        for sec in sections[:4]:
+            one_line = re.sub(r"\s+", " ", sec).strip()
+            if one_line:
+                text_desc.append(f"- {one_line[:380]}")
+    elif desc:
+        text_desc.append(f"- {desc}")
+    else:
+        text_desc.append("- 未抓到可展开正文。")
+
+    code_desc = _infer_code_points(code_blocks)
+    if not code_desc:
+        code_desc = ["- 本文未检测到明确代码块，内容更偏新闻、观点或方法论。"]
+
+    source_lines = []
+    if code_blocks:
+        for idx, block in enumerate(code_blocks[:3], 1):
+            source_lines.append(f"#### 源码片段 {idx}（{block['lang']}）")
+            source_lines.append("")
+            source_lines.append(f"```{block['lang']}")
+            source_lines.append(block["code"][:2200])
+            source_lines.append("```")
+            source_lines.append("")
+    elif source_excerpt:
+        source_lines.append("#### 原文节选")
+        source_lines.append("")
+        source_lines.append(source_excerpt)
+        source_lines.append("")
+    else:
+        source_lines.append("未抓到可展示源码或原文节选。")
+        source_lines.append("")
+
+    return {
+        "intro": intro,
+        "text_desc": text_desc,
+        "code_desc": code_desc,
+        "source_lines": source_lines,
+        "has_content": bool(content),
+    }
+
+
 def write_rss_source(key, items, feeds_dict, default_tag="设计"):
-    """通用 RSS 源写入 Inbox。feeds_dict 是 DESIGN_FEEDS 或 TECH_FEEDS。
-    items 中如有 'content' 字段，会以 <details> 折叠块附加全文（保留代码）。"""
+    """通用 RSS 源写入 Inbox，输出完整知识笔记结构。"""
     if not items:
         return
     cfg = feeds_dict[key]
     fp = os.path.join(INBOX, f"{key}-{TODAY}.md")
     full_count = sum(1 for it in items if it.get("content"))
+    code_count = sum(1 for it in items if _extract_code_blocks(it.get("content", "") or ""))
     lines = [
         "---", f"date: {TODAY}", f"timestamp: {TIMESTAMP}",
         f"tags: [{default_tag}, {cfg['label']}, 每日抓取, 抓取]",
         f"source: {cfg['url']}",
         f"count: {len(items)}",
         f"full_content: {full_count}",
+        f"code_items: {code_count}",
         "---", "",
         f"# {cfg['emoji']} {cfg['label']} Top {len(items)} ({TODAY})", "",
+        "## 前面介绍", "",
+        f"- 数据源：{cfg['label']}",
+        f"- 抓取日期：{TODAY}",
+        f"- 条目数：{len(items)}",
+        f"- 含完整正文：{full_count}",
+        f"- 含代码片段：{code_count}",
+        "- 组织方式：前面介绍 / 树状图 / 文字描述 / 代码解析 / 源码",
+        "",
         "## 思维导图", "", "```mermaid", "mindmap",
         f"  root(({cfg['label']}))",
     ]
     for it in items[:14]:
-        lines.append(f"    {_strip_html(it['title'])[:25]}")
-    lines += ["```", "", f"## 列表（{len(items)} 条，{full_count} 条含全文）", ""]
+        lines.append(f"    {_safe_title(it['title'])}")
+    lines += ["```", "", f"## 详细整理（{len(items)} 条，{full_count} 条含全文，{code_count} 条含代码）", ""]
     for i, it in enumerate(items, 1):
+        detail = _build_structured_sections(it)
         lines.append(f"### {i}. {_strip_html(it['title'])}")
         lines.append(f"- **链接**: [{it['url']}]({it['url']})")
         if it.get("author"):
             lines.append(f"- **作者**: {it['author']}")
         if it.get("pub"):
             lines.append(f"- **发布**: {it['pub']}")
-        if it.get("desc"):
-            lines.append(f"- **简介**: {it['desc'][:220]}")
-        if it.get("content"):
-            lines.append("")
-            lines.append(f"<details><summary>📄 全文（{len(it['content'])} 字符，点击展开）</summary>")
+        lines.append("")
+        lines.append("#### 前面介绍")
+        lines.append("")
+        for line in detail["intro"]:
+            lines.append(f"- {line}")
+        lines.append("")
+        lines.append("#### 树状图")
+        lines.append("")
+        lines.append("```mermaid")
+        lines.append("mindmap")
+        lines.append(f"  root(({_safe_title(it['title'], 24)}))")
+        lines.append("    前面介绍")
+        lines.append("    文字描述")
+        lines.append("    代码解析")
+        lines.append("    源码")
+        lines.append("```")
+        lines.append("")
+        lines.append("#### 文字描述")
+        lines.append("")
+        lines.extend(detail["text_desc"])
+        lines.append("")
+        lines.append("#### 代码解析")
+        lines.append("")
+        lines.extend(detail["code_desc"])
+        lines.append("")
+        lines.append("#### 源码")
+        lines.append("")
+        lines.extend(detail["source_lines"])
+        if detail["has_content"]:
+            lines.append("#### 完整正文")
             lines.append("")
             lines.append(it["content"])
             lines.append("")
-            lines.append("</details>")
         lines.append("")
     with open(fp, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print(f"  [OK] {cfg['label']}: {len(items)} 条 ({full_count} 含全文) -> {fp}")
+    print(f"  [OK] {cfg['label']}: {len(items)} 条 ({full_count} 含全文 / {code_count} 含代码) -> {fp}")
 
 def write_design(key, items):  return write_rss_source(key, items, DESIGN_FEEDS, default_tag="设计")
 def write_tech(key, items):    return write_rss_source(key, items, TECH_FEEDS,    default_tag="技术")

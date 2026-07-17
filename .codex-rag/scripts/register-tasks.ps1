@@ -30,9 +30,10 @@ function Register-CodexTask {
     Write-Host "  ✅ registered $full ($Schedule $StartTime)"
 }
 
-Write-Host "== registering 4 Codex tasks ==" -ForegroundColor Cyan
+Write-Host "== registering 5 Codex tasks ==" -ForegroundColor Cyan
 Register-CodexTask -Name "ScanInbox"       -Script "$tasksDir\scan-inbox.ps1"       -Schedule "DAILY"  -StartTime "09:00"
 Register-CodexTask -Name "CheckDaily"      -Script "$tasksDir\check-daily.ps1"      -Schedule "DAILY"  -StartTime "09:30"
+Register-CodexTask -Name "KnowledgeDigest" -Script "$tasksDir\daily-knowledge-digest.ps1" -Schedule "DAILY" -StartTime "10:00"
 Register-CodexTask -Name "VaultSnapshot"   -Script "$tasksDir\vault-snapshot.ps1"   -Schedule "DAILY"  -StartTime "23:50"
 Register-CodexTask -Name "Port27124"       -Script "$tasksDir\check-port-27124.ps1" -Schedule "HOURLY" -StartTime "00:00"
 
