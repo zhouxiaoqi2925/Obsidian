@@ -25,8 +25,15 @@ FETCH_FULL_CONTENT = True
 CONTENT_TOP_N = 8
 # 单条全文最大字符数（避免单文件过大）
 CONTENT_MAX_CHARS = 12000
+GLM_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "glm_config.local.json")
+GLM_TIMEOUT = 60
+GITHUB_DEEP_ANALYZE_TOP_N = 10
+GITHUB_README_MAX_CHARS = 12000
+GITHUB_FILE_SNIPPET_CHARS = 5000
 # 全文缓存（同一进程内 URL -> markdown）
 _CONTENT_CACHE = {}
+_GLM_CONFIG = None
+_GLM_CACHE = {}
 # 全局 scraper（带 Cloudflare 绕过）
 try:
     import cloudscraper
@@ -36,6 +43,152 @@ except Exception:
 
 def _have_scraper():
     return _SCRAPER is not None
+
+
+def load_glm_config():
+    global _GLM_CONFIG
+    if _GLM_CONFIG is not None:
+        return _GLM_CONFIG
+    env_key = os.environ.get("GLM_API_KEY", "").strip()
+    if env_key:
+        _GLM_CONFIG = {
+            "api_key": env_key,
+            "model": os.environ.get("GLM_MODEL", "glm-4.7-flash").strip() or "glm-4.7-flash",
+            "base_url": os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions").strip()
+                       or "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        }
+        return _GLM_CONFIG
+    if os.path.exists(GLM_CONFIG_PATH):
+        with open(GLM_CONFIG_PATH, "r", encoding="utf-8") as f:
+            _GLM_CONFIG = json.load(f)
+        return _GLM_CONFIG
+    _GLM_CONFIG = {}
+    return _GLM_CONFIG
+
+
+def glm_enabled():
+    cfg = load_glm_config()
+    return bool(cfg.get("api_key"))
+
+
+def github_headers():
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": UA,
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def call_glm_json(system_prompt, user_payload):
+    cfg = load_glm_config()
+    if not cfg.get("api_key"):
+        return None
+    cache_key = json.dumps({"system": system_prompt, "user": user_payload}, ensure_ascii=False, sort_keys=True)
+    if cache_key in _GLM_CACHE:
+        return _GLM_CACHE[cache_key]
+    body = {
+        "model": cfg.get("model", "glm-4.7-flash"),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)}
+        ],
+        "temperature": 0.3,
+        "max_tokens": 6000,
+        "thinking": {
+            "type": "disabled"
+        },
+    }
+    try:
+        r = requests.post(
+            cfg.get("base_url", "https://open.bigmodel.cn/api/paas/v4/chat/completions"),
+            headers={
+                "Authorization": f"Bearer {cfg['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=GLM_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json()
+        message = ((data.get("choices") or [{}])[0].get("message") or {})
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    text_parts.append(str(part.get("text") or part.get("content") or ""))
+                else:
+                    text_parts.append(str(part))
+            text = "\n".join(text_parts).strip()
+        else:
+            text = str(content).strip()
+        text = re.sub(r"^```json\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        if not text:
+            raise ValueError(f"empty glm content: {json.dumps(data, ensure_ascii=False)[:1000]}")
+        if not text.lstrip().startswith("{") and not text.lstrip().startswith("["):
+            match = re.search(r"(\{.*\}|\[.*\])", text, re.S)
+            if match:
+                text = match.group(1)
+        parsed = json.loads(text)
+        _GLM_CACHE[cache_key] = parsed
+        return parsed
+    except Exception as e:
+        print(f"[GLM] 调用失败: {e}")
+        return None
+
+
+def call_glm_text(system_prompt, user_text, max_tokens=4000):
+    cfg = load_glm_config()
+    if not cfg.get("api_key"):
+        return None
+    cache_key = json.dumps({"system": system_prompt, "text": user_text, "max_tokens": max_tokens}, ensure_ascii=False, sort_keys=True)
+    if cache_key in _GLM_CACHE:
+        return _GLM_CACHE[cache_key]
+    body = {
+        "model": cfg.get("model", "glm-4.7-flash"),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text}
+        ],
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+        "thinking": {"type": "disabled"},
+    }
+    try:
+        r = requests.post(
+            cfg.get("base_url", "https://open.bigmodel.cn/api/paas/v4/chat/completions"),
+            headers={
+                "Authorization": f"Bearer {cfg['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=GLM_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json()
+        message = ((data.get("choices") or [{}])[0].get("message") or {})
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    text_parts.append(str(part.get("text") or part.get("content") or ""))
+                else:
+                    text_parts.append(str(part))
+            text = "\n".join(text_parts).strip()
+        else:
+            text = str(content).strip()
+        if not text:
+            return None
+        _GLM_CACHE[cache_key] = text
+        return text
+    except Exception as e:
+        print(f"[GLM] 文本调用失败: {e}")
+        return None
 
 
 def get_today():
@@ -195,6 +348,128 @@ def fetch_github_trending(limit=15):
             "updated": it.get("updated_at", "")[:10],
         })
     return items
+
+
+def github_api_get(path, params=None):
+    try:
+        r = requests.get(
+            f"https://api.github.com{path}",
+            params=params,
+            headers=github_headers(),
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+
+def github_raw_get(url):
+    try:
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=20)
+        if r.status_code != 200:
+            return None
+        return r.text
+    except Exception:
+        return None
+
+
+def fetch_github_repo_deep_info(repo_full_name):
+    repo_meta = github_api_get(f"/repos/{repo_full_name}")
+    if not repo_meta:
+        return None
+
+    default_branch = repo_meta.get("default_branch") or "main"
+    readme_api = github_api_get(f"/repos/{repo_full_name}/readme")
+    readme_text = None
+    if readme_api and readme_api.get("download_url"):
+        readme_text = github_raw_get(readme_api["download_url"])
+    if readme_text:
+        readme_text = readme_text[:GITHUB_README_MAX_CHARS]
+
+    tree_api = github_api_get(
+        f"/repos/{repo_full_name}/git/trees/{default_branch}",
+        params={"recursive": "1"},
+    )
+    tree_paths = []
+    file_candidates = []
+    if tree_api and isinstance(tree_api.get("tree"), list):
+        for node in tree_api["tree"]:
+            path = node.get("path", "")
+            if not path:
+                continue
+            tree_paths.append(path)
+            if node.get("type") == "blob":
+                lower = path.lower()
+                if lower.endswith((
+                    "package.json", "requirements.txt", "pyproject.toml", "go.mod",
+                    "cargo.toml", "pom.xml", "build.gradle", "dockerfile",
+                    "main.py", "app.py", "server.js", "index.ts", "main.go",
+                    "readme.md", "src/main.rs"
+                )):
+                    file_candidates.append(path)
+
+    key_files = []
+    for path in file_candidates[:5]:
+        meta = github_api_get(f"/repos/{repo_full_name}/contents/{path}", params={"ref": default_branch})
+        if meta and meta.get("download_url"):
+            content = github_raw_get(meta["download_url"])
+            if content:
+                key_files.append({
+                    "path": path,
+                    "content": content[:GITHUB_FILE_SNIPPET_CHARS],
+                })
+
+    languages = github_api_get(f"/repos/{repo_full_name}/languages") or {}
+    contributors = github_api_get(f"/repos/{repo_full_name}/contributors", params={"per_page": 5}) or []
+
+    return {
+        "repo": repo_full_name,
+        "name": repo_meta.get("name", repo_full_name.split("/")[-1]),
+        "url": repo_meta.get("html_url", ""),
+        "desc": repo_meta.get("description") or "",
+        "lang": repo_meta.get("language") or "",
+        "stars": repo_meta.get("stargazers_count", 0),
+        "forks": repo_meta.get("forks_count", 0),
+        "watchers": repo_meta.get("subscribers_count", 0),
+        "open_issues": repo_meta.get("open_issues_count", 0),
+        "license": ((repo_meta.get("license") or {}).get("spdx_id") or ""),
+        "topics": repo_meta.get("topics", []),
+        "updated": (repo_meta.get("updated_at") or "")[:10],
+        "default_branch": default_branch,
+        "readme": readme_text or "",
+        "tree_paths": tree_paths[:150],
+        "key_files": key_files,
+        "languages": languages,
+        "contributors": [c.get("login", "") for c in contributors[:5] if c.get("login")],
+    }
+
+
+def analyze_github_repo_with_glm(repo_info):
+    if not repo_info or not glm_enabled():
+        return None
+    payload = {
+        "repo": repo_info["repo"],
+        "description": repo_info.get("desc", ""),
+        "language": repo_info.get("lang", ""),
+        "stars": repo_info.get("stars", 0),
+        "topics": repo_info.get("topics", []),
+        "languages": repo_info.get("languages", {}),
+        "contributors": repo_info.get("contributors", []),
+        "readme_excerpt": (repo_info.get("readme") or "")[:5000],
+        "tree_paths": repo_info.get("tree_paths", [])[:80],
+        "key_files": repo_info.get("key_files", []),
+    }
+    system_prompt = (
+        "你是开源项目分析助手。"
+        "请把 GitHub 仓库整理成适合 Obsidian 的中文深度解析。"
+        "除源码内容外，所有输出必须是简体中文。"
+        "不要编造仓库里不存在的信息。"
+        "返回纯 JSON，顶层必须是 {\"overview\":\"\",\"mindmap\":[...],\"architecture\":[...],\"setup\":[...],\"highlights\":[...],\"code_analysis\":[...]}。"
+        "其中每个数组元素都必须是中文字符串。"
+    )
+    return call_glm_json(system_prompt, payload)
 
 
 def fetch_hn_best(limit=15):
@@ -623,6 +898,13 @@ def write_github(items):
     if not items:
         return
     fp = os.path.join(INBOX, f"GitHub-Trending-{TODAY}.md")
+    deep_items = []
+    for it in items[:GITHUB_DEEP_ANALYZE_TOP_N]:
+        repo_info = fetch_github_repo_deep_info(it["repo"])
+        if not repo_info:
+            continue
+        analysis = analyze_github_repo_with_glm(repo_info)
+        deep_items.append({"base": it, "repo_info": repo_info, "analysis": analysis})
     lines = [
         "---",
         f"date: {TODAY}",
@@ -630,24 +912,99 @@ def write_github(items):
         "tags: [GitHub, Trending, 每日抓取, 抓取]",
         "source: github.com/trending",
         f"count: {len(items)}",
+        f"deep_analysis_count: {len(deep_items)}",
         "---",
         "",
-        f"# GitHub Trending 每日 Top {len(items)} ({TODAY})",
+        f"# GitHub 开源项目深度解析 ({TODAY})",
         "",
-        "## 思维导图",
+        "## 前面介绍",
+        "",
+        f"- 抓取来源：GitHub Trending / Search API",
+        f"- 项目数量：{len(items)}",
+        f"- 深度解析数量：{len(deep_items)}",
+        "- 目标：自动筛出值得研究的开源项目，并给出结构、技术栈、运行方式和源码线索。",
+        "",
+        "## 树状图",
         "",
         "```mermaid",
         "mindmap",
-        "  root((GitHub Trending))",
+        "  root((GitHub 开源项目))",
     ]
-    for it in items[:15]:
-        lines.append(f"    {it['name'][:20]}")
+    for it in deep_items[:10]:
+        title = (it.get("analysis") or {}).get("overview") or it["base"]["name"]
+        lines.append(f"    {_safe_title(title, 24)}")
     lines += [
         "```",
         "",
-        f"## 列表（{len(items)} 条）",
+        "## 深度解析",
         "",
     ]
+    for i, entry in enumerate(deep_items, 1):
+        it = entry["base"]
+        repo_info = entry["repo_info"]
+        analysis = entry.get("analysis") or {}
+        title = repo_info.get("name") or it["name"]
+        lines.append(f"### {i}. {title}")
+        lines.append(f"- **仓库**: [{repo_info['repo']}]({repo_info['url']})")
+        lines.append(f"- **语言**: {repo_info.get('lang', '')} | **Star**: {repo_info.get('stars', 0)} | **Fork**: {repo_info.get('forks', 0)}")
+        lines.append(f"- **更新**: {repo_info.get('updated', '')} | **License**: {repo_info.get('license', '') or '未知'}")
+        if repo_info.get("topics"):
+            lines.append(f"- **主题**: " + "、".join(repo_info["topics"][:8]))
+        if analysis.get("overview"):
+            lines.append("")
+            lines.append("#### 前面介绍")
+            lines.append("")
+            lines.append(f"- {analysis['overview']}")
+        if analysis.get("mindmap"):
+            lines.append("")
+            lines.append("#### 树状图")
+            lines.append("")
+            lines.append("```mermaid")
+            lines.append("mindmap")
+            lines.append(f"  root(({_safe_title(title, 24)}))")
+            for node in analysis["mindmap"][:8]:
+                lines.append(f"    {_safe_title(node, 28)}")
+            lines.append("```")
+        if analysis.get("architecture"):
+            lines.append("")
+            lines.append("#### 文字描述")
+            lines.append("")
+            for line in analysis["architecture"][:8]:
+                lines.append(f"- {line}")
+        if analysis.get("setup"):
+            lines.append("")
+            lines.append("#### 运行方式")
+            lines.append("")
+            for line in analysis["setup"][:6]:
+                lines.append(f"- {line}")
+        if analysis.get("highlights"):
+            lines.append("")
+            lines.append("#### 项目亮点")
+            lines.append("")
+            for line in analysis["highlights"][:6]:
+                lines.append(f"- {line}")
+        if analysis.get("code_analysis"):
+            lines.append("")
+            lines.append("#### 代码解析")
+            lines.append("")
+            for line in analysis["code_analysis"][:8]:
+                lines.append(f"- {line}")
+        lines.append("")
+        lines.append("#### 源码")
+        lines.append("")
+        for file_item in repo_info.get("key_files", [])[:4]:
+            ext = file_item["path"].split(".")[-1] if "." in file_item["path"] else "text"
+            lines.append(f"##### {file_item['path']}")
+            lines.append("")
+            lines.append(f"```{ext}")
+            lines.append(file_item["content"][:3500])
+            lines.append("```")
+            lines.append("")
+        if not repo_info.get("key_files"):
+            lines.append("未抓到适合展示的关键源码文件。")
+            lines.append("")
+
+    lines += ["## 其余项目速览", ""]
     for i, it in enumerate(items, 1):
         lines.append(f"### {i}. {it['name']}")
         lines.append(f"- **仓库**: [{it['repo']}]({it['url']})")
@@ -655,15 +1012,11 @@ def write_github(items):
             lines.append(f"- **描述**: {it['desc']}")
         if it.get("lang"):
             lines.append(f"- **语言**: {it['lang']}")
-        lines.append(f"- **Star**: {it.get('stars', 0)} | **Fork**: {it.get('forks', 0)}")
-        lines.append(f"- **更新**: {it.get('updated', '')}")
-        if it.get("topics"):
-            topics = ", ".join(f"`{t}`" for t in it["topics"][:6])
-            lines.append(f"- **Topic**: {topics}")
+        lines.append(f"- **Star**: {it.get('stars', 0)} | **Fork**: {it.get('forks', 0)} | **更新**: {it.get('updated', '')}")
         lines.append("")
     with open(fp, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print(f"  [OK] GitHub: {len(items)} items -> {fp}")
+    print(f"  [OK] GitHub: {len(items)} items / {len(deep_items)} deep -> {fp}")
 
 
 def write_arxiv(items):
@@ -875,6 +1228,38 @@ def _extract_code_blocks(md):
     return blocks
 
 
+def _translate_non_code_text(text):
+    if not text or not glm_enabled():
+        return text
+    chunks = []
+    buffer = []
+    current = 0
+    for line in text.splitlines():
+        add_len = len(line) + 1
+        if current + add_len > 2200 and buffer:
+            chunks.append("\n".join(buffer))
+            buffer = [line]
+            current = add_len
+        else:
+            buffer.append(line)
+            current += add_len
+    if buffer:
+        chunks.append("\n".join(buffer))
+
+    translated_parts = []
+    system_prompt = (
+        "你是技术文档翻译助手。"
+        "请把输入内容翻译成简体中文。"
+        "保留 markdown 结构、列表、链接。"
+        "不要解释，不要总结，不要增删信息。"
+        "输出必须是中文。"
+    )
+    for chunk in chunks:
+        translated = call_glm_text(system_prompt, chunk, max_tokens=3000)
+        translated_parts.append(translated or chunk)
+    return "\n\n".join(translated_parts)
+
+
 def _infer_code_points(blocks):
     notes = []
     for block in blocks[:3]:
@@ -933,9 +1318,9 @@ def _build_structured_sections(item):
             source_lines.append("```")
             source_lines.append("")
     elif source_excerpt:
-        source_lines.append("#### 原文节选")
+        source_lines.append("#### 中文节选")
         source_lines.append("")
-        source_lines.append(source_excerpt)
+        source_lines.append(_translate_non_code_text(source_excerpt))
         source_lines.append("")
     else:
         source_lines.append("未抓到可展示源码或原文节选。")
@@ -950,6 +1335,68 @@ def _build_structured_sections(item):
     }
 
 
+def localize_items_with_glm(source_label, items):
+    if not items or not glm_enabled():
+        return {}
+    payload_items = []
+    for idx, item in enumerate(items, 1):
+        payload_items.append({
+            "index": idx,
+            "title": _strip_html(item.get("title", "") or item.get("name", "")),
+            "desc": _strip_html(item.get("desc", "") or item.get("summary", "")),
+            "author": item.get("author", "") or item.get("by", ""),
+            "pub": item.get("pub", "") or item.get("published", "") or item.get("updated", ""),
+            "content_excerpt": (item.get("content", "") or "")[:5000],
+            "has_code": bool(_extract_code_blocks(item.get("content", "") or "")),
+        })
+    system_prompt = (
+        "你是 Obsidian 自动知识整理助手。"
+        "请把输入条目整理成简体中文。"
+        "除代码外，所有输出都必须是中文。"
+        "不要编造没有给出的事实。"
+        "返回纯 JSON，不要加 markdown 代码块。"
+        "顶层必须是 {\"items\":[...]}。"
+        "items 中每个对象必须包含 index、zh_title、intro、text_desc、code_desc。"
+        "intro、text_desc、code_desc 必须是字符串数组。"
+        "不要返回 title、desc、content_excerpt 等原始字段。"
+        "如果没有代码，就在 code_desc 中用中文说明“本文未提供源码，以下为实现思路或结构解析”。"
+    )
+    user_payload = {
+        "task": "把每个条目改写成适合写入 Obsidian 的中文知识卡片字段。",
+        "source": source_label,
+        "requirements": {
+            "zh_title": "中文标题，简洁准确",
+            "intro": "1到3条中文要点数组",
+            "text_desc": "3到6条中文说明数组，尽量完整",
+            "code_desc": "2到4条中文代码解析数组；如果无代码，说明这篇内容偏概念或资讯"
+        },
+        "output_example": {
+            "items": [
+                {
+                    "index": 1,
+                    "zh_title": "中文标题示例",
+                    "intro": ["中文要点1", "中文要点2"],
+                    "text_desc": ["中文说明1", "中文说明2", "中文说明3"],
+                    "code_desc": ["中文代码解析1", "中文代码解析2"]
+                }
+            ]
+        },
+        "items": payload_items,
+    }
+    parsed = call_glm_json(system_prompt, user_payload)
+    result = {}
+    if isinstance(parsed, dict):
+        entries = parsed.get("items") or parsed.get("results") or []
+    else:
+        entries = parsed if isinstance(parsed, list) else []
+    for entry in entries:
+        try:
+            result[int(entry["index"])] = entry
+        except Exception:
+            continue
+    return result
+
+
 def write_rss_source(key, items, feeds_dict, default_tag="设计"):
     """通用 RSS 源写入 Inbox，输出完整知识笔记结构。"""
     if not items:
@@ -958,6 +1405,7 @@ def write_rss_source(key, items, feeds_dict, default_tag="设计"):
     fp = os.path.join(INBOX, f"{key}-{TODAY}.md")
     full_count = sum(1 for it in items if it.get("content"))
     code_count = sum(1 for it in items if _extract_code_blocks(it.get("content", "") or ""))
+    localized = localize_items_with_glm(cfg["label"], items)
     lines = [
         "---", f"date: {TODAY}", f"timestamp: {TIMESTAMP}",
         f"tags: [{default_tag}, {cfg['label']}, 每日抓取, 抓取]",
@@ -978,12 +1426,19 @@ def write_rss_source(key, items, feeds_dict, default_tag="设计"):
         "## 思维导图", "", "```mermaid", "mindmap",
         f"  root(({cfg['label']}))",
     ]
-    for it in items[:14]:
-        lines.append(f"    {_safe_title(it['title'])}")
+    for i, it in enumerate(items[:14], 1):
+        loc = localized.get(i, {})
+        tree_title = loc.get("zh_title") or _strip_html(it.get("title", ""))
+        lines.append(f"    {_safe_title(tree_title)}")
     lines += ["```", "", f"## 详细整理（{len(items)} 条，{full_count} 条含全文，{code_count} 条含代码）", ""]
     for i, it in enumerate(items, 1):
         detail = _build_structured_sections(it)
-        lines.append(f"### {i}. {_strip_html(it['title'])}")
+        loc = localized.get(i, {})
+        title = loc.get("zh_title") or _strip_html(it.get("title", ""))
+        intro_lines = loc.get("intro") or detail["intro"]
+        text_desc_lines = loc.get("text_desc") or detail["text_desc"]
+        code_desc_lines = loc.get("code_desc") or detail["code_desc"]
+        lines.append(f"### {i}. {title}")
         lines.append(f"- **链接**: [{it['url']}]({it['url']})")
         if it.get("author"):
             lines.append(f"- **作者**: {it['author']}")
@@ -992,14 +1447,14 @@ def write_rss_source(key, items, feeds_dict, default_tag="设计"):
         lines.append("")
         lines.append("#### 前面介绍")
         lines.append("")
-        for line in detail["intro"]:
+        for line in intro_lines:
             lines.append(f"- {line}")
         lines.append("")
         lines.append("#### 树状图")
         lines.append("")
         lines.append("```mermaid")
         lines.append("mindmap")
-        lines.append(f"  root(({_safe_title(it['title'], 24)}))")
+        lines.append(f"  root(({_safe_title(title, 24)}))")
         lines.append("    前面介绍")
         lines.append("    文字描述")
         lines.append("    代码解析")
@@ -1008,19 +1463,21 @@ def write_rss_source(key, items, feeds_dict, default_tag="设计"):
         lines.append("")
         lines.append("#### 文字描述")
         lines.append("")
-        lines.extend(detail["text_desc"])
+        for line in text_desc_lines:
+            lines.append(line if str(line).startswith("- ") else f"- {line}")
         lines.append("")
         lines.append("#### 代码解析")
         lines.append("")
-        lines.extend(detail["code_desc"])
+        for line in code_desc_lines:
+            lines.append(line if str(line).startswith("- ") else f"- {line}")
         lines.append("")
         lines.append("#### 源码")
         lines.append("")
         lines.extend(detail["source_lines"])
         if detail["has_content"]:
-            lines.append("#### 完整正文")
+            lines.append("#### 完整正文（中文）")
             lines.append("")
-            lines.append(it["content"])
+            lines.append(_translate_non_code_text(it["content"]))
             lines.append("")
         lines.append("")
     with open(fp, "w", encoding="utf-8") as f:

@@ -49,6 +49,7 @@ $RECYCLE.BIN/
 # ============== Local config (per-machine) ==============
 .obsidian/plugins/obsidian-git/data.json
 .obsidian/plugins/obsidian-skills/data.json
+Scripts/daily-fetch/glm_config.local.json
 
 
 # ============== SQLite (Codex database) ==============
