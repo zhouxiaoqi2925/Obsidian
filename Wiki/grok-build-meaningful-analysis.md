@@ -347,3 +347,82 @@ flowchart TD
 - 这份内容对我当前项目的启发：把执行层、状态层、UI 层拆开。
 - 这份内容对我当前决策的影响：先做可执行工作流，再做界面美化。
 - 下次遇到类似内容时我该优先看什么：入口、状态机、工具协议、工作区管理。
+
+
+## 19. 源码补充附录
+
+> 这里补的是你要的“源码也要有”。不是抽象说明，而是直接把关键源码/配置片段贴出来，并解释它们在仓库里的作用。
+
+### 19.1 Cargo.toml 工作区片段
+
+- 文件路径：`Cargo.toml`
+- 作用：定义 workspace、成员 crate、版本和 license。
+- 为什么重要：它决定整个 monorepo 的构建边界。
+
+```toml
+[patch.crates-io]
+async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "95b52ebdedf42143083cf3d6f0e0be7c84e9c808" }
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/build/xai-proto-build",
+    "crates/codegen/ptyctl",
+    "crates/codegen/ptyctl-cli",
+    "crates/codegen/xai-acp-lib",
+    "crates/codegen/xai-agent-lifecycle",
+    "crates/codegen/xai-chat-state",
+    "crates/codegen/xai-codebase-graph",
+    "crates/codegen/xai-crash-handler",
+    "crates/codegen/xai-fast-worktree",
+    "crates/codegen/xai-file-utils",
+    "crates/codegen/xai-fsnotify",
+    "crates/codegen/xai-gix-status",
+    "crates/codegen/xai-grok-agent",
+    "crates/codegen/xai-grok-announcements",
+    "crates/codegen/xai-grok-auth",
+    "crates/codegen/xai-grok-config",
+    "crates/codegen/xai-grok-config-types",
+    "crates/codegen/xai-grok-env",
+    "crates/codegen/xai-grok-hooks",
+    "crates/codegen/xai-grok-http",
+    "crates/codegen/xai-grok-markdown",
+    "crates/codegen/xai-grok-markdown-core",
+    "crates/codegen/xai-grok-mcp",
+    "crates/codegen/xai-grok-memory",
+    "crates/codegen/xai-grok-mermaid",
+    "crates/codegen/xai-grok-models",
+    "crates/codegen/xai-grok-pager",
+    "crates/codegen/xai-grok-pager-bin"
+]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+```
+
+### 19.2 README 说明片段
+
+- 文件路径：`README.md`
+- 作用：解释这个仓库是什么、能干什么、怎么构建。
+- 为什么重要：它告诉你这个项目的真实定位。
+
+```md
+**Grok Build** is SpaceXAI's terminal-based AI coding agent. It runs as a
+full-screen TUI that understands your codebase, edits files, executes shell
+commands, searches the web, and manages long-running tasks interactively,
+headlessly for scripting/CI, or embedded in editors via the Agent Client
+Protocol (ACP).
+
+This repository contains the Rust source for the `grok` CLI/TUI and its agent
+runtime. It is synced periodically from the SpaceXAI monorepo.
+
+A small `SOURCE_REV` file at the root records the full monorepo commit SHA
+for the version of the code present in this tree.
+```
+
+### 19.3 源码解释
+
+- Cargo.toml 说明它不是单包，而是一个大 workspace。
+- README 说明它不是普通 CLI，而是一个带 agent runtime 的 TUI 编程代理。
+- 这两段放在一起，就能看出它为什么要拆很多 crate：因为它的任务不是“执行一个命令”，而是“持续处理一个开发工作流”。
